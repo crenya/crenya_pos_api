@@ -8,16 +8,21 @@ import re
 from datetime import date, time
 
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
+from crenya_pos_api.utils.dates import parse_iso_utc
 from crenya_pos_api.utils.decimal import DecimalParseError, parse_decimal
 
 AGGREGATE_CUSTOMER = "Customer"
 AGGREGATE_SALES_INVOICE = "Sales Invoice"
-AGGREGATE_TYPES = (AGGREGATE_CUSTOMER, AGGREGATE_SALES_INVOICE)
+AGGREGATE_SHIFT = "Crenya POS Shift"
+AGGREGATE_TYPES = (AGGREGATE_CUSTOMER, AGGREGATE_SALES_INVOICE, AGGREGATE_SHIFT)
 OPERATIONS = ("submit",)
 
 MAX_EVENTS_PER_BATCH = 50
 MAX_INVOICE_LINES = 500
 MAX_ID_LENGTH = 140
+MAX_SHIFT_PAYMENT_ROWS = 50
+MAX_SHIFT_INVOICE_IDS = 100000
+MAX_NOTES_LENGTH = 2000
 
 _EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,139}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -293,7 +298,102 @@ def validate_invoice_payload(payload):
 		"buyer_vatin": _optional_str(payload, "buyer_vatin", max_length=40),
 		"cashier": _optional_str(payload, "cashier"),
 		"remarks": _optional_str(payload, "remarks", max_length=2000),
+		# optional: tills older than shift support omit the key
+		"shift_local_id": _optional_str(payload, "shift_local_id"),
 		"items": lines,
 		"payments": _validate_payments(payload.get("payments"), is_return),
 		"client_totals": _validate_client_totals(payload.get("client_totals")),
+	}
+
+
+def _validate_utc_datetime(value, field):
+	if value is None or (isinstance(value, str) and not value.strip()):
+		_fail(f"{field} is required")
+	try:
+		return parse_iso_utc(value)
+	except ValueError:
+		_fail(f"{field} must be an ISO-8601 UTC timestamp, e.g. 2026-09-29T12:05:00Z")
+
+
+def _validate_shift_payments(payments):
+	if payments is None:
+		payments = []
+	if not isinstance(payments, list):
+		_fail("payments must be a list")
+	if len(payments) > MAX_SHIFT_PAYMENT_ROWS:
+		_fail(f"a shift may have at most {MAX_SHIFT_PAYMENT_ROWS} payment rows")
+
+	rows = []
+	seen = set()
+	for index, row in enumerate(payments):
+		label = f"payments[{index}]"
+		if not isinstance(row, dict):
+			_fail(f"{label} must be an object")
+		mode = _required_str(row, "mode_of_payment", f"{label}.mode_of_payment")
+		if mode in seen:
+			_fail(f"{label}.mode_of_payment {mode} appears more than once")
+		seen.add(mode)
+		expected = _decimal(row.get("expected"), f"{label}.expected")
+		counted = _decimal(row.get("counted"), f"{label}.counted")
+		difference = _decimal(row.get("difference"), f"{label}.difference", allow_none=True)
+		if difference is None:
+			difference = counted - expected
+		rows.append(
+			{"mode_of_payment": mode, "expected": expected, "counted": counted, "difference": difference}
+		)
+	return rows
+
+
+def _validate_invoice_local_ids(value):
+	if value is None:
+		return []
+	if not isinstance(value, list):
+		_fail("invoice_local_ids must be a list")
+	if len(value) > MAX_SHIFT_INVOICE_IDS:
+		_fail(f"invoice_local_ids may have at most {MAX_SHIFT_INVOICE_IDS} entries")
+	result = []
+	for index, local_id in enumerate(value):
+		field = f"invoice_local_ids[{index}]"
+		if not isinstance(local_id, str) or not local_id.strip():
+			_fail(f"{field} must be a non-empty string")
+		local_id = local_id.strip()
+		if len(local_id) > MAX_ID_LENGTH:
+			_fail(f"{field} is longer than {MAX_ID_LENGTH} characters")
+		result.append(local_id)
+	return list(dict.fromkeys(result))
+
+
+def validate_shift_payload(payload):
+	"""Validate a closed Crenya POS Shift payload; returns a normalized dict.
+
+	`opened_at` / `closed_at` come back as aware UTC datetimes; the builder converts
+	them to the site time zone.
+	"""
+	opened_at = _validate_utc_datetime(payload.get("opened_at"), "opened_at")
+	closed_at = _validate_utc_datetime(payload.get("closed_at"), "closed_at")
+	if closed_at < opened_at:
+		_fail("closed_at must not be before opened_at")
+
+	opening_float = _decimal(payload.get("opening_float"), "opening_float")
+	if opening_float < 0:
+		_fail("opening_float must not be negative")
+
+	return {
+		"local_id": _required_str(payload, "local_id"),
+		"shift_number": _required_str(payload, "shift_number"),
+		"pos_profile": _required_str(payload, "pos_profile"),
+		"company": _required_str(payload, "company"),
+		"cashier": _optional_str(payload, "cashier"),
+		"opened_at": opened_at,
+		"closed_at": closed_at,
+		"opening_float": opening_float,
+		"sales_count": _int(payload.get("sales_count"), "sales_count", minimum=0),
+		"returns_count": _int(payload.get("returns_count"), "returns_count", minimum=0),
+		"sales_total": _decimal(payload.get("sales_total"), "sales_total"),
+		"returns_total": _decimal(payload.get("returns_total"), "returns_total"),
+		"net_total": _decimal(payload.get("net_total"), "net_total"),
+		"tax_total": _decimal(payload.get("tax_total"), "tax_total"),
+		"payments": _validate_shift_payments(payload.get("payments")),
+		"invoice_local_ids": _validate_invoice_local_ids(payload.get("invoice_local_ids")),
+		"notes": _optional_str(payload, "notes", max_length=MAX_NOTES_LENGTH),
 	}

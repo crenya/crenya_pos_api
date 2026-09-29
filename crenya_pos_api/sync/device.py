@@ -298,6 +298,9 @@ def bootstrap(ctx):
 			"customer_groups": [row.customer_group for row in profile.get("customer_groups") or []],
 			"write_off_limit": format_money(profile.get("write_off_limit") or 0, precision),
 			"print_format": profile.get("print_format") or None,
+			"allow_negative_stock": bool(
+				cint(frappe.db.get_single_value("Stock Settings", "allow_negative_stock"))
+			),
 		},
 		"company": _company_info(profile),
 		"payment_methods": _payment_methods(profile),

@@ -20,9 +20,18 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   (read-only in desk). Successful events older than
   `crenya_pos_event_retention_days` (default 120, never less than 90) are
   purged by a daily job; failed events are kept.
+- DocType **Crenya POS Shift** (named after the till's shift `local_id`) with
+  child table **Crenya POS Shift Payment** (mode of payment, expected,
+  counted, difference): one row per cashier shift closed at a till, with
+  opening float, sales / returns counts and totals, net and tax totals, notes,
+  and `invoice_count_on_server` (Sales Invoices carrying the shift's ID when
+  the shift was pushed). `opened_at` / `closed_at` arrive as UTC and are stored
+  in the site time zone. Read-only in desk (Accounts Manager / Accounts User /
+  System Manager can read; only System Manager can delete).
 - Role **Crenya POS User**.
 - Custom fields (created on install and on every migrate):
-  - Sales Invoice: `crenya_local_id` (unique), `crenya_offline_number`, `crenya_device`
+  - Sales Invoice: `crenya_local_id` (unique), `crenya_offline_number`, `crenya_device`,
+    `crenya_shift_id` (shift of the till that sold it, in standard filter)
   - Customer: `crenya_local_id` (unique)
   - Item: `crenya_item_name_ar` (Item Name (Arabic))
   - Company: `crenya_company_name_ar`, `crenya_cr_number` (CR Number)
@@ -73,7 +82,9 @@ Optional `site_config.json` keys:
    app creates the user's API key pair and hands it to the till; regenerating
    the keys in ERPNext signs every till of that user out. Roles: **Crenya POS User**, **Sales User** (create customers) and
    **Accounts User** (create and submit Sales Invoices — ERPNext permissions
-   are enforced, nothing is inserted with `ignore_permissions`). Add the user
+   are enforced; only the app's own records, Crenya POS Device, Crenya Sync
+   Event and Crenya POS Shift, are written with `ignore_permissions` after the
+   user / device has been authorized). Add the user
    to the POS Profile's *Applicable for Users* table, or leave that table empty
    to allow everyone.
 
@@ -88,13 +99,26 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features (GET or POST) |
+| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile, company, taxes, payment modes for the till |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings), company, taxes, payment modes for the till |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock` + tombstones |
-| `sync.push_batch` | up to 50 events (Customer / Sales Invoice submit), one savepoint + commit per event |
+| `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty |
+
+#### Shifts
+
+When a cashier closes a shift the till queues one `push_batch` event with
+`aggregate_type = "Crenya POS Shift"` and `operation = "submit"`. The server
+creates the **Crenya POS Shift** (with its payments table) and records how
+many Sales Invoices with `crenya_shift_id = local_id` it already has. The
+event is idempotent on `event_id` and on the shift `local_id`, like Customer
+events, and depends on nothing: invoices of the shift may be pushed before or
+after it. Each Sales Invoice payload may carry `shift_local_id` (string or
+null, optional for older tills), stored in `crenya_shift_id` so ERPNext can
+report per shift. The per-event result is the standard one with
+`doctype: "Crenya POS Shift"`, `docstatus: 0` and `totals: null`.
 
 Request-level errors carry `error: {code, message, retryable}` in the JSON
 body next to Frappe's `exc_type`; per-event errors are returned inside the

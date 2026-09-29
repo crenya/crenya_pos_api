@@ -38,7 +38,12 @@ def get_sync_capabilities(protocol_version=None):
 		"server_time": utc_now_iso(),
 		"site_timezone": get_system_timezone(),
 		"user": frappe.session.user,
-		"features": {"sales": True, "returns": True, "fawtara": "oman_compliance" in installed},
+		"features": {
+			"sales": True,
+			"returns": True,
+			"shifts": True,
+			"fawtara": "oman_compliance" in installed,
+		},
 	}
 
 

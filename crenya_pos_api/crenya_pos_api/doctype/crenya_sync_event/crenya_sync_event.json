@@ -50,7 +50,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Aggregate Type",
-   "options": "Customer\nSales Invoice",
+   "options": "Customer\nSales Invoice\nCrenya POS Shift",
    "read_only": 1
   },
   {
@@ -155,7 +155,7 @@
  "in_create": 1,
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-29 00:00:00.000000",
+ "modified": "2026-09-29 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya Sync Event",

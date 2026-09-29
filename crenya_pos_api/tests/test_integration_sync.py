@@ -9,7 +9,7 @@ import uuid
 from decimal import Decimal
 
 import frappe
-from frappe.utils import nowdate, nowtime
+from frappe.utils import cint, get_datetime, get_system_timezone, nowdate, nowtime
 
 try:
 	from frappe.tests import IntegrationTestCase as FrappeTestCase
@@ -24,8 +24,10 @@ from crenya_pos_api.sync.context import check_protocol_version, get_device_conte
 from crenya_pos_api.sync.cursor import decode_cursor
 from crenya_pos_api.sync.hashing import payload_hash
 from crenya_pos_api.tests import fixtures
+from crenya_pos_api.utils.dates import parse_iso_utc, to_site_naive
 
 EVENT = "Crenya Sync Event"
+SHIFT = "Crenya POS Shift"
 
 
 def new_id():
@@ -157,6 +159,36 @@ class TestCrenyaSync(FrappeTestCase):
 			"territory": None,
 		}
 
+	def shift_payload(self, **overrides):
+		payload = {
+			"local_id": new_id(),
+			"shift_number": f"SH-{self.device['device_short']}-{uuid.uuid4().hex[:6]}",
+			"pos_profile": self.profile.name,
+			"company": fixtures.COMPANY,
+			"cashier": frappe.session.user,
+			"opened_at": "2026-09-29T04:00:00Z",
+			"closed_at": "2026-09-29T12:05:30Z",
+			"opening_float": "20.000",
+			"sales_count": 2,
+			"returns_count": 0,
+			"sales_total": "2.400",
+			"returns_total": "0.000",
+			"net_total": "2.400",
+			"tax_total": "0.114",
+			"payments": [
+				{
+					"mode_of_payment": fixtures.CASH,
+					"expected": "22.400",
+					"counted": "22.300",
+					"difference": "-0.100",
+				}
+			],
+			"invoice_local_ids": [],
+			"notes": "Till drawer short by 100 baisa",
+		}
+		payload.update(overrides)
+		return payload
+
 	def event(self, payload, aggregate_type="Sales Invoice", event_id=None, sequence_no=1):
 		return {
 			"event_id": event_id or new_id(),
@@ -225,6 +257,14 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertTrue(data["payment_methods"][0]["default"])
 		zero = [t for t in data["item_tax_templates"] if t["name"] == fixtures.ZERO_TEMPLATE]
 		self.assertEqual(zero[0]["taxes"][0]["tax_rate"], "0")
+
+	def test_bootstrap_allow_negative_stock(self):
+		expected = bool(cint(frappe.db.get_single_value("Stock Settings", "allow_negative_stock")))
+		data = device_api.get_bootstrap(device_id=self.device_id)
+		self.assertIs(data["profile"]["allow_negative_stock"], expected)
+
+	def test_capabilities_announce_shifts(self):
+		self.assertTrue(sync_api.get_sync_capabilities()["features"]["shifts"])
 
 	def test_device_of_another_user_is_rejected(self):
 		email = "crenya.cashier.test@example.com"
@@ -394,6 +434,115 @@ class TestCrenyaSync(FrappeTestCase):
 		payload = self.sale_payload()
 		payload["items"][0]["qty"] = "two"
 		self.assertError(self.push_one(self.event(payload)), "validation", False)
+
+	# push: shifts
+
+	def test_invoice_with_shift_local_id(self):
+		shift_id = new_id()
+		with_shift = self.assertOk(self.push_one(self.event(self.sale_payload(shift_local_id=shift_id))))
+		self.assertEqual(
+			frappe.db.get_value("Sales Invoice", with_shift["name"], "crenya_shift_id"), shift_id
+		)
+
+		# tills without shift support omit the key entirely
+		legacy = self.sale_payload()
+		self.assertNotIn("shift_local_id", legacy)
+		without_shift = self.assertOk(self.push_one(self.event(legacy)))
+		self.assertFalse(frappe.db.get_value("Sales Invoice", without_shift["name"], "crenya_shift_id"))
+
+	def test_shift_push_creates_record_and_counts_invoices(self):
+		shift = self.shift_payload()
+		sales = [self.sale_payload(shift_local_id=shift["local_id"]) for _ in range(2)]
+		shift["invoice_local_ids"] = [sale["local_id"] for sale in sales]
+		for sale in sales:
+			self.assertOk(self.push_one(self.event(sale)))
+		# an invoice of another shift must not be counted
+		self.assertOk(self.push_one(self.event(self.sale_payload(shift_local_id=new_id()))))
+
+		event = self.event(shift, SHIFT)
+		result = self.assertOk(self.push_one(event))
+		self.assertEqual(result["doctype"], SHIFT)
+		self.assertEqual(result["name"], shift["local_id"])
+		self.assertEqual(result["docstatus"], 0)
+		self.assertIsNone(result["totals"])
+		self.assertIsNone(result["fawtara_status"])
+		self.assertTrue(result["modified"])
+
+		doc = frappe.get_doc(SHIFT, result["name"])
+		self.assertEqual(doc.local_id, shift["local_id"])
+		self.assertEqual(doc.shift_number, shift["shift_number"])
+		self.assertEqual(doc.device, self.device_id)
+		self.assertEqual(doc.pos_profile, self.profile.name)
+		self.assertEqual(doc.company, fixtures.COMPANY)
+		self.assertEqual(doc.cashier, frappe.session.user)
+		self.assertEqual(doc.invoice_count_on_server, 2)
+		self.assertEqual((doc.sales_count, doc.returns_count), (2, 0))
+		self.assertAlmostEqual(doc.opening_float, 20.0, places=3)
+		self.assertAlmostEqual(doc.net_total, 2.4, places=3)
+		self.assertAlmostEqual(doc.tax_total, 0.114, places=3)
+		self.assertEqual(doc.notes, shift["notes"])
+
+		time_zone = get_system_timezone()
+		self.assertEqual(
+			get_datetime(doc.opened_at), to_site_naive(parse_iso_utc(shift["opened_at"]), time_zone)
+		)
+		self.assertEqual(
+			get_datetime(doc.closed_at), to_site_naive(parse_iso_utc(shift["closed_at"]), time_zone)
+		)
+
+		self.assertEqual(len(doc.payments), 1)
+		payment = doc.payments[0]
+		self.assertEqual(payment.mode_of_payment, fixtures.CASH)
+		self.assertAlmostEqual(payment.expected, 22.4, places=3)
+		self.assertAlmostEqual(payment.counted, 22.3, places=3)
+		self.assertAlmostEqual(payment.difference, -0.1, places=3)
+
+		recorded = frappe.get_doc(EVENT, event["event_id"])
+		self.assertEqual((recorded.status, recorded.aggregate_type), ("ok", SHIFT))
+		self.assertEqual((recorded.result_doctype, recorded.result_name), (SHIFT, doc.name))
+
+	def test_shift_before_its_invoices(self):
+		shift = self.shift_payload()
+		result = self.assertOk(self.push_one(self.event(shift, SHIFT)))
+		self.assertEqual(frappe.db.get_value(SHIFT, result["name"], "invoice_count_on_server"), 0)
+		# the shift never blocks its invoices
+		self.assertOk(self.push_one(self.event(self.sale_payload(shift_local_id=shift["local_id"]))))
+
+	def test_duplicate_shift_event(self):
+		shift = self.shift_payload()
+		event = self.event(shift, SHIFT)
+		first = self.assertOk(self.push_one(event))
+
+		again = self.push_one(event)
+		self.assertEqual(again["status"], "duplicate")
+		self.assertEqual((again["doctype"], again["name"]), (SHIFT, first["name"]))
+		self.assertEqual(again["docstatus"], 0)
+		self.assertIsNone(again["totals"])
+
+		# lost response: the till re-queued the shift under a new event id
+		retry = self.event(shift, SHIFT)
+		matched = self.push_one(retry)
+		self.assertEqual(matched["status"], "duplicate")
+		self.assertEqual(matched["name"], first["name"])
+		self.assertEqual(frappe.db.get_value(EVENT, retry["event_id"], "status"), "ok")
+		self.assertEqual(frappe.db.count(SHIFT, {"local_id": shift["local_id"]}), 1)
+
+		conflict = self.event(dict(shift, notes="edited after sync"), SHIFT, event_id=event["event_id"])
+		self.assertError(self.push_one(conflict), "payload_conflict", False)
+
+	def test_invalid_shift_is_validation(self):
+		bad_time = self.shift_payload(closed_at="2026-09-29 12:05:30")
+		self.assertError(self.push_one(self.event(bad_time, SHIFT)), "validation", False)
+		self.assertFalse(frappe.db.exists(SHIFT, bad_time["local_id"]))
+
+		other_company = self.shift_payload(company="_Test Crenya Other Co")
+		self.assertError(self.push_one(self.event(other_company, SHIFT)), "validation", False)
+
+		unknown_mode = self.shift_payload(
+			payments=[{"mode_of_payment": "_Test Crenya Voucher", "expected": "1", "counted": "1"}]
+		)
+		self.assertError(self.push_one(self.event(unknown_mode, SHIFT)), "validation", False)
+		self.assertFalse(frappe.db.exists(SHIFT, unknown_mode["local_id"]))
 
 	# push: returns
 

@@ -13,12 +13,15 @@ from crenya_pos_api.sync.customer import create_customer, customer_result_fields
 from crenya_pos_api.sync.errors import PAYLOAD_CONFLICT, SyncError, classify_exception, error_dict
 from crenya_pos_api.sync.hashing import payload_hash
 from crenya_pos_api.sync.invoice_builder import invoice_result_fields, submit_invoice
+from crenya_pos_api.sync.shift import create_shift, shift_result_fields
 from crenya_pos_api.sync.validation import (
 	AGGREGATE_CUSTOMER,
 	AGGREGATE_SALES_INVOICE,
+	AGGREGATE_SHIFT,
 	validate_customer_payload,
 	validate_envelope,
 	validate_invoice_payload,
+	validate_shift_payload,
 )
 
 STATUS_OK = "ok"
@@ -58,12 +61,22 @@ def document_result(event_id, status, doctype, name):
 		return result
 
 	doc = frappe.get_doc(doctype, name)
-	fields = invoice_result_fields(doc) if doctype == AGGREGATE_SALES_INVOICE else customer_result_fields(doc)
-	result.update(fields)
+	result.update(_result_fields(doctype, doc))
 	return result
 
 
+def _result_fields(doctype, doc):
+	if doctype == AGGREGATE_SALES_INVOICE:
+		return invoice_result_fields(doc)
+	if doctype == AGGREGATE_SHIFT:
+		return shift_result_fields(doc)
+	return customer_result_fields(doc)
+
+
 def _find_by_local_id(doctype, local_id):
+	if doctype == AGGREGATE_SHIFT:
+		# Crenya POS Shift is named after its local_id
+		return frappe.db.exists(AGGREGATE_SHIFT, local_id) or None
 	return frappe.db.get_value(doctype, {"crenya_local_id": local_id}, "name")
 
 
@@ -171,7 +184,8 @@ def _idempotent_result(ctx, env):
 	name = _find_by_local_id(doctype, env["local_id"])
 	if name:
 		# the document exists but the till never saw the response
-		_record_ok(ctx, env, existing, doctype, name, ["Matched existing document by crenya_local_id"])
+		matched_by = "local_id" if doctype == AGGREGATE_SHIFT else "crenya_local_id"
+		_record_ok(ctx, env, existing, doctype, name, [f"Matched existing document by {matched_by}"])
 		return document_result(env["event_id"], STATUS_DUPLICATE, doctype, name), existing
 
 	return None, existing
@@ -187,6 +201,10 @@ def _apply(ctx, env):
 		data = validate_customer_payload(env["payload"])
 		doc = create_customer(ctx, data)
 		fields = customer_result_fields(doc)
+	elif env["aggregate_type"] == AGGREGATE_SHIFT:
+		data = validate_shift_payload(env["payload"])
+		doc = create_shift(ctx, data, notes)
+		fields = shift_result_fields(doc)
 	else:
 		data = validate_invoice_payload(env["payload"])
 		doc = submit_invoice(ctx, data, notes)

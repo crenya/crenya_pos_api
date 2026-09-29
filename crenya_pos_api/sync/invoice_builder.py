@@ -319,6 +319,7 @@ def build_invoice(ctx, data, notes):
 			"crenya_local_id": data["local_id"],
 			"crenya_offline_number": data.get("offline_number"),
 			"crenya_device": ctx.device_id,
+			"crenya_shift_id": data.get("shift_local_id"),
 		}
 	)
 	if profile.get("cost_center"):

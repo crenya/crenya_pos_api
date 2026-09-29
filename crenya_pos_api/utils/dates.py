@@ -1,9 +1,12 @@
 """Timestamp helpers shared by the API modules."""
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 _MODIFIED_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?$")
+_ISO_RE = re.compile(
+	r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|z|[+-]\d{2}:?\d{2})$"
+)
 
 
 def utc_now_iso():
@@ -30,3 +33,49 @@ def format_date(value):
 	if hasattr(value, "isoformat"):
 		return value.isoformat()
 	return str(value)
+
+
+def parse_iso_utc(value):
+	"""Parse an ISO-8601 timestamp with an explicit offset (`Z` or `+hh:mm`) into an aware UTC datetime.
+
+	Raises ValueError for anything else, including timestamps without an offset.
+	"""
+	match = _ISO_RE.match(value.strip()) if isinstance(value, str) else None
+	if not match:
+		raise ValueError(f"not an ISO-8601 UTC timestamp: {value!r}")
+	year, month, day, hour, minute, second, fraction, offset = match.groups()
+	moment = datetime(
+		int(year),
+		int(month),
+		int(day),
+		int(hour),
+		int(minute),
+		int(second),
+		int((fraction or "0").ljust(6, "0")),
+	)
+	if offset not in ("Z", "z"):
+		sign = -1 if offset[0] == "-" else 1
+		digits = offset[1:].replace(":", "")
+		hours, minutes = int(digits[:2]), int(digits[2:])
+		if hours > 23 or minutes > 59:
+			raise ValueError(f"invalid UTC offset in {value!r}")
+		moment -= sign * timedelta(hours=hours, minutes=minutes)
+	return moment.replace(tzinfo=timezone.utc)
+
+
+def to_site_naive(moment, time_zone):
+	"""Aware datetime -> naive wall-clock datetime in `time_zone` (how Frappe stores Datetime fields).
+
+	An unknown or empty time zone keeps UTC.
+	"""
+	if moment.tzinfo is None:
+		moment = moment.replace(tzinfo=timezone.utc)
+	target = timezone.utc
+	if time_zone:
+		from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+		try:
+			target = ZoneInfo(time_zone)
+		except (ZoneInfoNotFoundError, ValueError):
+			target = timezone.utc
+	return moment.astimezone(target).replace(tzinfo=None)

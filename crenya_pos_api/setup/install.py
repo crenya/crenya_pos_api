@@ -37,6 +37,17 @@ CUSTOM_FIELDS = {
 			"no_copy": 1,
 			"print_hide": 1,
 		},
+		{
+			"fieldname": "crenya_shift_id",
+			"fieldtype": "Data",
+			"label": "POS Shift ID",
+			"insert_after": "crenya_device",
+			"read_only": 1,
+			"no_copy": 1,
+			"in_standard_filter": 1,
+			"search_index": 1,
+			"print_hide": 1,
+		},
 	],
 	"Customer": [
 		{

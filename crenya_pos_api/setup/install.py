@@ -158,4 +158,5 @@ def before_tests():
 		erpnext_before_tests()
 	make_role()
 	make_custom_fields()
-	frappe.db.commit()
+	# test setup must survive the per-test rollbacks of the test runner
+	frappe.db.commit()  # nosemgrep

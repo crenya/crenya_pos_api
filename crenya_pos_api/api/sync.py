@@ -24,7 +24,7 @@ def _app_version(app):
 
 
 @frappe.whitelist(methods=["GET", "POST"])
-def get_sync_capabilities(protocol_version=None):
+def get_sync_capabilities(protocol_version: int | str | None = None):
 	require_login()
 	check_protocol_version(protocol_version)
 	from frappe.utils import get_system_timezone
@@ -48,14 +48,24 @@ def get_sync_capabilities(protocol_version=None):
 
 
 @frappe.whitelist(methods=["POST"])
-def pull_changes(device_id=None, entity=None, cursor=None, limit=None, protocol_version=None):
+def pull_changes(
+	device_id: str | None = None,
+	entity: str | None = None,
+	cursor: str | None = None,
+	limit: int | str | None = None,
+	protocol_version: int | str | None = None,
+):
 	check_protocol_version(protocol_version)
 	ctx = get_device_context(device_id)
 	return _pull_changes(ctx, entity, cursor, limit)
 
 
 @frappe.whitelist(methods=["POST"])
-def push_batch(device_id=None, events=None, protocol_version=None):
+def push_batch(
+	device_id: str | None = None,
+	events: list | str | None = None,
+	protocol_version: int | str | None = None,
+):
 	check_protocol_version(protocol_version)
 	ctx = get_device_context(device_id)
 

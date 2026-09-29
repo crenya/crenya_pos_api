@@ -13,9 +13,16 @@ from crenya_pos_api.sync.context import POS_USER_ROLE, check_protocol_version
 ALLOWED_ROLES = {POS_USER_ROLE, "System Manager"}
 
 
-@frappe.whitelist(allow_guest=True, methods=["POST"])
+# Guest by design: this is the till's sign-in. Rate limited, and the password is
+# checked with the desk login's lockout rules before anything is returned.
+@frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep
 @rate_limit(limit=10, seconds=5 * 60)
-def login(usr=None, pwd=None, device_id=None, protocol_version=None):
+def login(
+	usr: str | None = None,
+	pwd: str | None = None,
+	device_id: str | None = None,
+	protocol_version: int | str | None = None,
+):
 	check_protocol_version(protocol_version)
 	return sign_in(usr, pwd)
 
@@ -44,7 +51,6 @@ def sign_in(usr, pwd):
 		frappe.throw(_("{0} does not have the {1} role").format(user, POS_USER_ROLE), frappe.PermissionError)
 
 	api_key, api_secret = _ensure_api_keys(user)
-	frappe.db.commit()
 	return {
 		"user": user,
 		"full_name": frappe.db.get_value("User", user, "full_name"),

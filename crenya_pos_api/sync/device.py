@@ -171,7 +171,7 @@ def _company_address_lines(profile, company):
 	lines = [
 		address.address_line1,
 		address.address_line2,
-		", ".join(filter(None, [address.city, address.country])),
+		", ".join(part for part in (address.city, address.country) if part),
 	]
 	return [line for line in lines if line]
 

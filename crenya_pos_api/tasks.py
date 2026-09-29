@@ -17,4 +17,3 @@ def purge_old_sync_events():
 	"""Delete successful Crenya Sync Events older than the retention window. Errors are kept."""
 	cutoff = add_days(now_datetime(), -get_retention_days())
 	frappe.db.delete("Crenya Sync Event", {"status": "ok", "creation": ("<", cutoff)})
-	frappe.db.commit()

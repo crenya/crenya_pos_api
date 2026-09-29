@@ -249,7 +249,9 @@ def process_event(ctx, raw_event, index=0):
 	frappe.db.savepoint(savepoint)
 	try:
 		result = _apply(ctx, env)
-		frappe.db.commit()
+		# one commit per event is the protocol: a later failing event must not
+		# roll back documents the till already got an "ok" for
+		frappe.db.commit()  # nosemgrep
 		return result
 	except Exception as exc:
 		_discard(savepoint)
@@ -265,7 +267,8 @@ def process_event(ctx, raw_event, index=0):
 				frappe.db.rollback()
 				duplicate = None
 			if duplicate:
-				frappe.db.commit()
+				# per-event commit, see above
+				frappe.db.commit()  # nosemgrep
 				return duplicate
 			frappe.db.rollback()
 
@@ -279,7 +282,8 @@ def process_event(ctx, raw_event, index=0):
 			except Exception:
 				frappe.db.rollback()
 				frappe.log_error(title=f"Crenya POS could not record failed event {env['event_id']}")
-		frappe.db.commit()
+		# keep the failed-attempt record (per-event commit, see above)
+		frappe.db.commit()  # nosemgrep
 		return error_result(env["event_id"], error, env["aggregate_type"])
 	finally:
 		frappe.clear_messages()
@@ -287,5 +291,5 @@ def process_event(ctx, raw_event, index=0):
 
 def process_batch(ctx, events):
 	# persist the device heartbeat and start every event from a clean transaction
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep
 	return [process_event(ctx, event, index) for index, event in enumerate(events)]

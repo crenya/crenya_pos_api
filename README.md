@@ -68,8 +68,10 @@ Optional `site_config.json` keys:
 7. Warehouse, Cost Center, Selling Price List (in OMR), Write Off Account /
    Cost Center, optional Item Groups / Customer Groups (sub-groups are
    included automatically).
-8. **Users**: create an API key/secret per cashier (or per till integration
-   user). Roles: **Crenya POS User**, **Sales User** (create customers) and
+8. **Users**: cashiers sign in on the till with their normal ERPNext
+   username + password (2FA must be off for till users). On first sign-in the
+   app creates the user's API key pair and hands it to the till; regenerating
+   the keys in ERPNext signs every till of that user out. Roles: **Crenya POS User**, **Sales User** (create customers) and
    **Accounts User** (create and submit Sales Invoices — ERPNext permissions
    are enforced, nothing is inserted with `ignore_permissions`). Add the user
    to the POS Profile's *Applicable for Users* table, or leave that table empty
@@ -78,12 +80,14 @@ Optional `site_config.json` keys:
 #### API summary
 
 All methods are `POST {server}/api/method/crenya_pos_api.api.<module>.<fn>` with
-`Authorization: token <api_key>:<api_secret>`. Money and quantities are decimal
+`Authorization: token <api_key>:<api_secret>`, except `auth.login`, which the
+till calls without auth to exchange username + password for that key pair. Money and quantities are decimal
 strings. The full contract (payloads, error codes, idempotency rules) is the
 sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 
 | method | purpose |
 |---|---|
+| `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
 | `sync.get_sync_capabilities` | ping, versions, features (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |

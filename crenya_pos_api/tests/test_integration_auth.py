@@ -39,7 +39,13 @@ class TestCrenyaSignIn(FrappeTestCase):
 		cls.clerk = ensure_user("_test_crenya_clerk@example.com", ["Sales User"])
 		frappe.db.commit()
 
+	def setUp(self):
+		# the login-attempt tracker is keyed by client IP, which only exists inside a request
+		self._saved_ip = getattr(frappe.local, "request_ip", None)
+		frappe.local.request_ip = "127.0.0.1"
+
 	def tearDown(self):
+		frappe.local.request_ip = self._saved_ip
 		frappe.set_user("Administrator")
 
 	def test_password_sign_in_returns_working_keys(self):

@@ -18,7 +18,7 @@ from crenya_pos_api.api import cashier as cashier_api
 from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import sync as sync_api
 from crenya_pos_api.setup.install import POS_USER_ROLE, after_install
-from crenya_pos_api.sync.cashier import PIN_FIELD, PIN_HASH_FIELD, verify_pin
+from crenya_pos_api.sync.cashier import PIN_FIELD, PIN_HASH_FIELD, clear_user_pin, verify_pin
 from crenya_pos_api.tests import fixtures
 
 CASHIER = "_test_crenya_pin_cashier@example.com"
@@ -228,9 +228,14 @@ class TestCrenyaCashiers(FrappeTestCase):
 			profile.save(ignore_permissions=True)
 			frappe.db.commit()
 
-		records, cursor = self._pull_all(cursor)
-		self.assertEqual(records[SECOND]["enabled"], 1, "access restored when the table is cleared")
-		self.assertTrue(verify_pin("2222", records[SECOND]["pin_hash"]))
+		try:
+			records, cursor = self._pull_all(cursor)
+			self.assertEqual(records[SECOND]["enabled"], 1, "access restored when the table is cleared")
+			self.assertTrue(verify_pin("2222", records[SECOND]["pin_hash"]))
+		finally:
+			# other tests expect SECOND without a PIN
+			clear_user_pin(SECOND)
+			frappe.db.commit()
 
 	def test_role_removal_and_disabling_come_back_disabled(self):
 		set_pin(SECOND, "1111")

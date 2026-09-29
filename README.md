@@ -31,7 +31,10 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
 - Role **Crenya POS User**.
 - Custom fields (created on install and on every migrate):
   - Sales Invoice: `crenya_local_id` (unique), `crenya_offline_number`, `crenya_device`,
-    `crenya_shift_id` (shift of the till that sold it, in standard filter)
+    `crenya_shift_id` (shift of the till that sold it, in standard filter),
+    `crenya_cashier` (POS Cashier: Link User, the till cashier who rang up the sale, in standard filter)
+  - User: section **Crenya POS** on the *Roles & Permissions* tab with `crenya_pos_pin`
+    (POS PIN, Password) and the hidden `crenya_pos_pin_hash` (see *Cashier PINs*)
   - Customer: `crenya_local_id` (unique)
   - Item: `crenya_item_name_ar` (Item Name (Arabic))
   - Company: `crenya_company_name_ar`, `crenya_cr_number` (CR Number)
@@ -103,9 +106,10 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
 | `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings), company, taxes, payment modes for the till |
-| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock` + tombstones |
+| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty |
+| `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
 
 #### Shifts
 
@@ -123,6 +127,58 @@ report per shift. The per-event result is the standard one with
 Request-level errors carry `error: {code, message, retryable}` in the JSON
 body next to Frappe's `exc_type`; per-event errors are returned inside the
 `push_batch` results.
+
+#### Cashier PINs
+
+Several cashiers can work on one till, which stays signed in with its device
+user's API keys. A cashier unlocks the till with a 4–6 digit **POS PIN** that
+the till checks offline.
+
+Setting a PIN: open the cashier's **User** in ERPNext, tab *Roles &
+Permissions*, section **Crenya POS**, type the PIN into **POS PIN** and save.
+The user needs the **Crenya POS User** role (and, if the POS Profile's
+*Applicable for Users* table is filled, must be listed there). On save the
+PIN must be 4 to 6 digits 0-9, otherwise the save is refused. The server
+replaces it with a salted hash (`pbkdf2_sha256$120000$<salt>$<key>`,
+PBKDF2-HMAC-SHA256, 16-byte random salt, 32-byte key, base64) in the hidden
+field `crenya_pos_pin_hash` and empties the PIN field, so the PIN is stored
+nowhere in readable or decryptable form. The PIN field therefore always looks
+empty; leaving it empty keeps the current PIN, typing a new one replaces it.
+Desk users can also set their own PIN under *My Settings*. To remove a PIN, a
+System Manager calls `crenya_pos_api.api.cashier.clear_pin` with `user`
+(e.g. `bench --site <site> execute crenya_pos_api.sync.cashier.clear_user_pin --args "['cashier1@store.om']"`).
+
+Tills receive cashiers through `pull_changes` entity `cashier`:
+`{name, full_name, enabled, pin_hash, modified}`, keyset-paginated on the
+User's `modified`. It contains the holders of the **Crenya POS User** role
+(limited to the profile's *Applicable for Users* when that table is not
+empty) and users that have a PIN. `enabled` is 1 only for an enabled user who
+still has the role and may use the profile; `pin_hash` is null when no PIN is
+set and for every record with `enabled: 0`. Removing the role or disabling the
+user saves the User, so the till receives `enabled: 0` on its next pull (a
+user who loses the role and never had a PIN is simply no longer sent; without
+a PIN they cannot unlock a till anyway); deleted users arrive as tombstones. A change to the POS Profile's
+*Applicable for Users* table alone does not change any User: a cashier added
+to the table reaches the tills once the User is saved; a cashier removed from
+it is no longer sent at all, so the tills keep the old record until they pull
+`cashier` from scratch (the first-pull snapshot replaces local data). To lock
+a cashier out of every till right away, remove the role or disable the user.
+
+Sales Invoice and shift payloads carry `cashier`. When it is an existing,
+enabled user it is stored in the invoice's **POS Cashier** (`crenya_cashier`)
+and as the shift's **Cashier**; otherwise the invoice field stays empty (the
+shift falls back to the device user) and the sync event's note names the
+till's cashier. The document owner stays the device's API user.
+
+Security notes:
+
+- A 4–6 digit PIN has at most one million combinations. Anyone who copies a
+  till's database can brute-force the stored hashes offline, whatever the
+  hash cost. Keep full-disk encryption on for every till and use 6-digit PINs.
+- The PIN only unlocks the till. Sync still authenticates with the device
+  user's API keys; a PIN never grants access to ERPNext.
+- The hash also appears in the User's version history (visible to users who
+  can read the User's versions, normally System Managers).
 
 #### Tests
 

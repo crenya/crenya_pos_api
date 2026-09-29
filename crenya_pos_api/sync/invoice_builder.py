@@ -8,6 +8,7 @@ recomputed them.
 import frappe
 from frappe.utils import cint, flt
 
+from crenya_pos_api.sync.cashier import enabled_user
 from crenya_pos_api.sync.context import (
 	get_total_tolerance,
 	get_update_stock,
@@ -283,8 +284,9 @@ def build_invoice(ctx, data, notes):
 			f"Till used taxes template {data['taxes_and_charges']}; profile template "
 			f"{profile.taxes_and_charges} applied"
 		)
-	if data.get("cashier") and data["cashier"] != frappe.session.user:
-		notes.append(f"Till cashier {data['cashier']}")
+	cashier = enabled_user(data.get("cashier"))
+	if data.get("cashier") and not cashier:
+		notes.append(f"Till cashier {data['cashier']} is not an enabled user; POS Cashier left empty")
 
 	customer = resolve_customer(ctx, data)
 	original = resolve_return_against(ctx, data)
@@ -320,6 +322,7 @@ def build_invoice(ctx, data, notes):
 			"crenya_offline_number": data.get("offline_number"),
 			"crenya_device": ctx.device_id,
 			"crenya_shift_id": data.get("shift_local_id"),
+			"crenya_cashier": cashier,
 		}
 	)
 	if profile.get("cost_center"):

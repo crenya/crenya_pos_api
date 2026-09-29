@@ -75,8 +75,13 @@ def user_can_use_profile(profile, user=None):
 		return False
 	if is_system_manager(user):
 		return True
-	users = [row.user for row in profile.get("applicable_for_users") or [] if row.user]
+	users = profile_users(profile)
 	return not users or user in users
+
+
+def profile_users(profile):
+	"""Users of the profile's Applicable for Users table (empty = everyone)."""
+	return [row.user for row in profile.get("applicable_for_users") or [] if row.user]
 
 
 def get_profile(pos_profile):

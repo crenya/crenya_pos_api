@@ -450,6 +450,22 @@ class TestCrenyaSync(FrappeTestCase):
 		without_shift = self.assertOk(self.push_one(self.event(legacy)))
 		self.assertFalse(frappe.db.get_value("Sales Invoice", without_shift["name"], "crenya_shift_id"))
 
+	def test_invoice_records_cashier(self):
+		payload = self.sale_payload()
+		self.assertEqual(payload["cashier"], frappe.session.user)
+		result = self.assertOk(self.push_one(self.event(payload)))
+		self.assertEqual(
+			frappe.db.get_value("Sales Invoice", result["name"], "crenya_cashier"), frappe.session.user
+		)
+		self.assertEqual(frappe.db.get_value("Sales Invoice", result["name"], "owner"), frappe.session.user)
+
+		# an unknown till cashier never blocks the sale: the field stays empty and the event says why
+		ghost = "_test_crenya_no_such_cashier@example.com"
+		event = self.event(self.sale_payload(cashier=ghost))
+		result = self.assertOk(self.push_one(event))
+		self.assertFalse(frappe.db.get_value("Sales Invoice", result["name"], "crenya_cashier"))
+		self.assertIn(ghost, frappe.db.get_value(EVENT, event["event_id"], "note"))
+
 	def test_shift_push_creates_record_and_counts_invoices(self):
 		shift = self.shift_payload()
 		sales = [self.sale_payload(shift_local_id=shift["local_id"]) for _ in range(2)]

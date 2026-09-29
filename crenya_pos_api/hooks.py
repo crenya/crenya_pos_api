@@ -138,13 +138,18 @@ has_permission = {
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"User": {
+		# hash a newly entered POS PIN and clear it before Frappe stores Password fields;
+		# before_validate also runs when flags.ignore_validate skips validate
+		"before_validate": "crenya_pos_api.sync.cashier.user_validate",
+		"validate": "crenya_pos_api.sync.cashier.user_validate",
+	},
+	"POS Profile": {
+		# tills learn about cashiers added to / removed from Applicable for Users
+		"on_update": "crenya_pos_api.sync.cashier.pos_profile_on_update",
+	},
+}
 
 # Scheduled Tasks
 # ---------------

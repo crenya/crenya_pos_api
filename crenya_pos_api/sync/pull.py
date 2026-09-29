@@ -14,7 +14,8 @@ from datetime import timedelta
 import frappe
 from frappe.utils import cint, get_datetime, now_datetime
 
-from crenya_pos_api.sync.context import get_pull_lag_seconds, money_precision
+from crenya_pos_api.sync.cashier import PIN_HASH_FIELD
+from crenya_pos_api.sync.context import POS_USER_ROLE, get_pull_lag_seconds, money_precision, profile_users
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.utils.dates import format_date, format_db_datetime, utc_now_iso
@@ -192,11 +193,77 @@ class StockSpec(EntitySpec):
 		]
 
 
+class CashierSpec(EntitySpec):
+	"""Till cashiers: Users holding the Crenya POS User role.
+
+	Users with a PIN hash are always included, so a cashier who loses the role,
+	is disabled, or is removed from the profile's Applicable for Users comes back
+	with `enabled: 0` (profile changes bump `modified` of the affected users, see
+	`pos_profile_on_update`). `pin_hash` is only sent for enabled cashiers.
+	"""
+
+	doctype = "User"
+	fields = ("name", "full_name", "enabled")
+
+	def _has_pin_hash(self):
+		return frappe.get_meta("User").has_field(PIN_HASH_FIELD)
+
+	def select(self, table):
+		columns = super().select(table)
+		if self._has_pin_hash():
+			columns.append(getattr(table, PIN_HASH_FIELD))
+		return columns
+
+	def filters(self, table, ctx):
+		has_role = frappe.qb.DocType("Has Role")
+		holders = (
+			frappe.qb.from_(has_role)
+			.select(has_role.parent)
+			.where((has_role.parenttype == "User") & (has_role.role == POS_USER_ROLE))
+		)
+		candidate = table.name.isin(holders)
+		allowed = profile_users(ctx.profile)
+		if allowed:
+			candidate = candidate & table.name.isin(allowed)
+		if self._has_pin_hash():
+			pin_hash = getattr(table, PIN_HASH_FIELD)
+			candidate = candidate | (pin_hash.notnull() & (pin_hash != ""))
+		return [table.name != "Guest", candidate]
+
+	def build(self, rows, ctx):
+		names = [row.name for row in rows]
+		holders = set()
+		if names:
+			holders = set(
+				frappe.get_all(
+					"Has Role",
+					filters={"parent": ["in", names], "parenttype": "User", "role": POS_USER_ROLE},
+					pluck="parent",
+				)
+			)
+		allowed = set(profile_users(ctx.profile))
+
+		records = []
+		for row in rows:
+			enabled = cint(row.enabled) and row.name in holders and (not allowed or row.name in allowed)
+			records.append(
+				{
+					"name": row.name,
+					"full_name": row.full_name,
+					"enabled": 1 if enabled else 0,
+					"pin_hash": (row.get(PIN_HASH_FIELD) or None) if enabled else None,
+					"modified": format_db_datetime(row.modified),
+				}
+			)
+		return records
+
+
 ENTITIES = {
 	"item": ItemSpec(),
 	"item_price": ItemPriceSpec(),
 	"customer": CustomerSpec(),
 	"stock": StockSpec(),
+	"cashier": CashierSpec(),
 }
 
 

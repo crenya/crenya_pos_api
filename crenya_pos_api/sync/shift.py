@@ -9,6 +9,7 @@ at the time of the push.
 import frappe
 from frappe.utils import cint, flt, get_system_timezone
 
+from crenya_pos_api.sync.cashier import enabled_user
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
 from crenya_pos_api.utils.dates import format_db_datetime, to_site_naive
@@ -23,11 +24,13 @@ def _money(value, precision):
 
 
 def _resolve_cashier(data, notes):
+	"""Same rule as the invoice's POS Cashier: an existing, enabled user; else the device user."""
 	cashier = data.get("cashier")
-	if cashier and frappe.db.exists("User", cashier):
-		return cashier
+	user = enabled_user(cashier)
+	if user:
+		return user
 	if cashier:
-		notes.append(f"Till cashier {cashier} is not a user; recorded as {frappe.session.user}")
+		notes.append(f"Till cashier {cashier} is not an enabled user; recorded as {frappe.session.user}")
 	return frappe.session.user
 
 

@@ -48,6 +48,44 @@ CUSTOM_FIELDS = {
 			"search_index": 1,
 			"print_hide": 1,
 		},
+		{
+			"fieldname": "crenya_cashier",
+			"fieldtype": "Link",
+			"label": "POS Cashier",
+			"options": "User",
+			"insert_after": "crenya_shift_id",
+			"read_only": 1,
+			"no_copy": 1,
+			"in_standard_filter": 1,
+			"print_hide": 1,
+		},
+	],
+	"User": [
+		# own section on the Roles & Permissions tab, right after the roles (where
+		# the Crenya POS User role is granted)
+		{
+			"fieldname": "crenya_pos_section",
+			"fieldtype": "Section Break",
+			"label": "Crenya POS",
+			"insert_after": "roles",
+		},
+		{
+			"fieldname": "crenya_pos_pin",
+			"fieldtype": "Password",
+			"label": "POS PIN",
+			"description": "4–6 digits. Used to unlock Crenya POS tills.",  # noqa: RUF001
+			"insert_after": "crenya_pos_section",
+			"no_copy": 1,
+		},
+		{
+			"fieldname": "crenya_pos_pin_hash",
+			"fieldtype": "Data",
+			"label": "POS PIN Hash",
+			"insert_after": "crenya_pos_pin",
+			"hidden": 1,
+			"read_only": 1,
+			"no_copy": 1,
+		},
 	],
 	"Customer": [
 		{

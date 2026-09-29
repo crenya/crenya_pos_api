@@ -79,3 +79,25 @@ def to_site_naive(moment, time_zone):
 		except (ZoneInfoNotFoundError, ValueError):
 			target = timezone.utc
 	return moment.astimezone(target).replace(tzinfo=None)
+
+
+def site_naive_to_utc_iso(value, time_zone):
+	"""Naive wall-clock datetime in `time_zone` (how Frappe stores Datetime fields) -> `...Z` UTC ISO-8601.
+
+	Accepts a datetime or a DB string; an unknown or empty time zone is read as UTC.
+	"""
+	if value is None or value == "":
+		return None
+	if isinstance(value, str):
+		value = datetime.fromisoformat(value.strip())
+	if value.tzinfo is None:
+		source = timezone.utc
+		if time_zone:
+			from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+			try:
+				source = ZoneInfo(time_zone)
+			except (ZoneInfoNotFoundError, ValueError):
+				source = timezone.utc
+		value = value.replace(tzinfo=source)
+	return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

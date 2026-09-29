@@ -28,6 +28,11 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   the shift was pushed). `opened_at` / `closed_at` arrive as UTC and are stored
   in the site time zone. Read-only in desk (Accounts Manager / Accounts User /
   System Manager can read; only System Manager can delete).
+- DocType **Crenya POS Release** (named after its `version`) with child table
+  **Crenya POS Release Artifact** (target, private file, signature): till
+  builds offered to the tills' updater (see *Till updates*). System Manager
+  manages releases; Crenya POS User and Accounts User can read them.
+  **Crenya POS Device** has an *Update Channel* (`stable` / `beta`).
 - Role **Crenya POS User**.
 - Custom fields (created on install and on every migrate):
   - Sales Invoice: `crenya_local_id` (unique), `crenya_offline_number`, `crenya_device`,
@@ -95,7 +100,8 @@ Optional `site_config.json` keys:
 
 All methods are `POST {server}/api/method/crenya_pos_api.api.<module>.<fn>` with
 `Authorization: token <api_key>:<api_secret>`, except `auth.login`, which the
-till calls without auth to exchange username + password for that key pair. Money and quantities are decimal
+till calls without auth to exchange username + password for that key pair, and
+the `update.*` methods, which are `GET` (same token auth). Money and quantities are decimal
 strings. The full contract (payloads, error codes, idempotency rules) is the
 sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 
@@ -110,6 +116,8 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty |
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
+| `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
+| `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
 
 #### Shifts
 
@@ -179,6 +187,46 @@ Security notes:
   user's API keys; a PIN never grants access to ERPNext.
 - The hash also appears in the User's version history (visible to users who
   can read the User's versions, normally System Managers).
+
+#### Till updates
+
+Tills update themselves from the ERPNext site with the Tauri updater: they
+ask `update.check` for a newer build and download it through
+`update.download`, both authorized like every other call (enabled device,
+registered to the calling user, POS Profile access).
+
+Publishing a release:
+
+1. Let CI build the till. For Windows it produces the NSIS installer
+   (`…_x64-setup.exe`) and its signature file (`…_x64-setup.exe.sig`).
+2. In ERPNext create a **Crenya POS Release**. *Version* is the till's
+   version as `X.Y.Z` (for example `0.2.0`, no `v` and no pre-release suffix)
+   and cannot be changed later; add *Notes* if the till should show any.
+3. In *Artifacts* add one row per target: *Target* `windows-x86_64`
+   (`windows-aarch64`, `darwin-aarch64`, `darwin-x86_64` and `linux-x86_64`
+   are also accepted), *File*: attach the `.exe` as a **private** file (public
+   attachments are refused), *Signature*: paste the whole content of the
+   `.exe.sig` file. Each target can appear only once.
+4. Tick **Published** and save. *Publication Date* is set to now if it is
+   empty.
+
+A till is offered the newest published release of its channel that is
+greater than the version it runs (semantic comparison: `0.1.10` is newer
+than `0.1.9`) and that has an artifact for its target; otherwise
+`update.check` answers HTTP 204 and the till stays as it is. Unticking
+*Published* withdraws a release from tills that have not installed it yet.
+
+Channels: every release is `stable` or `beta`, and every **Crenya POS
+Device** has an *Update Channel* (default `stable`, set by a System Manager on
+the device). Stable tills only receive stable releases; beta tills receive
+beta and stable releases, so a newer stable build also reaches them. Try a
+build on a few tills by publishing it as `beta` and switching those devices
+to the beta channel.
+
+Tills verify the signature with the updater public key built into the app
+before installing and reject any file that does not match, so a replaced or
+corrupted installer is never installed. A release therefore only works with
+installers signed by the CI signing key of the till.
 
 #### Tests
 

@@ -8,7 +8,7 @@ app_license = "mit"
 # Apps
 # ------------------
 
-# required_apps = []
+required_apps = ["erpnext"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
@@ -83,7 +83,8 @@ app_license = "mit"
 # ------------
 
 # before_install = "crenya_pos_api.install.before_install"
-# after_install = "crenya_pos_api.install.after_install"
+after_install = "crenya_pos_api.setup.install.after_install"
+after_migrate = "crenya_pos_api.setup.install.after_migrate"
 
 # Uninstallation
 # ------------
@@ -117,13 +118,13 @@ app_license = "mit"
 # -----------
 # Permissions evaluated in scripted ways
 
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
-#
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+permission_query_conditions = {
+	"Crenya POS Device": "crenya_pos_api.permissions.device_query_conditions",
+}
+
+has_permission = {
+	"Crenya POS Device": "crenya_pos_api.permissions.device_has_permission",
+}
 
 # DocType Class
 # ---------------
@@ -137,16 +138,27 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"User": {
+		# hash a newly entered POS PIN and clear it before Frappe stores Password fields;
+		# before_validate also runs when flags.ignore_validate skips validate
+		"before_validate": "crenya_pos_api.sync.cashier.user_validate",
+		"validate": "crenya_pos_api.sync.cashier.user_validate",
+	},
+	"POS Profile": {
+		# tills learn about cashiers added to / removed from Applicable for Users
+		"on_update": "crenya_pos_api.sync.cashier.pos_profile_on_update",
+	},
+}
 
 # Scheduled Tasks
 # ---------------
+
+scheduler_events = {
+	"daily": [
+		"crenya_pos_api.tasks.purge_old_sync_events",
+	],
+}
 
 # scheduler_events = {
 # 	"all": [
@@ -169,7 +181,7 @@ app_license = "mit"
 # Testing
 # -------
 
-# before_tests = "crenya_pos_api.install.before_tests"
+before_tests = "crenya_pos_api.setup.install.before_tests"
 
 # Overriding Methods
 # ------------------------------
@@ -179,7 +191,7 @@ app_license = "mit"
 # }
 #
 # each overriding function accepts a `data` argument;
-# generated from the base implementation of the doctype dashboard,
+# built from the base implementation of the doctype dashboard,
 # along with any modifications made in other Frappe apps
 # override_doctype_dashboards = {
 # 	"Task": "crenya_pos_api.task.get_dashboard_data"
@@ -246,4 +258,3 @@ app_license = "mit"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

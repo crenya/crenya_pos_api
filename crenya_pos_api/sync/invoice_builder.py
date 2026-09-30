@@ -5,6 +5,8 @@ ignore_permissions); the till's numbers are only trusted after the server has
 recomputed them.
 """
 
+import json
+
 import frappe
 from frappe.utils import cint, flt
 
@@ -35,6 +37,9 @@ ORIGINAL_FIELDS = [
 ]
 
 LOYALTY_RETURN_MESSAGE = "Return this invoice from ERPNext: it was partly paid with loyalty points"
+
+# Till lines keep the names of the promotions applied to them in the row flags until submit.
+PRICING_RULES_FLAG = "crenya_pricing_rules"
 
 
 def resolve_customer(ctx, data):
@@ -202,6 +207,8 @@ def _append_items(doc, ctx, lines, return_rows):
 			row["cost_center"] = profile.cost_center
 		if line.get("item_tax_template"):
 			row["item_tax_template"] = line["item_tax_template"]
+		if line.get("is_free_item"):
+			row["is_free_item"] = 1
 
 		if not rate:
 			# a zero rate with a price list rate would be re-priced by ERPNext
@@ -216,7 +223,25 @@ def _append_items(doc, ctx, lines, return_rows):
 		if return_rows:
 			row["sales_invoice_item"] = return_rows[line["line_no"]]
 
-		doc.append("items", row)
+		child = doc.append("items", row)
+		if line.get("pricing_rules"):
+			child.flags[PRICING_RULES_FLAG] = json.dumps(line["pricing_rules"])
+
+
+def restore_pricing_rules(doc, method=None):
+	"""Sales Invoice `before_submit`: store the till's promotion names on the item rows.
+
+	They are kept out of the rows while ERPNext validates: with `ignore_pricing_rule`
+	set, validating a saved invoice whose rows name pricing rules undoes those rules
+	(clears `pricing_rules`, resets a discount percentage rule's rate to the price
+	list rate), and a row with `pricing_rules` and a discount percentage is re-priced
+	from the price list rate. `before_submit` runs after the last validation, so the
+	till's rates stay as sent and the names are saved with the submitted invoice.
+	"""
+	for row in doc.get("items") or []:
+		value = row.flags.get(PRICING_RULES_FLAG)
+		if value:
+			row.pricing_rules = value
 
 
 def _payable_total(doc):

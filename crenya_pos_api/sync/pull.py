@@ -12,12 +12,13 @@ Profile.
 from datetime import timedelta
 
 import frappe
-from frappe.utils import cint, get_datetime, now_datetime
+from frappe.utils import cint, get_datetime, getdate, now_datetime, nowdate
 
 from crenya_pos_api.sync.cashier import PIN_HASH_FIELD
 from crenya_pos_api.sync.context import POS_USER_ROLE, get_pull_lag_seconds, money_precision, profile_users
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
+from crenya_pos_api.sync.promotions import rule_is_active
 from crenya_pos_api.utils.dates import format_date, format_db_datetime, utc_now_iso
 from crenya_pos_api.utils.decimal import format_money, format_number
 
@@ -67,7 +68,16 @@ class EntitySpec:
 
 class ItemSpec(EntitySpec):
 	doctype = "Item"
-	fields = ("name", "item_code", "item_name", "item_group", "stock_uom", "is_stock_item", "disabled")
+	fields = (
+		"name",
+		"item_code",
+		"item_name",
+		"item_group",
+		"brand",
+		"stock_uom",
+		"is_stock_item",
+		"disabled",
+	)
 
 	def filters(self, table, ctx):
 		conditions = [table.is_sales_item == 1]
@@ -96,6 +106,7 @@ class ItemSpec(EntitySpec):
 					"item_name": row.item_name,
 					"item_name_ar": row.get("crenya_item_name_ar") or None,
 					"item_group": row.item_group,
+					"brand": row.brand or None,
 					"stock_uom": row.stock_uom,
 					"is_stock_item": cint(row.is_stock_item),
 					"disabled": cint(row.disabled),
@@ -258,23 +269,189 @@ class CashierSpec(EntitySpec):
 		return records
 
 
+class ItemGroupSpec(EntitySpec):
+	"""The whole Item Group tree (a small table): tills resolve item group promotions with it."""
+
+	doctype = "Item Group"
+	fields = ("name", "parent_item_group", "lft", "rgt")
+
+	def build(self, rows, ctx):
+		return [
+			{
+				"name": row.name,
+				"parent_item_group": row.parent_item_group or None,
+				"lft": cint(row.lft),
+				"rgt": cint(row.rgt),
+				"modified": format_db_datetime(row.modified),
+			}
+			for row in rows
+		]
+
+
+class PricingRuleSpec(EntitySpec):
+	"""Promotions: Pricing Rules the till evaluates offline.
+
+	Every changed rule is sent; rules the till cannot evaluate (see
+	`promotions.rule_qualifies`), disabled rules and rules whose `valid_upto` has
+	passed arrive with `disabled: 1`, so a till drops a rule that stops qualifying.
+	"""
+
+	doctype = "Pricing Rule"
+	# qualification inputs, read but not sent as such
+	check_fields = (
+		"disable",
+		"selling",
+		"company",
+		"currency",
+		"condition",
+		"coupon_code_based",
+		"apply_rule_on_other",
+		"margin_type",
+		"margin_rate_or_amount",
+		"validate_applied_rule",
+	)
+	fields = (
+		"name",
+		"title",
+		"priority",
+		"apply_on",
+		"mixed_conditions",
+		"is_cumulative",
+		"applicable_for",
+		"customer",
+		"customer_group",
+		"min_qty",
+		"max_qty",
+		"min_amt",
+		"max_amt",
+		"valid_from",
+		"valid_upto",
+		"price_or_product_discount",
+		"rate_or_discount",
+		"rate",
+		"discount_percentage",
+		"discount_amount",
+		"apply_discount_on_rate",
+		"apply_multiple_pricing_rules",
+		"for_price_list",
+		"warehouse",
+		"threshold_percentage",
+		"same_item",
+		"free_item",
+		"free_qty",
+		"free_item_uom",
+		"free_item_rate",
+		"round_free_qty",
+		"is_recursive",
+		"recurse_for",
+		"apply_recursion_over",
+		"promotional_scheme",
+		"rule_description",
+		*check_fields,
+	)
+	flag_fields = (
+		"mixed_conditions",
+		"is_cumulative",
+		"apply_discount_on_rate",
+		"apply_multiple_pricing_rules",
+		"same_item",
+		"round_free_qty",
+		"is_recursive",
+	)
+	money_fields = ("min_amt", "max_amt", "rate", "discount_amount", "free_item_rate")
+	number_fields = (
+		"min_qty",
+		"max_qty",
+		"discount_percentage",
+		"threshold_percentage",
+		"free_qty",
+		"recurse_for",
+		"apply_recursion_over",
+	)
+	link_fields = (
+		"customer",
+		"customer_group",
+		"for_price_list",
+		"warehouse",
+		"free_item",
+		"free_item_uom",
+		"promotional_scheme",
+		"rule_description",
+	)
+
+	def select(self, table):
+		# only columns this ERPNext version has (v15 / v16)
+		meta = frappe.get_meta(self.doctype)
+		return [getattr(table, field) for field in self.fields if field == "name" or meta.has_field(field)]
+
+	def build(self, rows, ctx):
+		names = [row.name for row in rows]
+		items = _group_children(
+			"Pricing Rule Item Code", names, ["parent", "item_code", "uom"], "Pricing Rule"
+		)
+		groups = _group_children("Pricing Rule Item Group", names, ["parent", "item_group"], "Pricing Rule")
+		brands = _group_children("Pricing Rule Brand", names, ["parent", "brand"], "Pricing Rule")
+		today = getdate(nowdate())
+		money = money_precision()
+		meta = frappe.get_meta(self.doctype)
+		precisions = {
+			field: frappe.get_precision(self.doctype, field) if meta.has_field(field) else None
+			for field in self.number_fields
+		}
+
+		records = []
+		for row in rows:
+			record = {
+				"name": row.name,
+				"title": row.get("title") or row.name,
+				"disabled": 0 if rule_is_active(row, ctx.company, today, ctx.currency) else 1,
+				"priority": cint(row.get("priority")),
+				"apply_on": row.get("apply_on"),
+				"items": [
+					{"item_code": child.item_code, "uom": child.uom or None}
+					for child in items.get(row.name, [])
+					if child.item_code
+				],
+				"item_groups": [child.item_group for child in groups.get(row.name, []) if child.item_group],
+				"brands": [child.brand for child in brands.get(row.name, []) if child.brand],
+				"applicable_for": row.get("applicable_for") or "",
+				"valid_from": format_date(row.get("valid_from")),
+				"valid_upto": format_date(row.get("valid_upto")),
+				"price_or_product_discount": row.get("price_or_product_discount"),
+				"rate_or_discount": row.get("rate_or_discount") or None,
+				"modified": format_db_datetime(row.modified),
+			}
+			for field in self.flag_fields:
+				record[field] = cint(row.get(field))
+			for field in self.money_fields:
+				record[field] = format_money(row.get(field) or 0, money)
+			for field in self.number_fields:
+				record[field] = format_number(row.get(field) or 0, precisions[field])
+			for field in self.link_fields:
+				record[field] = row.get(field) or None
+			records.append(record)
+		return records
+
+
 ENTITIES = {
 	"item": ItemSpec(),
 	"item_price": ItemPriceSpec(),
 	"customer": CustomerSpec(),
 	"stock": StockSpec(),
 	"cashier": CashierSpec(),
+	"item_group": ItemGroupSpec(),
+	"pricing_rule": PricingRuleSpec(),
 }
 
 
-def _group_children(doctype, parents, fields):
+def _group_children(doctype, parents, fields, parenttype="Item"):
 	"""One query for all child rows of the page, grouped by parent."""
 	grouped = {}
 	if not parents:
 		return grouped
 	rows = frappe.get_all(
 		doctype,
-		filters={"parent": ["in", parents], "parenttype": "Item"},
+		filters={"parent": ["in", parents], "parenttype": parenttype},
 		fields=fields,
 		order_by="parent asc, idx asc",
 	)

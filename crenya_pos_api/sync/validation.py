@@ -23,6 +23,7 @@ MAX_ID_LENGTH = 140
 MAX_SHIFT_PAYMENT_ROWS = 50
 MAX_SHIFT_INVOICE_IDS = 100000
 MAX_NOTES_LENGTH = 2000
+MAX_PRICING_RULES_PER_LINE = 20
 
 _EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,139}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -161,6 +162,26 @@ def _validate_time(value, field):
 	return value
 
 
+def _validate_pricing_rules(value, field):
+	"""Optional list of Pricing Rule names applied to a line (stored for reporting only)."""
+	if value is None:
+		return []
+	if not isinstance(value, list):
+		_fail(f"{field} must be a list")
+	if len(value) > MAX_PRICING_RULES_PER_LINE:
+		_fail(f"{field} may have at most {MAX_PRICING_RULES_PER_LINE} entries")
+	names = []
+	for index, name in enumerate(value):
+		label = f"{field}[{index}]"
+		if not isinstance(name, str) or not name.strip():
+			_fail(f"{label} must be a non-empty string")
+		name = name.strip()
+		if len(name) > MAX_ID_LENGTH:
+			_fail(f"{label} is longer than {MAX_ID_LENGTH} characters")
+		names.append(name)
+	return list(dict.fromkeys(names))
+
+
 def _validate_item(row, index, is_return):
 	label = f"items[{index}]"
 	if not isinstance(row, dict):
@@ -215,6 +236,9 @@ def _validate_item(row, index, is_return):
 		"item_tax_template": _optional_str(row, "item_tax_template", f"{label}.item_tax_template"),
 		"against_line_no": against_line_no,
 		"against_row_name": against_row_name,
+		# optional: tills without promotions omit both keys
+		"pricing_rules": _validate_pricing_rules(row.get("pricing_rules"), f"{label}.pricing_rules"),
+		"is_free_item": _flag(row.get("is_free_item"), f"{label}.is_free_item"),
 	}
 
 

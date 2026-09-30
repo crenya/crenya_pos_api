@@ -259,8 +259,8 @@ def _payments_due(doc):
 
 
 def check_grand_total(doc, data):
-	precision = money_precision()
-	tolerance = get_total_tolerance()
+	precision = money_precision(doc.currency)
+	tolerance = get_total_tolerance(precision)
 	server_total = quantize(doc.grand_total, precision)
 	client_total = data["client_totals"]["grand_total"]
 	if not within_tolerance(server_total, client_total, tolerance):
@@ -296,8 +296,8 @@ def _ensure_account(doc, row):
 def reconcile_payments(doc, default_mode, notes):
 	"""Payments must equal the payable total (less any loyalty redemption); a difference within
 	tolerance goes to the default/cash row."""
-	precision = money_precision()
-	tolerance = get_total_tolerance()
+	precision = money_precision(doc.currency)
+	tolerance = get_total_tolerance(precision)
 	payable = quantize(_payments_due(doc), precision)
 	paid = sum((quantize(row.amount, precision) for row in doc.get("payments") or []), as_decimal(0))
 	difference = payable - paid

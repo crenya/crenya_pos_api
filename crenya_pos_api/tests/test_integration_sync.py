@@ -647,7 +647,10 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertEqual(templates[fixtures.ZERO_SALES_TEMPLATE]["taxes"][0]["rate"], "0")
 
 		self.assertIs(data["profile"]["loyalty_enabled"], True)
-		self.assertEqual(data["company"]["phone_country_code"], "+968")
+		from frappe.geo.country_info import get_country_info
+
+		country = frappe.db.get_value("Company", fixtures.COMPANY, "country")
+		self.assertEqual(data["company"]["phone_country_code"], get_country_info(country).get("isd"))
 
 	def test_invoice_with_alternate_tax_template(self):
 		payload = self.sale_payload(

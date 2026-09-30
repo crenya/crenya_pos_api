@@ -49,7 +49,7 @@
 		</p>
 		<dl>
 			{% if invoice.seller_vatin %}
-			<div class="row"><dt>VAT number</dt><dd>{{ invoice.seller_vatin|e }}</dd><dt class="ar" dir="rtl" lang="ar">الرقم الضريبي</dt></div>
+			<div class="row"><dt>Tax number</dt><dd>{{ invoice.seller_vatin|e }}</dd><dt class="ar" dir="rtl" lang="ar">الرقم الضريبي</dt></div>
 			{% endif %}
 			{% if invoice.cr_number %}
 			<div class="row"><dt>CR number</dt><dd>{{ invoice.cr_number|e }}</dd><dt class="ar" dir="rtl" lang="ar">رقم السجل التجاري</dt></div>
@@ -62,8 +62,8 @@
 			<div class="row"><dt>Receipt number</dt><dd>{{ invoice.offline_number|e }}</dd><dt class="ar" dir="rtl" lang="ar">رقم الإيصال</dt></div>
 			{% endif %}
 			<div class="row"><dt>Date and time</dt><dd>{{ invoice.posting_date|e }}{% if invoice.posting_time %} {{ invoice.posting_time|e }}{% endif %}</dd><dt class="ar" dir="rtl" lang="ar">التاريخ والوقت</dt></div>
-			<div class="row"><dt>Total incl. VAT</dt><dd>{{ invoice.grand_total|e }} {{ invoice.currency|e }}</dd><dt class="ar" dir="rtl" lang="ar">الإجمالي شامل الضريبة</dt></div>
-			<div class="row"><dt>VAT</dt><dd>{{ invoice.vat_total|e }} {{ invoice.currency|e }}</dd><dt class="ar" dir="rtl" lang="ar">ضريبة القيمة المضافة</dt></div>
+			<div class="row"><dt>Total incl. tax</dt><dd>{{ invoice.grand_total|e }} {{ invoice.currency|e }}</dd><dt class="ar" dir="rtl" lang="ar">الإجمالي شامل الضريبة</dt></div>
+			<div class="row"><dt>Tax</dt><dd>{{ invoice.vat_total|e }} {{ invoice.currency|e }}</dd><dt class="ar" dir="rtl" lang="ar">الضريبة</dt></div>
 			{% if invoice.einvoicing %}
 			<div class="row"><dt>E-invoice status</dt>
 				<dd>{% if invoice.fawtara_status %}<span class="status {% if invoice.fawtara_status == 'Accepted' %}ok{% elif invoice.fawtara_status == 'Rejected' %}bad{% else %}warn{% endif %}">{{ invoice.fawtara_status|e }}{% if invoice.fawtara_status_ar %} · <span dir="rtl" lang="ar">{{ invoice.fawtara_status_ar|e }}</span>{% endif %}</span>{% else %}Pending · <span dir="rtl" lang="ar">قيد المعالجة</span>{% endif %}</dd>

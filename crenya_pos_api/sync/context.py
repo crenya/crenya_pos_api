@@ -13,6 +13,7 @@ from crenya_pos_api.sync.errors import (
 	UnsupportedTaxError,
 	raise_api_error,
 )
+from crenya_pos_api.utils.decimal import as_decimal, smallest_unit_tolerance
 
 PROTOCOL_VERSION = 1
 DEVICE_DOCTYPE = "Crenya POS Device"
@@ -20,7 +21,8 @@ EVENT_DOCTYPE = "Crenya Sync Event"
 POS_USER_ROLE = "Crenya POS User"
 SUPPORTED_CHARGE_TYPES = ("On Net Total",)
 
-DEFAULT_TOTAL_TOLERANCE = "0.010"
+# default totals tolerance: this many smallest units of the invoice currency
+TOTAL_TOLERANCE_UNITS = 10
 DEFAULT_PULL_LAG_SECONDS = 5
 
 
@@ -140,9 +142,13 @@ def get_device_context(device_id, touch=True):
 	return DeviceContext(device=device, profile=profile)
 
 
-def get_total_tolerance():
+def get_total_tolerance(precision):
+	"""Allowed till/server difference: `site_config.crenya_pos_total_tolerance` when set, else
+	10 x the smallest unit of a currency with `precision` decimals (Decimal)."""
 	value = frappe.conf.get("crenya_pos_total_tolerance")
-	return abs(flt(DEFAULT_TOTAL_TOLERANCE if value in (None, "") else value))
+	if value in (None, ""):
+		return smallest_unit_tolerance(precision, TOTAL_TOLERANCE_UNITS)
+	return abs(as_decimal(flt(value)))
 
 
 def get_pull_lag_seconds():
@@ -163,8 +169,9 @@ def is_rounded_total_disabled(profile):
 	return cint(frappe.db.get_single_value("Global Defaults", "disable_rounded_total"))
 
 
-def money_precision():
-	return frappe.get_precision("Sales Invoice", "grand_total")
+def money_precision(currency=None):
+	"""Decimals of money amounts (the rules ERPNext applies to Sales Invoice totals)."""
+	return frappe.get_precision("Sales Invoice", "grand_total", currency=currency)
 
 
 def qty_precision():

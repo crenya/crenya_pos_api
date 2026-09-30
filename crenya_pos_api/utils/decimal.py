@@ -101,6 +101,12 @@ def to_flt(value, precision=None, field="value"):
 	return flt(f"{parsed:f}", precision)
 
 
+def smallest_unit_tolerance(precision, units):
+	"""`units` x the smallest unit of a currency with `precision` decimals (10 units: 3 -> 0.010, 2 -> 0.10)."""
+	precision = max(int(precision or 0), 0)
+	return (Decimal(units) * Decimal(1).scaleb(-precision)).quantize(Decimal(1).scaleb(-precision))
+
+
 def within_tolerance(a, b, tolerance):
 	"""True when |a - b| <= tolerance, compared exactly in decimal arithmetic."""
 	return abs(as_decimal(a) - as_decimal(b)) <= as_decimal(tolerance)

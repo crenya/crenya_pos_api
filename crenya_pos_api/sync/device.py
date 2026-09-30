@@ -3,7 +3,7 @@
 import re
 
 import frappe
-from frappe.utils import cint, now
+from frappe.utils import cint, get_system_timezone, now
 
 from crenya_pos_api.sync.context import (
 	DEVICE_DOCTYPE,
@@ -22,11 +22,16 @@ from crenya_pos_api.sync.errors import (
 	InvalidRequestError,
 	raise_api_error,
 )
+from crenya_pos_api.sync.locale_data import (
+	cash_denominations,
+	company_phone_country_code,
+	currency_info,
+	phone_country_codes,
+)
 from crenya_pos_api.sync.loyalty import loyalty_enabled
 from crenya_pos_api.sync.taxes import get_tax_templates
 from crenya_pos_api.utils.dates import utc_now_iso
 from crenya_pos_api.utils.decimal import format_money, format_number
-from crenya_pos_api.utils.phone import phone_country_code
 
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,139}$")
 _SHORT_RE = re.compile(r"^D(\d+)$")
@@ -179,14 +184,17 @@ def _company_address_lines(profile, company):
 	return [line for line in lines if line]
 
 
-def _company_info(profile):
-	company = profile.company
+def _company_row(company):
 	meta = frappe.get_meta("Company")
 	fields = ["name", "company_name", "tax_id", "phone_no", "email", "country"]
 	for custom in ("crenya_company_name_ar", "crenya_cr_number"):
 		if meta.has_field(custom):
 			fields.append(custom)
-	row = frappe.db.get_value("Company", company, fields, as_dict=True) or frappe._dict()
+	return frappe.db.get_value("Company", company, fields, as_dict=True) or frappe._dict()
+
+
+def _company_info(profile, row):
+	company = profile.company
 	return {
 		"name": company,
 		"company_name": row.get("company_name") or company,
@@ -196,7 +204,7 @@ def _company_info(profile):
 		"address_lines": _company_address_lines(profile, company),
 		"phone": row.get("phone_no") or None,
 		"email": row.get("email") or None,
-		"phone_country_code": phone_country_code(row.get("country")),
+		"phone_country_code": company_phone_country_code(row.get("country")),
 	}
 
 
@@ -273,8 +281,9 @@ def _item_tax_templates(company):
 def bootstrap(ctx):
 	profile = ctx.profile
 	assert_supported_taxes(profile)
-	precision = money_precision()
 	currency = ctx.currency
+	precision = money_precision(currency)
+	company = _company_row(profile.company)
 	smallest_fraction = frappe.get_cached_value("Currency", currency, "smallest_currency_fraction_value")
 
 	return {
@@ -308,7 +317,11 @@ def bootstrap(ctx):
 				cint(frappe.db.get_single_value("Stock Settings", "allow_negative_stock"))
 			),
 		},
-		"company": _company_info(profile),
+		"company": _company_info(profile, company),
+		"currency": currency_info(currency, precision),
+		"phone_country_codes": phone_country_codes(company.get("country") or None),
+		"cash_denominations": cash_denominations(currency),
+		"site_timezone": get_system_timezone(),
 		"payment_methods": _payment_methods(profile),
 		"taxes": _taxes(profile),
 		"item_tax_templates": _item_tax_templates(profile.company),

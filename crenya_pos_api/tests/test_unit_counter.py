@@ -5,6 +5,7 @@ import unittest
 from decimal import Decimal
 
 from crenya_pos_api.sync.errors import SyncError
+from crenya_pos_api.sync.invoice_builder import LOYALTY_RETURN_MESSAGE, assert_returnable_at_till
 from crenya_pos_api.sync.loyalty import check_redemption, max_redeemable_amount
 from crenya_pos_api.sync.taxes import is_offline_template, resolve_invoice_template, select_tax_templates
 from crenya_pos_api.sync.validation import validate_invoice_payload
@@ -59,6 +60,24 @@ class TestLoyaltyPayload(unittest.TestCase):
 		payload = make_return()
 		payload["loyalty"] = {"points": 10, "amount": "0.100"}
 		self.assertInvalid(payload, "cannot be redeemed on a return")
+
+
+class TestReturnOfLoyaltyInvoice(unittest.TestCase):
+	def test_invoice_without_points_is_returnable(self):
+		for amount in (None, 0, 0.0, "0", 0.0004):
+			with self.subTest(amount=amount):
+				assert_returnable_at_till(amount, 3)
+
+	def test_invoice_partly_paid_with_points_is_refused(self):
+		for amount in (0.2, "1.200", 0.0005):
+			with self.subTest(amount=amount), self.assertRaises(SyncError) as ctx:
+				assert_returnable_at_till(amount, 3)
+			self.assertEqual(ctx.exception.code, "validation")
+			self.assertEqual(
+				ctx.exception.message,
+				"Return this invoice from ERPNext: it was partly paid with loyalty points",
+			)
+		self.assertEqual(LOYALTY_RETURN_MESSAGE, ctx.exception.message)
 
 
 class TestRedemptionChecks(unittest.TestCase):

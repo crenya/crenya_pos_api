@@ -31,7 +31,10 @@ ORIGINAL_FIELDS = [
 	"update_stock",
 	"currency",
 	"loyalty_program",
+	"loyalty_amount",
 ]
+
+LOYALTY_RETURN_MESSAGE = "Return this invoice from ERPNext: it was partly paid with loyalty points"
 
 
 def resolve_customer(ctx, data):
@@ -52,6 +55,12 @@ def resolve_customer(ctx, data):
 		return ctx.profile.customer
 
 	raise SyncError(VALIDATION, "Invoice has no customer and the POS Profile has no default customer")
+
+
+def assert_returnable_at_till(loyalty_amount, precision):
+	"""Invoices partly paid with loyalty points are returned from ERPNext, not from the till."""
+	if quantize(loyalty_amount or 0, precision) > 0:
+		raise SyncError(VALIDATION, LOYALTY_RETURN_MESSAGE)
 
 
 def resolve_return_against(ctx, data):
@@ -81,6 +90,7 @@ def resolve_return_against(ctx, data):
 		raise SyncError(VALIDATION, f"{original.name} is itself a return")
 	if original.company != ctx.company:
 		raise SyncError(VALIDATION, f"Original invoice {original.name} belongs to another company")
+	assert_returnable_at_till(original.loyalty_amount, money_precision())
 	return original
 
 

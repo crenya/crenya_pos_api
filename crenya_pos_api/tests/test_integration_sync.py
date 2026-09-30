@@ -584,6 +584,8 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertEqual(lookup["items"][0]["row_name"], original.items[0].name)
 		self.assertEqual(lookup["items"][0]["returned_qty"], "1")
 		self.assertEqual(lookup["items"][0]["returnable_qty"], "2")
+		self.assertEqual(lookup["taxes_and_charges"], fixtures.TAX_TEMPLATE)
+		self.assertEqual(lookup["loyalty_amount"], "0.000")
 
 		by_offline_number = returns_api.get_invoice_for_return(
 			device_id=self.device_id, invoice=sale["offline_number"]
@@ -665,6 +667,8 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertAlmostEqual(doc.net_total, 1.2, places=3)
 		self.assertAlmostEqual(doc.total_taxes_and_charges, 0.06, places=3)
 		self.assertFalse(frappe.db.get_value(EVENT, event["event_id"], "note"))
+		lookup = returns_api.get_invoice_for_return(device_id=self.device_id, invoice=doc.name)
+		self.assertEqual(lookup["taxes_and_charges"], fixtures.EXCLUSIVE_TEMPLATE)
 
 		zero = self.assertOk(
 			self.push_one(self.event(self.sale_payload(taxes_and_charges=fixtures.ZERO_SALES_TEMPLATE)))
@@ -753,6 +757,23 @@ class TestCrenyaSync(FrappeTestCase):
 		)
 		self.assertEqual(sum(redeemed), -20)
 		# 30 earned - 20 redeemed + 1 earned on the 1.200 sale
+		self.assertEqual(self.loyalty_details(customer)["loyalty_points"], 11)
+
+		# a till may not return an invoice partly paid with points
+		lookup = returns_api.get_invoice_for_return(device_id=self.device_id, invoice=doc.name)
+		self.assertEqual(lookup["loyalty_amount"], "0.200")
+		self.assertEqual(lookup["taxes_and_charges"], fixtures.TAX_TEMPLATE)
+		for reference in (
+			{"return_against_local_id": payload["local_id"]},
+			{"return_against": doc.name, "return_against_local_id": None},
+		):
+			ret = self.return_payload(payload, [(fixtures.MILK, "-1", "0.600", 1)], **reference)
+			result = self.assertError(self.push_one(self.event(ret)), "validation", False)
+			self.assertEqual(
+				result["error"]["message"],
+				"Return this invoice from ERPNext: it was partly paid with loyalty points",
+			)
+			self.assertFalse(self.invoices_with_local_id(ret["local_id"]))
 		self.assertEqual(self.loyalty_details(customer)["loyalty_points"], 11)
 
 	def test_loyalty_pays_whole_invoice(self):

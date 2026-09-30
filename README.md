@@ -117,7 +117,7 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
-| `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty |
+| `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty, `taxes_and_charges` and `loyalty_amount` |
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
 | `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
@@ -201,6 +201,12 @@ true when an active program exists for the company.
   account, `amount` is more than points × conversion factor or more than the
   tolerance below it, `amount` exceeds the invoice total, or the customer
   does not have enough points.
+- **Returns of redeemed invoices**: `returns.get_invoice_for_return` returns
+  the original's `taxes_and_charges` and `loyalty_amount` (`"0.000"` when no
+  points were redeemed). An invoice partly paid with points must be returned
+  from ERPNext: tills refuse it, and a till return against it (by
+  `return_against` or `return_against_local_id`) fails with `validation`
+  "Return this invoice from ERPNext: it was partly paid with loyalty points".
 
 `sync.get_sync_capabilities` announces both with `features.tax_templates`
 and `features.loyalty`.

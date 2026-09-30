@@ -121,7 +121,7 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), `settings.qty_precision`, taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
@@ -329,7 +329,11 @@ Batch tracked items (*Has Batch No*) are sold per batch, the ERPNext v15 way
   page). Deleted batches arrive as tombstones.
 - **Sales Invoice payload items** may carry `batch_no` (at most 140
   characters); tills split a line across batches themselves (FEFO), so a line
-  has at most one batch. The server checks that the batch exists and belongs to
+  has at most one batch. ERPNext rounds a row's `qty` to the precision of Sales
+  Invoice Item *Qty* (a property setter on the field included, else System
+  Settings → *Float Precision*) and derives `stock_qty` from it, so tills use a
+  batch share only when it is exact at that precision; bootstrap sends it as
+  `settings.qty_precision`. The server checks that the batch exists and belongs to
   the line's batch tracked item, then sets `batch_no` and
   `use_serial_batch_fields = 1` on the row; on submit ERPNext builds the row's
   Serial and Batch Bundle from those fields. ERPNext's own checks decide the

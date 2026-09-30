@@ -241,6 +241,35 @@ class TestCrenyaBatches(FrappeTestCase):
 		frappe.db.commit()
 		return doc
 
+	# bootstrap
+
+	def test_bootstrap_sends_qty_precision_with_property_setters(self):
+		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+		default = frappe.get_precision("Sales Invoice Item", "qty")
+		data = device_api.get_bootstrap(device_id=self.device_id)
+		self.assertEqual(data["settings"]["qty_precision"], int(default))
+
+		changed = 2 if int(default) != 2 else 4
+		setter = make_property_setter(
+			"Sales Invoice Item",
+			"qty",
+			"precision",
+			str(changed),
+			"Select",
+			validate_fields_for_doctype=False,
+		)
+		try:
+			frappe.clear_cache(doctype="Sales Invoice Item")
+			data = device_api.get_bootstrap(device_id=self.device_id)
+			self.assertEqual(data["settings"]["qty_precision"], changed)
+		finally:
+			frappe.delete_doc("Property Setter", setter.name, force=True)
+			frappe.clear_cache(doctype="Sales Invoice Item")
+			frappe.db.commit()
+		data = device_api.get_bootstrap(device_id=self.device_id)
+		self.assertEqual(data["settings"]["qty_precision"], int(default))
+
 	# item records and the batch feed
 
 	def test_item_records_carry_batch_flags(self):

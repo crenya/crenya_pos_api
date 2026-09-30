@@ -6,6 +6,7 @@ import json
 import unittest
 from datetime import date, datetime
 from decimal import Decimal
+from unittest import mock
 
 from crenya_pos_api.sync.batches import (
 	BatchSplitError,
@@ -15,6 +16,7 @@ from crenya_pos_api.sync.batches import (
 	single_batch,
 	split_return_qty,
 )
+from crenya_pos_api.sync.context import qty_precision
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import SyncError
 from crenya_pos_api.sync.validation import validate_invoice_payload
@@ -231,6 +233,13 @@ class TestStockCursor(unittest.TestCase):
 			raw = base64.b64encode(json.dumps(data).encode()).decode()
 			with self.assertRaises(InvalidCursor, msg=repr(data)):
 				decode_cursor(raw, "batch")
+
+
+class TestQtyPrecision(unittest.TestCase):
+	def test_precision_of_the_sales_invoice_item_qty_field(self):
+		with mock.patch("frappe.get_precision", return_value="4") as get_precision:
+			self.assertEqual(qty_precision(), 4)
+		get_precision.assert_called_once_with("Sales Invoice Item", "qty")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from crenya_pos_api.sync.context import (
 	is_rounded_total_disabled,
 	is_system_manager,
 	money_precision,
+	qty_precision,
 	require_login,
 	user_can_use_profile,
 )
@@ -318,6 +319,10 @@ def bootstrap(ctx):
 			),
 		},
 		"company": _company_info(profile, company),
+		"settings": {
+			# ERPNext rounds item row qty to this (property setters included); batch shares must be exact
+			"qty_precision": qty_precision(),
+		},
 		"currency": currency_info(currency, precision),
 		"phone_country_codes": phone_country_codes(company.get("country") or None),
 		"cash_denominations": cash_denominations(currency),

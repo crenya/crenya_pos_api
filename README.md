@@ -60,6 +60,7 @@ Optional `site_config.json` keys:
 | `crenya_pos_total_tolerance` | `0.010` | max difference between till and server grand total, and between payments and payable total |
 | `crenya_pos_event_retention_days` | `120` | days to keep successful sync events (minimum 90) |
 | `crenya_pos_pull_lag_seconds` | `5` | records modified in the last N seconds are delivered on the next pull, so late-committing transactions are never skipped |
+| `crenya_pos_verify_rate_limit` | `60` | requests per minute and IP address to the public receipt verification page |
 
 #### POS Profile setup checklist (Oman)
 
@@ -110,13 +111,14 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty` (GET or POST) |
+| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
 | `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), taxes, payment modes for the till |
-| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier` + tombstones |
+| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
+| `fawtara.get_status` | Fawtara status and ASP document id of up to 50 till invoices (`device_id`, `local_ids`; POST) |
 | `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty, `taxes_and_charges` and `loyalty_amount` |
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
@@ -210,6 +212,88 @@ true when an active program exists for the company.
 
 `sync.get_sync_capabilities` announces both with `features.tax_templates`
 and `features.loyalty`.
+
+#### Promotions (Pricing Rules)
+
+Promotions are ERPNext's own **Pricing Rules** (and the rules a **Promotional
+Scheme** generates). Tills pull them with `pull_changes` entity
+`pricing_rule`, evaluate them offline and send the result as line rates, so
+nothing changes in how invoices are checked: the server keeps
+`ignore_pricing_rule = 1` and the till total must match within tolerance.
+
+Sent as active (`disabled: 0`): enabled selling rules of the POS Profile's
+company (or without company) that have not ended. A rule is sent with
+`disabled: 1` (the till drops it) when it is disabled, its *Valid Upto* has
+passed, or the till cannot evaluate it: buying-only, another company, a
+*Condition*, *Coupon Code Based*, *Applicable For* other than empty /
+Customer / Customer Group, *Apply Rule On Other*, a margin (margin type with a
+non-zero rate), *Validate Applied Rule* (ERPNext never applies those by
+itself), or a currency other than the till's. Every changed rule is sent, so a
+rule that stops qualifying reaches the tills with `disabled: 1`; deleted rules
+arrive as tombstones. A rule that simply runs out is not re-sent when its end
+date passes (nothing changes on the rule); tills check the dates themselves.
+
+Record: `name, title, disabled, priority, apply_on, items [{item_code, uom}],
+item_groups, brands, mixed_conditions, is_cumulative, applicable_for,
+customer, customer_group, min_qty, max_qty, min_amt, max_amt, valid_from,
+valid_upto, price_or_product_discount, rate_or_discount, rate,
+discount_percentage, discount_amount, apply_discount_on_rate,
+apply_multiple_pricing_rules, for_price_list, warehouse, threshold_percentage,
+same_item, free_item, free_qty, free_item_uom, free_item_rate, round_free_qty,
+is_recursive, recurse_for, apply_recursion_over, promotional_scheme,
+rule_description, modified`. Amounts are decimal strings with the currency
+precision, quantities and percentages plain decimal strings; `0` means no
+limit.
+
+Item group rules cover sub-groups: item records carry `brand`, and entity
+`item_group` sends the whole Item Group tree (`name, parent_item_group, lft,
+rgt, modified`). ERPNext renumbers `lft` / `rgt` of other groups without
+changing their `modified` when groups are added or moved, so tills build the
+tree from `parent_item_group`.
+
+Sales Invoice payload items may carry `pricing_rules` (list of up to 20 rule
+names, each at most 140 characters, may be empty) and `is_free_item` (0/1);
+tills without promotions omit both. The server stores `is_free_item` and the
+names (as a JSON list in the row's *Pricing Rules*, only when the list is not
+empty) on the Sales Invoice Item, for reporting; rule names are not checked
+against existing rules, since a rule may be deleted before an offline sale
+syncs. Free lines are ordinary lines at rate 0 (or the rule's free item
+rate); ERPNext keeps them because it only adds or removes free lines itself
+when pricing rules are applied, which `ignore_pricing_rule` turns off, and it
+skips *Is Free Item* lines in the below-purchase-rate check.
+
+The names are written to the rows in a `Sales Invoice` `before_submit` hook,
+after ERPNext's last validation: when a saved invoice with
+`ignore_pricing_rule` is validated again (as on submit), ERPNext clears the
+rows' *Pricing Rules* and undoes the named rules (a *Discount Percentage* rule
+resets the line rate to the price list rate), and a row with *Pricing Rules*
+and a discount percentage is re-priced from its price list rate. Keeping the
+names off the rows until then leaves the till's rates exactly as sent.
+
+`sync.get_sync_capabilities` announces this with `features.promotions`.
+
+#### Receipt verification (Fawtara)
+
+Till receipts can carry a QR code that opens
+`{site}/fawtara/verify?id=<crenya_local_id>`, a public page (no sign-in) in
+English and Arabic. For a submitted Sales Invoice with that till id it shows
+the seller's name (and Arabic name), VAT number and CR number, the ERPNext
+invoice number, the till's receipt number, posting date and time, invoice type
+(tax invoice / credit note), grand total and VAT in the invoice currency and,
+when `oman_compliance` is installed, the Fawtara status and ASP document id.
+It never shows customer data. An unknown id, or an invoice that has not synced
+yet, gets a neutral "not found yet" page with HTTP 404. The page is never
+cached and allows `crenya_pos_verify_rate_limit` (default 60) requests per
+minute per IP address; more get HTTP 429.
+
+`fawtara.get_status(device_id, local_ids)` (POST, at most 50 ids) returns
+`[{local_id, name, fawtara_status, document_id}]` for the device company's
+submitted invoices with those till ids (unknown ids are left out).
+`fawtara_status` and `document_id` come from the invoice's *Fawtara Status* /
+*ASP Document ID*, falling back to its Fawtara record, and are null when
+`oman_compliance` is not installed or the invoice has not been reported yet.
+Tills ask for their recent invoices whose status is not final.
+`sync.get_sync_capabilities` announces the page with `features.verify_page`.
 
 #### Cashier PINs
 

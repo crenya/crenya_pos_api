@@ -149,6 +149,10 @@ doc_events = {
 		# tills learn about cashiers added to / removed from Applicable for Users
 		"on_update": "crenya_pos_api.sync.cashier.pos_profile_on_update",
 	},
+	"Sales Invoice": {
+		# till invoices: promotion names go onto the item rows after ERPNext's last validation
+		"before_submit": "crenya_pos_api.sync.invoice_builder.restore_pricing_rules",
+	},
 }
 
 # Scheduled Tasks

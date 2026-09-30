@@ -31,6 +31,11 @@ CUSTOMER = "_Test Crenya Walk-in"
 POS_PROFILE = "_Test Crenya POS Profile"
 MILK = "_TC-MILK-1L"
 BREAD = "_TC-BREAD"
+# promotions: own group, brand and non-stock items so active test rules touch nothing else
+ITEM_GROUP_PROMO = "_Test Crenya Promo Snacks"
+BRAND = "_Test Crenya Brand"
+CHIPS = "_TC-PROMO-CHIPS"
+JUICE = "_TC-PROMO-JUICE"
 CASH = "Cash"
 
 
@@ -175,7 +180,12 @@ def leaf_customer_group():
 	return "_Test Crenya Customers"
 
 
-def ensure_item(item_code, rate, item_group=ITEM_GROUP_LEAF, zero_rated=False, is_stock_item=1):
+def ensure_brand(name):
+	if not frappe.db.exists("Brand", name):
+		_insert({"doctype": "Brand", "brand": name})
+
+
+def ensure_item(item_code, rate, item_group=ITEM_GROUP_LEAF, zero_rated=False, is_stock_item=1, brand=None):
 	if not frappe.db.exists("Item", item_code):
 		doc = {
 			"doctype": "Item",
@@ -188,6 +198,7 @@ def ensure_item(item_code, rate, item_group=ITEM_GROUP_LEAF, zero_rated=False, i
 			"valuation_rate": 0.3,
 			"item_defaults": [{"company": COMPANY, "default_warehouse": WAREHOUSE}],
 			"barcodes": [{"barcode": f"{item_code}-EAN"}],
+			"brand": brand,
 		}
 		if zero_rated:
 			doc["taxes"] = [{"item_tax_template": ZERO_TEMPLATE}]
@@ -335,3 +346,12 @@ def setup_fixtures():
 	profile = ensure_pos_profile(company, customer)
 	frappe.db.commit()
 	return profile
+
+
+def setup_promotion_fixtures():
+	"""Masters of the promotion tests, on top of `setup_fixtures`."""
+	ensure_item_group(ITEM_GROUP_PROMO, ITEM_GROUP_ROOT, 0)
+	ensure_brand(BRAND)
+	ensure_item(CHIPS, 1.0, item_group=ITEM_GROUP_PROMO, is_stock_item=0, brand=BRAND)
+	ensure_item(JUICE, 0.6, item_group=ITEM_GROUP_PROMO, is_stock_item=0)
+	frappe.db.commit()

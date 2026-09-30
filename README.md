@@ -174,8 +174,11 @@ true when an active program exists for the company.
 
 - **Earning**: a till sale to an enrolled customer carries the customer's
   program, so ERPNext books the earned points on submit exactly as for a desk
-  invoice. Till returns do not carry the program, so points earned on the
-  original sale are not reduced by a return.
+  invoice. A till return against an original invoice carries the original's
+  program, so ERPNext re-books the points of the original sale (less the
+  returned amount) on submit, and again if the return is cancelled. As in the
+  desk, a return fails with `validation` when points earned on the original
+  have already been redeemed. Returns without a reference do not touch points.
 - **Balance**: `loyalty.get_details(device_id, customer)` (POST, online only)
   returns `{customer, loyalty_program, loyalty_points, conversion_factor,
   max_redeemable_amount, currency}` for the Customer (ERP name): the current

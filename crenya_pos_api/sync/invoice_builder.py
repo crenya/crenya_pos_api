@@ -22,7 +22,16 @@ from crenya_pos_api.sync.taxes import allowed_template_names, resolve_invoice_te
 from crenya_pos_api.utils.dates import format_db_datetime
 from crenya_pos_api.utils.decimal import as_decimal, format_money, quantize, within_tolerance
 
-ORIGINAL_FIELDS = ["name", "customer", "company", "docstatus", "is_return", "update_stock", "currency"]
+ORIGINAL_FIELDS = [
+	"name",
+	"customer",
+	"company",
+	"docstatus",
+	"is_return",
+	"update_stock",
+	"currency",
+	"loyalty_program",
+]
 
 
 def resolve_customer(ctx, data):
@@ -366,9 +375,12 @@ def build_invoice(ctx, data, notes):
 		for tax in get_taxes_and_charges("Sales Taxes and Charges Template", doc.taxes_and_charges) or []:
 			doc.append("taxes", tax)
 
-	if not doc.is_return:
-		# earn points like a desk invoice of an enrolled customer (points are not clawed back by
-		# till returns, which carry no loyalty program)
+	if doc.is_return:
+		# a return carrying the original's program makes ERPNext re-book the original invoice's
+		# earned points on submit (and again on cancel); points are never redeemed on a return
+		doc.loyalty_program = original.loyalty_program if original else None
+	else:
+		# earn points like a desk invoice of an enrolled customer
 		program = customer_program(customer, ctx.company)
 		doc.loyalty_program = program.name if program else None
 

@@ -784,6 +784,40 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertFalse(self.invoices_with_local_id(payload["local_id"]))
 		self.assertEqual(self.loyalty_details(customer)["loyalty_points"], 30)
 
+	def points_balance(self, customer):
+		from erpnext.accounts.doctype.loyalty_program.loyalty_program import (
+			get_loyalty_program_details_with_points,
+		)
+
+		details = get_loyalty_program_details_with_points(
+			customer, loyalty_program=fixtures.LOYALTY_PROGRAM, company=fixtures.COMPANY
+		)
+		return cint(details.loyalty_points)
+
+	def test_return_rebooks_earned_points(self):
+		customer = fixtures.make_customer(
+			f"_Test Crenya Loyal {uuid.uuid4().hex[:8]}", loyalty_program=fixtures.LOYALTY_PROGRAM
+		)
+		frappe.db.commit()
+		# 50 x 0.600 = 30.000 OMR -> 30 points
+		sale = self.sale_payload(lines=[(fixtures.MILK, "50", "0.600")], customer=customer)
+		self.assertOk(self.push_one(self.event(sale)))
+		before = self.points_balance(customer)
+		self.assertEqual(before, 30)
+
+		# return 20 x 0.600 = 12.000 OMR -> the sale now earns 18 points
+		ret = self.return_payload(sale, [(fixtures.MILK, "-20", "0.600", 1)])
+		result = self.assertOk(self.push_one(self.event(ret)))
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		self.assertEqual(doc.loyalty_program, fixtures.LOYALTY_PROGRAM)
+		self.assertEqual(cint(doc.redeem_loyalty_points), 0)
+		self.assertFalse(doc.loyalty_points)
+
+		after = self.points_balance(customer)
+		self.assertEqual(after, 18)
+		self.assertEqual(before - after, 12)
+		self.assertEqual(self.loyalty_details(customer)["loyalty_points"], 18)
+
 	def test_loyalty_rejections(self):
 		walk_in = self.sale_payload(
 			payments=[{"mode_of_payment": fixtures.CASH, "amount": "1.100"}],

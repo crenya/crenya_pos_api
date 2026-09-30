@@ -33,6 +33,10 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   builds offered to the tills' updater (see *Till updates*). System Manager
   manages releases; Crenya POS User and Accounts User can read them.
   **Crenya POS Device** has an *Update Channel* (`stable` / `beta`).
+- DocType **Crenya Cash Denomination** (currency, value, label, kind
+  `note` / `coin`, enabled): the notes and coins tills offer when cashiers
+  count cash (see *Locale data*). System Manager manages them; Crenya POS
+  User can read them. The app creates none.
 - Role **Crenya POS User**.
 - Custom fields (created on install and on every migrate):
   - Sales Invoice: `crenya_local_id` (unique), `crenya_offline_number`, `crenya_device`,
@@ -57,12 +61,15 @@ Optional `site_config.json` keys:
 
 | key | default | meaning |
 |---|---|---|
-| `crenya_pos_total_tolerance` | `0.010` | max difference between till and server grand total, and between payments and payable total |
+| `crenya_pos_total_tolerance` | 10 × the currency's smallest unit (`0.10` with 2 decimals, `0.010` with 3) | max difference between till and server grand total, and between payments and payable total |
 | `crenya_pos_event_retention_days` | `120` | days to keep successful sync events (minimum 90) |
 | `crenya_pos_pull_lag_seconds` | `5` | records modified in the last N seconds are delivered on the next pull, so late-committing transactions are never skipped |
 | `crenya_pos_verify_rate_limit` | `60` | requests per minute and IP address to the public receipt verification page |
 
-#### POS Profile setup checklist (Oman)
+#### POS Profile setup checklist (example: Oman)
+
+The steps use an Omani shop as the example; nothing in the app is specific to
+it. Use your own currency, precision, taxes and time zone.
 
 1. **Currency precision**: System Settings → Currency Precision = `3`
    (ERPNext rounds all currency fields with the system precision). Currency
@@ -114,7 +121,7 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), taxes, payment modes for the till |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
@@ -160,10 +167,38 @@ POS Profile's template. To offer a template, create it for the company, keep
 all rows *On Net Total* and leave it enabled; tills pick it up on their next
 bootstrap. Bill discounts need nothing extra: they arrive as line rates.
 
-Bootstrap `company.phone_country_code` is the dialling code of the company's
-country (`+968` Oman, `+971` United Arab Emirates, `+966` Saudi Arabia,
-`+974` Qatar, `+973` Bahrain, `+965` Kuwait, `+91` India, `+92` Pakistan,
-`+880` Bangladesh, `+63` Philippines, `+20` Egypt; anything else `+968`).
+#### Locale data
+
+The app hardcodes no currency, symbol, decimals, number format, dialling
+code, country, tax label, denomination or time zone; bootstrap sends what the
+till needs, read from the site:
+
+- `currency`: `{code, symbol, symbol_on_right, fraction, fraction_units,
+  number_format, precision, smallest_currency_fraction_value}` from the POS
+  Profile currency's **Currency** record. `number_format` falls back to
+  System Settings; `precision` is the money precision ERPNext rounds invoice
+  totals with (the same as `profile.currency_precision`). Empty values are
+  `null`. To change what the till shows, edit the Currency record.
+- `phone_country_codes`: `[{iso, name, code}]` from Frappe's country data
+  (`frappe.geo.country_info`, field `isd`): the company's country first, then
+  every other country by name; countries without a dialling code are left
+  out. `company.phone_country_code` is the dialling code of the Company's
+  *Country*, or `""` when the company has none (no fallback country).
+- `cash_denominations`: `[{value, label, kind}]`, highest value first, from
+  the enabled **Crenya Cash Denomination** records of the profile currency;
+  `[]` when none are configured (the till then asks only for the cash total).
+- `site_timezone`: System Settings *Time Zone* (also in
+  `sync.get_sync_capabilities`); tills use it for posting dates / times and
+  "today", not the PC's zone.
+- Totals tolerance: `site_config.crenya_pos_total_tolerance` when set, else
+  10 × the smallest unit of the invoice currency's precision (`0.10` with 2
+  decimals, `0.010` with 3).
+
+To add denominations: *Crenya Cash Denomination* → New, pick the *Currency*,
+enter the *Value* (face value, e.g. `20` or `0.5`), a *Label* as printed on
+the note or coin (shown on the till), *Kind* `note` or `coin`, and keep
+*Enabled* ticked. A currency may have each value once. Untick *Enabled* to
+hide a denomination; tills pick up changes on their next bootstrap.
 
 #### Loyalty points
 
@@ -277,9 +312,9 @@ names off the rows until then leaves the till's rates exactly as sent.
 Till receipts can carry a QR code that opens
 `{site}/fawtara/verify?id=<crenya_local_id>`, a public page (no sign-in) in
 English and Arabic. For a submitted Sales Invoice with that till id it shows
-the seller's name (and Arabic name), VAT number and CR number, the ERPNext
+the seller's name (and Arabic name), tax number and CR number, the ERPNext
 invoice number, the till's receipt number, posting date and time, invoice type
-(tax invoice / credit note), grand total and VAT in the invoice currency and,
+(tax invoice / credit note), grand total and tax in the invoice currency and,
 when `oman_compliance` is installed, the Fawtara status and ASP document id.
 It never shows customer data. An unknown id, or an invoice that has not synced
 yet, gets a neutral "not found yet" page with HTTP 404. The page is never
@@ -398,8 +433,8 @@ PYTHONPATH=apps/crenya_pos_api env/bin/python -m unittest discover \
 ```
 
 Integration tests (need a disposable site with ERPNext and this app installed;
-they create `_Test Crenya …` masters with OMR and 5 % inclusive VAT and commit
-them):
+they create `_Test Crenya …` masters with an example currency, country and
+5 % inclusive tax and commit them):
 
 ```bash
 bench --site <test-site> set-config allow_tests true

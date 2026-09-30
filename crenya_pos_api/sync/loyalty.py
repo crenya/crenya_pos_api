@@ -129,8 +129,8 @@ def apply_redemption(doc, ctx, loyalty, payable):
 	if not program.expense_account:
 		raise SyncError(VALIDATION, f"Loyalty Program {program.name} has no expense account")
 
-	precision = money_precision()
-	check_redemption(loyalty, program.conversion_factor, payable, get_total_tolerance(), precision)
+	precision = money_precision(doc.currency)
+	check_redemption(loyalty, program.conversion_factor, payable, get_total_tolerance(precision), precision)
 	doc.update(
 		{
 			"loyalty_program": program.name,

@@ -11,6 +11,7 @@ from crenya_pos_api.sync.context import (
 )
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.events import process_batch
+from crenya_pos_api.sync.fawtara import COMPLIANCE_APP
 from crenya_pos_api.sync.pull import pull_changes as _pull_changes
 from crenya_pos_api.sync.validation import MAX_EVENTS_PER_BATCH
 from crenya_pos_api.utils.dates import utc_now_iso
@@ -46,7 +47,7 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"loyalty": True,
 			"promotions": True,
 			"verify_page": True,
-			"fawtara": "oman_compliance" in installed,
+			"fawtara": COMPLIANCE_APP in installed,
 		},
 	}
 

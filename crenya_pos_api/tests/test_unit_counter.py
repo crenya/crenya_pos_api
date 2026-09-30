@@ -1,4 +1,4 @@
-"""Loyalty payload, tax template selection and phone code helpers (no site needed)."""
+"""Loyalty payload and tax template selection helpers (no site needed)."""
 
 import copy
 import unittest
@@ -10,7 +10,6 @@ from crenya_pos_api.sync.loyalty import check_redemption, max_redeemable_amount
 from crenya_pos_api.sync.taxes import is_offline_template, resolve_invoice_template, select_tax_templates
 from crenya_pos_api.sync.validation import validate_invoice_payload
 from crenya_pos_api.tests.test_unit_validation import SALE, make_return
-from crenya_pos_api.utils.phone import DEFAULT_PHONE_COUNTRY_CODE, phone_country_code
 
 
 def sale(**overrides):
@@ -191,32 +190,6 @@ class TestTaxTemplates(unittest.TestCase):
 			resolve_invoice_template("Delivery Charge - CR", allowed, "Oman VAT 5% - CR")
 		self.assertEqual(ctx.exception.code, "validation")
 		self.assertIn("Delivery Charge - CR", ctx.exception.message)
-
-
-class TestPhoneCountryCode(unittest.TestCase):
-	def test_known_countries(self):
-		expected = {
-			"Oman": "+968",
-			"United Arab Emirates": "+971",
-			"Saudi Arabia": "+966",
-			"Qatar": "+974",
-			"Bahrain": "+973",
-			"Kuwait": "+965",
-			"India": "+91",
-			"Pakistan": "+92",
-			"Bangladesh": "+880",
-			"Philippines": "+63",
-			"Egypt": "+20",
-		}
-		for country, code in expected.items():
-			with self.subTest(country=country):
-				self.assertEqual(phone_country_code(country), code)
-
-	def test_fallback_is_oman(self):
-		self.assertEqual(DEFAULT_PHONE_COUNTRY_CODE, "+968")
-		for country in (None, "", "Germany", 968):
-			with self.subTest(country=country):
-				self.assertEqual(phone_country_code(country), "+968")
 
 
 if __name__ == "__main__":

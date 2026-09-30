@@ -73,7 +73,9 @@ Optional `site_config.json` keys:
    Template* `Oman VAT 5%` with a single row: Charge Type *On Net Total*,
    Rate `5`, **Is this Tax included in Basic Rate?** ticked. Only *On Net
    Total* rows are supported offline; other charge types are rejected with
-   `unsupported_tax`. Set it as the POS Profile's *Taxes and Charges*.
+   `unsupported_tax`. Set it as the POS Profile's *Taxes and Charges*. Further
+   templates of the company can be offered for switching at the till (see
+   *Tax templates*).
 4. **Zero rated / exempt items**: an *Item Tax Template* `Zero Rated`
    (VAT account at rate 0) for the company, added to the Item's *Taxes* table.
 5. **Customer**: a `Walk-in Customer` set as the POS Profile default customer.
@@ -108,12 +110,13 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts` (GET or POST) |
+| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings), company, taxes, payment modes for the till |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), taxes, payment modes for the till |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
+| `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
 | `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty |
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
@@ -135,6 +138,68 @@ report per shift. The per-event result is the standard one with
 Request-level errors carry `error: {code, message, retryable}` in the JSON
 body next to Frappe's `exc_type`; per-event errors are returned inside the
 `push_batch` results.
+
+#### Tax templates
+
+The till can switch an invoice to another *Sales Taxes and Charges Template*
+of the company, for example a zero-rated or a VAT-exclusive one. Bootstrap
+`profile.tax_templates` lists every enabled template of the POS Profile's
+company whose rows are all *On Net Total* (the till computes them offline),
+each with `name`, `title`, `is_default` and its `taxes` rows (`account_head`,
+`description`, `rate`, `included_in_print_rate`). The POS Profile's own
+template is always listed first with `is_default: true`; templates with any
+other charge type (*Actual*, *On Previous Row Total*, …) are left out, and
+only the profile's own template makes bootstrap fail with `unsupported_tax`.
+
+A Sales Invoice payload's `taxes_and_charges` is applied when it is one of
+those templates; any other value (disabled, another company, unsupported
+rows, unknown) fails the event with `validation`. Omitted or null means the
+POS Profile's template. To offer a template, create it for the company, keep
+all rows *On Net Total* and leave it enabled; tills pick it up on their next
+bootstrap. Bill discounts need nothing extra: they arrive as line rates.
+
+Bootstrap `company.phone_country_code` is the dialling code of the company's
+country (`+968` Oman, `+971` United Arab Emirates, `+966` Saudi Arabia,
+`+974` Qatar, `+973` Bahrain, `+965` Kuwait, `+91` India, `+92` Pakistan,
+`+880` Bangladesh, `+63` Philippines, `+20` Egypt; anything else `+968`).
+
+#### Loyalty points
+
+Uses ERPNext's own **Loyalty Program**. Setup: create a Loyalty Program for
+the company (collection rules, *Conversion Factor* = currency value of one
+point, *Expense Account* and *Cost Center* for redemptions, *From Date* not in
+the future) and set it as the Customer's *Loyalty Program* (or tick *Auto Opt
+In* so new customers are enrolled). Bootstrap `profile.loyalty_enabled` is
+true when an active program exists for the company.
+
+- **Earning**: a till sale to an enrolled customer carries the customer's
+  program, so ERPNext books the earned points on submit exactly as for a desk
+  invoice. Till returns do not carry the program, so points earned on the
+  original sale are not reduced by a return.
+- **Balance**: `loyalty.get_details(device_id, customer)` (POST, online only)
+  returns `{customer, loyalty_program, loyalty_points, conversion_factor,
+  max_redeemable_amount, currency}` for the Customer (ERP name): the current
+  redeemable points from ERPNext's Loyalty Point Entries,
+  `max_redeemable_amount` = points × conversion factor rounded down to the
+  currency precision. `loyalty_program` is null (0 points) when the customer
+  is not enrolled in a program of the till's company.
+- **Redemption**: a Sales Invoice payload may carry
+  `loyalty: {"points": 120, "amount": "1.200"}` (points a positive integer,
+  amount a positive decimal string). The server sets `redeem_loyalty_points`,
+  `loyalty_points`, `loyalty_program` (the customer's) and `loyalty_amount`;
+  ERPNext checks the balance when the invoice is saved and posts the
+  redemption to the program's expense account. The payments must cover
+  `rounded_total − loyalty_amount` (ERPNext counts the loyalty amount as
+  paid), within the usual tolerance; an invoice paid entirely with points
+  keeps one zero payment row. `validation` when: the invoice is a return, the
+  customer is the POS Profile's default customer, the customer has no loyalty
+  program (of the company), the program is inactive or has no expense
+  account, `amount` is more than points × conversion factor or more than the
+  tolerance below it, `amount` exceeds the invoice total, or the customer
+  does not have enough points.
+
+`sync.get_sync_capabilities` announces both with `features.tax_templates`
+and `features.loyalty`.
 
 #### Cashier PINs
 

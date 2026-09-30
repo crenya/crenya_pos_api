@@ -17,6 +17,8 @@ from crenya_pos_api.sync.context import (
 	qty_precision,
 )
 from crenya_pos_api.sync.errors import DEPENDENCY_MISSING, TOTAL_MISMATCH, VALIDATION, SyncError
+from crenya_pos_api.sync.loyalty import apply_redemption, customer_program
+from crenya_pos_api.sync.taxes import allowed_template_names, resolve_invoice_template
 from crenya_pos_api.utils.dates import format_db_datetime
 from crenya_pos_api.utils.decimal import as_decimal, format_money, quantize, within_tolerance
 
@@ -204,6 +206,14 @@ def _payable_total(doc):
 	return doc.rounded_total or doc.grand_total
 
 
+def _payments_due(doc):
+	"""What the payment rows must cover: ERPNext counts a redeemed loyalty amount as paid."""
+	due = _payable_total(doc)
+	if cint(doc.get("redeem_loyalty_points")):
+		due = flt(due) - flt(doc.get("loyalty_amount"))
+	return due
+
+
 def check_grand_total(doc, data):
 	precision = money_precision()
 	tolerance = get_total_tolerance()
@@ -232,11 +242,19 @@ def _absorb_row(doc, default_mode):
 	return None
 
 
+def _ensure_account(doc, row):
+	if not row.account:
+		from erpnext.accounts.doctype.sales_invoice.sales_invoice import get_bank_cash_account
+
+		row.account = get_bank_cash_account(row.mode_of_payment, doc.company).get("account")
+
+
 def reconcile_payments(doc, default_mode, notes):
-	"""Payments must equal the payable total; a difference within tolerance goes to the default/cash row."""
+	"""Payments must equal the payable total (less any loyalty redemption); a difference within
+	tolerance goes to the default/cash row."""
 	precision = money_precision()
 	tolerance = get_total_tolerance()
-	payable = quantize(_payable_total(doc), precision)
+	payable = quantize(_payments_due(doc), precision)
 	paid = sum((quantize(row.amount, precision) for row in doc.get("payments") or []), as_decimal(0))
 	difference = payable - paid
 
@@ -252,17 +270,22 @@ def reconcile_payments(doc, default_mode, notes):
 			raise SyncError(
 				VALIDATION, "POS Profile has no mode of payment to absorb the rounding difference"
 			)
-		if not row.account:
-			from erpnext.accounts.doctype.sales_invoice.sales_invoice import get_bank_cash_account
-
-			row.account = get_bank_cash_account(row.mode_of_payment, doc.company).get("account")
+		_ensure_account(doc, row)
 		row.amount = flt(flt(row.amount) + float(difference), precision)
 		notes.append(
 			f"Payment difference {format_money(difference, precision)} absorbed into {row.mode_of_payment}"
 		)
 
+	keep = [row for row in doc.get("payments") or [] if flt(row.amount, precision)]
+	if not keep and cint(doc.get("redeem_loyalty_points")):
+		# paid in full with points: ERPNext still wants one mode of payment on a POS invoice
+		row = _absorb_row(doc, default_mode)
+		if row is not None:
+			_ensure_account(doc, row)
+			keep = [row]
+	kept = {id(row) for row in keep}
 	for row in list(doc.get("payments") or []):
-		if not flt(row.amount, precision):
+		if id(row) not in kept:
 			doc.remove(row)
 
 
@@ -279,11 +302,15 @@ def build_invoice(ctx, data, notes):
 		raise SyncError(VALIDATION, f"Invoice company {data['company']} does not match {ctx.company}")
 	if data.get("currency") and data["currency"] != ctx.currency:
 		raise SyncError(VALIDATION, f"Invoice currency {data['currency']} does not match {ctx.currency}")
-	if data.get("taxes_and_charges") and data["taxes_and_charges"] != profile.taxes_and_charges:
-		notes.append(
-			f"Till used taxes template {data['taxes_and_charges']}; profile template "
-			f"{profile.taxes_and_charges} applied"
-		)
+	default_template = profile.get("taxes_and_charges") or None
+	requested_template = data.get("taxes_and_charges")
+	taxes_and_charges = resolve_invoice_template(
+		requested_template,
+		allowed_template_names(profile)
+		if requested_template and requested_template != default_template
+		else {default_template},
+		default_template,
+	)
 	cashier = enabled_user(data.get("cashier"))
 	if data.get("cashier") and not cashier:
 		notes.append(f"Till cashier {data['cashier']} is not an enabled user; POS Cashier left empty")
@@ -314,7 +341,7 @@ def build_invoice(ctx, data, notes):
 			"ignore_pricing_rule": 1,
 			"set_warehouse": profile.warehouse,
 			"selling_price_list": profile.selling_price_list,
-			"taxes_and_charges": profile.taxes_and_charges,
+			"taxes_and_charges": taxes_and_charges,
 			"tax_category": profile.get("tax_category"),
 			"disable_rounded_total": is_rounded_total_disabled(profile),
 			"remarks": data.get("remarks"),
@@ -339,8 +366,17 @@ def build_invoice(ctx, data, notes):
 		for tax in get_taxes_and_charges("Sales Taxes and Charges Template", doc.taxes_and_charges) or []:
 			doc.append("taxes", tax)
 
+	if not doc.is_return:
+		# earn points like a desk invoice of an enrolled customer (points are not clawed back by
+		# till returns, which carry no loyalty program)
+		program = customer_program(customer, ctx.company)
+		doc.loyalty_program = program.name if program else None
+
 	default_mode = _append_payments(doc, ctx, data["payments"])
 	doc.calculate_taxes_and_totals()
+	if data.get("loyalty"):
+		apply_redemption(doc, ctx, data["loyalty"], _payable_total(doc))
+		doc.calculate_taxes_and_totals()
 
 	check_grand_total(doc, data)
 	reconcile_payments(doc, default_mode, notes)

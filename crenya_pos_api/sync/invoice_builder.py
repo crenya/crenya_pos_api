@@ -10,6 +10,7 @@ import json
 import frappe
 from frappe.utils import cint, flt
 
+from crenya_pos_api.sync.batches import check_line_batches, plan_return_batches
 from crenya_pos_api.sync.cashier import enabled_user
 from crenya_pos_api.sync.context import (
 	get_total_tolerance,
@@ -186,7 +187,13 @@ def _append_payments(doc, ctx, payments):
 	return default_mode
 
 
-def _append_items(doc, ctx, lines, return_rows):
+def _set_batch(row, batch_no):
+	"""ERPNext v15 builds the row's Serial and Batch Bundle from these fields on submit."""
+	row["batch_no"] = batch_no
+	row["use_serial_batch_fields"] = 1
+
+
+def _append_items(doc, ctx, lines, return_rows, batch_plan):
 	q_precision = qty_precision()
 	rate_precision = frappe.get_precision("Sales Invoice Item", "rate")
 	cf_precision = frappe.get_precision("Sales Invoice Item", "conversion_factor")
@@ -223,9 +230,23 @@ def _append_items(doc, ctx, lines, return_rows):
 		if return_rows:
 			row["sales_invoice_item"] = return_rows[line["line_no"]]
 
-		child = doc.append("items", row)
-		if line.get("pricing_rules"):
-			child.flags[PRICING_RULES_FLAG] = json.dumps(line["pricing_rules"])
+		parts = batch_plan.get(line["line_no"])
+		if parts:
+			# a return goes back into the original row's batches, one row per batch
+			rows = []
+			for batch_no, qty in parts:
+				part = dict(row, qty=-flt(f"{qty:f}", q_precision))
+				_set_batch(part, batch_no)
+				rows.append(part)
+		else:
+			if line.get("batch_no"):
+				_set_batch(row, line["batch_no"])
+			rows = [row]
+
+		for values in rows:
+			child = doc.append("items", values)
+			if line.get("pricing_rules"):
+				child.flags[PRICING_RULES_FLAG] = json.dumps(line["pricing_rules"])
 
 
 def restore_pricing_rules(doc, method=None):
@@ -362,8 +383,10 @@ def build_invoice(ctx, data, notes):
 	customer = resolve_customer(ctx, data)
 	original = resolve_return_against(ctx, data)
 	return_rows = None
+	batch_plan = {}
 	if original:
 		return_rows = map_return_rows(original.name, data["items"])
+		batch_plan = plan_return_batches(data["items"], return_rows, qty_precision())
 		if original.customer != customer:
 			notes.append(f"Customer {customer} replaced by original invoice customer {original.customer}")
 			customer = original.customer
@@ -399,7 +422,8 @@ def build_invoice(ctx, data, notes):
 	if profile.get("cost_center"):
 		doc.cost_center = profile.cost_center
 
-	_append_items(doc, ctx, data["items"], return_rows)
+	check_line_batches([line for line in data["items"] if line["line_no"] not in batch_plan])
+	_append_items(doc, ctx, data["items"], return_rows, batch_plan)
 
 	doc.set_missing_values(for_validate=True)
 	# POS Profile values must not re-enable pricing rules: the till's rate is final

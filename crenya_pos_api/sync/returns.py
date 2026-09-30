@@ -3,6 +3,7 @@
 import frappe
 from frappe.utils import cint, flt
 
+from crenya_pos_api.sync.batches import batch_expiry_dates, row_batches, single_batch
 from crenya_pos_api.sync.context import money_precision, qty_precision
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.utils.dates import format_date
@@ -106,10 +107,14 @@ def get_invoice_for_return(ctx, invoice):
 			"rate",
 			"amount",
 			"item_tax_template",
+			"batch_no",
+			"serial_and_batch_bundle",
 		],
 		order_by="idx asc",
 	)
 	returned = returned_quantities(header.name, rows)
+	batch_of_row = {name: single_batch(batches) for name, batches in row_batches(rows).items()}
+	expiry_dates = batch_expiry_dates(batch_of_row.values())
 	payments = frappe.get_all(
 		"Sales Invoice Payment",
 		filters={"parent": header.name, "parenttype": "Sales Invoice"},
@@ -120,6 +125,7 @@ def get_invoice_for_return(ctx, invoice):
 	items = []
 	for row in rows:
 		returned_qty = flt(returned.get(row.name), q_precision)
+		batch_no = batch_of_row.get(row.name)
 		items.append(
 			{
 				"idx": cint(row.idx),
@@ -134,6 +140,9 @@ def get_invoice_for_return(ctx, invoice):
 				"item_tax_template": row.item_tax_template or None,
 				"returned_qty": format_number(returned_qty, q_precision),
 				"returnable_qty": format_number(max(flt(row.qty) - returned_qty, 0), q_precision),
+				# null when the row has no batch or consumed several (the return is split on the server)
+				"batch_no": batch_no,
+				"expiry_date": format_date(expiry_dates.get(batch_no)) if batch_no else None,
 			}
 		)
 

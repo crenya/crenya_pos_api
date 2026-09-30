@@ -239,6 +239,8 @@ def _validate_item(row, index, is_return):
 		# optional: tills without promotions omit both keys
 		"pricing_rules": _validate_pricing_rules(row.get("pricing_rules"), f"{label}.pricing_rules"),
 		"is_free_item": _flag(row.get("is_free_item"), f"{label}.is_free_item"),
+		# optional: tills without batch support omit it; one batch per line (the till splits lines)
+		"batch_no": _optional_str(row, "batch_no", f"{label}.batch_no"),
 	}
 
 

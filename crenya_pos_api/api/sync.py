@@ -47,6 +47,7 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"loyalty": True,
 			"promotions": True,
 			"verify_page": True,
+			"batches": True,
 			"fawtara": COMPLIANCE_APP in installed,
 		},
 	}

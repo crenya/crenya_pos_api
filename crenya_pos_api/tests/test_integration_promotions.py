@@ -93,13 +93,13 @@ class TestCrenyaPromotions(FrappeTestCase):
 		frappe.db.commit()
 		return rule
 
-	def pull_all(self, entity, cursor=None):
+	def pull_all(self, entity, cursor=None, key="name"):
 		records, pages = {}, 0
 		while True:
 			page = sync_api.pull_changes(device_id=self.device_id, entity=entity, cursor=cursor, limit=100)
 			pages += 1
 			for record in page["records"]:
-				records[record["name"]] = record
+				records[record[key]] = record
 			cursor = page["next_cursor"]
 			if not page["has_more"]:
 				return records, cursor, page
@@ -176,8 +176,7 @@ class TestCrenyaPromotions(FrappeTestCase):
 		tree_root = [g for g in groups.values() if not g["parent_item_group"]]
 		self.assertTrue(tree_root)
 
-		items, _cursor, _page = self.pull_all("item")
-		items = {record["item_code"]: record for record in items.values()}
+		items, _cursor, _page = self.pull_all("item", key="item_code")
 		self.assertEqual(items[fixtures.CHIPS]["brand"], fixtures.BRAND)
 		self.assertIsNone(items[fixtures.JUICE]["brand"])
 

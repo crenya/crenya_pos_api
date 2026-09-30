@@ -201,7 +201,7 @@ class TestCrenyaFawtara(FrappeTestCase):
 		self.assertEqual(fawtara_api.get_status(device_id=self.device_id, local_ids=[]), [])
 
 	def test_get_status_rejects_bad_input(self):
-		for local_ids in ([new_id() for _ in range(51)], "not json", {"a": 1}, [""], [7], ["x" * 141]):
+		for local_ids in ([new_id() for _ in range(51)], "not json", '{"a": 1}', [""], [7], ["x" * 141]):
 			with self.subTest(local_ids=str(local_ids)[:30]):
 				with self.assertRaises(frappe.ValidationError):
 					fawtara_api.get_status(device_id=self.device_id, local_ids=local_ids)

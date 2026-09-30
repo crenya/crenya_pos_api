@@ -191,7 +191,8 @@ true when an active program exists for the company.
   redemption to the program's expense account. The payments must cover
   `rounded_total − loyalty_amount` (ERPNext counts the loyalty amount as
   paid), within the usual tolerance; an invoice paid entirely with points
-  keeps one zero payment row. `validation` when: the invoice is a return, the
+  is sent with a zero payment row of the default mode of payment, which
+  ERPNext clears on submit. `validation` when: the invoice is a return, the
   customer is the POS Profile's default customer, the customer has no loyalty
   program (of the company), the program is inactive or has no expense
   account, `amount` is more than points × conversion factor or more than the

@@ -766,9 +766,11 @@ class TestCrenyaSync(FrappeTestCase):
 		result = self.assertOk(self.push_one(self.event(payload)))
 		self.assertEqual(result["totals"]["outstanding_amount"], "0.000")
 		doc = frappe.get_doc("Sales Invoice", result["name"])
-		self.assertEqual(len(doc.payments), 1)
-		self.assertAlmostEqual(doc.payments[0].amount, 0, places=3)
+		# the zero payment row satisfies ERPNext's POS check; ERPNext clears it on submit
+		self.assertFalse([row for row in doc.payments if row.amount])
 		self.assertAlmostEqual(doc.loyalty_amount, 0.5, places=3)
+		self.assertAlmostEqual(doc.paid_amount, 0.5, places=3)
+		self.assertEqual(doc.loyalty_points, 50)
 
 	def test_loyalty_over_redemption_is_validation(self):
 		customer = self.loyal_customer(earn_qty=50)

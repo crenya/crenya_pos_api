@@ -13,6 +13,16 @@ TAX_TEMPLATE_TITLE = "_Test Crenya VAT 5%"
 TAX_TEMPLATE = f"{TAX_TEMPLATE_TITLE} - {ABBR}"
 ZERO_TEMPLATE_TITLE = "_Test Crenya Zero Rated"
 ZERO_TEMPLATE = f"{ZERO_TEMPLATE_TITLE} - {ABBR}"
+# further Sales Taxes and Charges Templates a till may switch to (or must not see)
+EXCLUSIVE_TEMPLATE_TITLE = "_Test Crenya VAT 5% exclusive"
+EXCLUSIVE_TEMPLATE = f"{EXCLUSIVE_TEMPLATE_TITLE} - {ABBR}"
+ZERO_SALES_TEMPLATE_TITLE = "_Test Crenya VAT 0%"
+ZERO_SALES_TEMPLATE = f"{ZERO_SALES_TEMPLATE_TITLE} - {ABBR}"
+ACTUAL_TEMPLATE_TITLE = "_Test Crenya VAT + Delivery"
+ACTUAL_TEMPLATE = f"{ACTUAL_TEMPLATE_TITLE} - {ABBR}"
+LOYALTY_PROGRAM = "_Test Crenya Loyalty"
+LOYALTY_ACCOUNT = f"_Test Crenya Loyalty Redemption - {ABBR}"
+LOYALTY_CONVERSION_FACTOR = 0.01
 PRICE_LIST = "_Test Crenya Selling"
 ITEM_GROUP_ROOT = "_Test Crenya Groceries"
 ITEM_GROUP_LEAF = "_Test Crenya Dairy"
@@ -88,25 +98,43 @@ def ensure_accounts(company):
 		mode.save(ignore_permissions=True)
 
 
-def ensure_taxes():
-	if not frappe.db.exists("Sales Taxes and Charges Template", TAX_TEMPLATE):
+def _vat_row(rate=5, included=1):
+	return {
+		"charge_type": "On Net Total",
+		"account_head": VAT_ACCOUNT,
+		"description": f"VAT {rate}%",
+		"rate": rate,
+		"included_in_print_rate": included,
+		"cost_center": COST_CENTER,
+	}
+
+
+def ensure_sales_tax_template(name, title, rows):
+	if not frappe.db.exists("Sales Taxes and Charges Template", name):
 		_insert(
-			{
-				"doctype": "Sales Taxes and Charges Template",
-				"title": TAX_TEMPLATE_TITLE,
-				"company": COMPANY,
-				"taxes": [
-					{
-						"charge_type": "On Net Total",
-						"account_head": VAT_ACCOUNT,
-						"description": "VAT 5%",
-						"rate": 5,
-						"included_in_print_rate": 1,
-						"cost_center": COST_CENTER,
-					}
-				],
-			}
+			{"doctype": "Sales Taxes and Charges Template", "title": title, "company": COMPANY, "taxes": rows}
 		)
+
+
+def ensure_taxes():
+	ensure_sales_tax_template(TAX_TEMPLATE, TAX_TEMPLATE_TITLE, [_vat_row()])
+	ensure_sales_tax_template(EXCLUSIVE_TEMPLATE, EXCLUSIVE_TEMPLATE_TITLE, [_vat_row(included=0)])
+	ensure_sales_tax_template(ZERO_SALES_TEMPLATE, ZERO_SALES_TEMPLATE_TITLE, [_vat_row(rate=0)])
+	# an Actual charge cannot be computed offline: never offered to the till
+	ensure_sales_tax_template(
+		ACTUAL_TEMPLATE,
+		ACTUAL_TEMPLATE_TITLE,
+		[
+			_vat_row(),
+			{
+				"charge_type": "Actual",
+				"account_head": VAT_ACCOUNT,
+				"description": "Delivery",
+				"tax_amount": 1,
+				"cost_center": COST_CENTER,
+			},
+		],
+	)
 	if not frappe.db.exists("Item Tax Template", ZERO_TEMPLATE):
 		_insert(
 			{
@@ -193,6 +221,50 @@ def ensure_stock(item_code, qty=1000):
 	)
 
 
+def ensure_loyalty_program():
+	if not frappe.db.exists("Account", LOYALTY_ACCOUNT):
+		_insert(
+			{
+				"doctype": "Account",
+				"account_name": "_Test Crenya Loyalty Redemption",
+				"parent_account": f"Indirect Expenses - {ABBR}",
+				"company": COMPANY,
+				"account_currency": CURRENCY,
+			}
+		)
+	if not frappe.db.exists("Loyalty Program", LOYALTY_PROGRAM):
+		_insert(
+			{
+				"doctype": "Loyalty Program",
+				"loyalty_program_name": LOYALTY_PROGRAM,
+				"loyalty_program_type": "Single Tier Program",
+				"from_date": add_days(nowdate(), -30),
+				"auto_opt_in": 0,
+				"company": COMPANY,
+				# 1 point per OMR spent, 1 point = 0.010 OMR
+				"collection_rules": [{"tier_name": "Standard", "collection_factor": 1, "min_spent": 0}],
+				"conversion_factor": LOYALTY_CONVERSION_FACTOR,
+				"expiry_duration": 365,
+				"expense_account": LOYALTY_ACCOUNT,
+				"cost_center": COST_CENTER,
+			}
+		)
+
+
+def make_customer(customer_name, loyalty_program=None):
+	from frappe.utils.nestedset import get_root_of
+
+	return _insert(
+		{
+			"doctype": "Customer",
+			"customer_name": customer_name,
+			"customer_group": leaf_customer_group(),
+			"territory": get_root_of("Territory"),
+			"loyalty_program": loyalty_program,
+		}
+	).name
+
+
 def ensure_pos_profile(company, customer):
 	if frappe.db.exists("POS Profile", POS_PROFILE):
 		return frappe.get_doc("POS Profile", POS_PROFILE)
@@ -224,6 +296,7 @@ def setup_fixtures():
 		ensure_fiscal_year(date)
 	ensure_accounts(company)
 	ensure_taxes()
+	ensure_loyalty_program()
 
 	if not frappe.db.exists("Price List", PRICE_LIST):
 		_insert(

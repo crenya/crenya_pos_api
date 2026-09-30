@@ -22,8 +22,11 @@ from crenya_pos_api.sync.errors import (
 	InvalidRequestError,
 	raise_api_error,
 )
+from crenya_pos_api.sync.loyalty import loyalty_enabled
+from crenya_pos_api.sync.taxes import get_tax_templates
 from crenya_pos_api.utils.dates import utc_now_iso
 from crenya_pos_api.utils.decimal import format_money, format_number
+from crenya_pos_api.utils.phone import phone_country_code
 
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,139}$")
 _SHORT_RE = re.compile(r"^D(\d+)$")
@@ -179,7 +182,7 @@ def _company_address_lines(profile, company):
 def _company_info(profile):
 	company = profile.company
 	meta = frappe.get_meta("Company")
-	fields = ["name", "company_name", "tax_id", "phone_no", "email"]
+	fields = ["name", "company_name", "tax_id", "phone_no", "email", "country"]
 	for custom in ("crenya_company_name_ar", "crenya_cr_number"):
 		if meta.has_field(custom):
 			fields.append(custom)
@@ -193,6 +196,7 @@ def _company_info(profile):
 		"address_lines": _company_address_lines(profile, company),
 		"phone": row.get("phone_no") or None,
 		"email": row.get("email") or None,
+		"phone_country_code": phone_country_code(row.get("country")),
 	}
 
 
@@ -294,6 +298,8 @@ def bootstrap(ctx):
 			"allow_discount_change": bool(cint(profile.get("allow_discount_change"))),
 			"disable_rounded_total": bool(is_rounded_total_disabled(profile)),
 			"taxes_and_charges": profile.taxes_and_charges,
+			"tax_templates": get_tax_templates(profile),
+			"loyalty_enabled": loyalty_enabled(profile.company),
 			"item_groups": [row.item_group for row in profile.get("item_groups") or []],
 			"customer_groups": [row.customer_group for row in profile.get("customer_groups") or []],
 			"write_off_limit": format_money(profile.get("write_off_limit") or 0, precision),

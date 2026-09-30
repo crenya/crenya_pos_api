@@ -42,6 +42,8 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"sales": True,
 			"returns": True,
 			"shifts": True,
+			"tax_templates": True,
+			"loyalty": True,
 			"fawtara": "oman_compliance" in installed,
 		},
 	}

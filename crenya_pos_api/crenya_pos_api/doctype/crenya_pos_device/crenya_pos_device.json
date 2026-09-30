@@ -16,6 +16,7 @@
   "details_section",
   "app_version",
   "platform",
+  "update_channel",
   "column_break_details",
   "registered_on",
   "last_seen"
@@ -95,6 +96,15 @@
    "read_only": 1
   },
   {
+   "default": "stable",
+   "description": "Release channel this till installs updates from (beta also receives stable releases)",
+   "fieldname": "update_channel",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Update Channel",
+   "options": "stable\nbeta"
+  },
+  {
    "fieldname": "column_break_details",
    "fieldtype": "Column Break"
   },
@@ -113,7 +123,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-29 00:00:00.000000",
+ "modified": "2026-09-29 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya POS Device",

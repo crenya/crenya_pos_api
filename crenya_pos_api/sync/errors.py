@@ -58,6 +58,11 @@ class InvalidRequestError(CrenyaAPIError):
 	code = VALIDATION
 
 
+class NotFoundError(CrenyaAPIError):
+	code = VALIDATION
+	http_status_code = 404
+
+
 class DevicePermissionError(frappe.PermissionError):
 	code = PERMISSION
 	retryable = False

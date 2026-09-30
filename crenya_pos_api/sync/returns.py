@@ -20,6 +20,8 @@ INVOICE_FIELDS = [
 	"is_return",
 	"crenya_local_id",
 	"crenya_offline_number",
+	"taxes_and_charges",
+	"loyalty_amount",
 ]
 
 
@@ -144,6 +146,9 @@ def get_invoice_for_return(ctx, invoice):
 		"currency": header.currency,
 		"grand_total": format_money(header.grand_total, precision),
 		"pos_profile": header.pos_profile,
+		"taxes_and_charges": header.taxes_and_charges or None,
+		# tills refuse to return an invoice partly paid with points (so does push_batch)
+		"loyalty_amount": format_money(header.loyalty_amount or 0, precision),
 		"items": items,
 		"payments": [
 			{"mode_of_payment": row.mode_of_payment, "amount": format_money(row.amount, precision)}

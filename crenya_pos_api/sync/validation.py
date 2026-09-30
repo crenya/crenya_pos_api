@@ -261,6 +261,26 @@ def _validate_client_totals(totals):
 	return result
 
 
+MAX_LOYALTY_POINTS = 10**9
+
+
+def _validate_loyalty(value, is_return):
+	"""Optional `loyalty: {points, amount}` redemption; None when absent."""
+	if value is None:
+		return None
+	if not isinstance(value, dict):
+		_fail("loyalty must be an object")
+	if is_return:
+		_fail("loyalty points cannot be redeemed on a return")
+	points = _int(value.get("points"), "loyalty.points", minimum=1)
+	if points > MAX_LOYALTY_POINTS:
+		_fail(f"loyalty.points must be at most {MAX_LOYALTY_POINTS}")
+	amount = _decimal(value.get("amount"), "loyalty.amount")
+	if amount <= 0:
+		_fail("loyalty.amount must be positive")
+	return {"points": points, "amount": amount}
+
+
 def validate_invoice_payload(payload):
 	"""Validate a Sales Invoice payload; returns a normalized dict."""
 	is_return = _flag(payload.get("is_return"), "is_return")
@@ -303,6 +323,8 @@ def validate_invoice_payload(payload):
 		"items": lines,
 		"payments": _validate_payments(payload.get("payments"), is_return),
 		"client_totals": _validate_client_totals(payload.get("client_totals")),
+		# optional: tills without loyalty support omit the key
+		"loyalty": _validate_loyalty(payload.get("loyalty"), is_return),
 	}
 
 

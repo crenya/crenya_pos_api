@@ -28,6 +28,11 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   the shift was pushed). `opened_at` / `closed_at` arrive as UTC and are stored
   in the site time zone. Read-only in desk (Accounts Manager / Accounts User /
   System Manager can read; only System Manager can delete).
+- DocType **Crenya POS Release** (named after its `version`) with child table
+  **Crenya POS Release Artifact** (target, private file, signature): till
+  builds offered to the tills' updater (see *Till updates*). System Manager
+  manages releases; Crenya POS User and Accounts User can read them.
+  **Crenya POS Device** has an *Update Channel* (`stable` / `beta`).
 - Role **Crenya POS User**.
 - Custom fields (created on install and on every migrate):
   - Sales Invoice: `crenya_local_id` (unique), `crenya_offline_number`, `crenya_device`,
@@ -68,7 +73,9 @@ Optional `site_config.json` keys:
    Template* `Oman VAT 5%` with a single row: Charge Type *On Net Total*,
    Rate `5`, **Is this Tax included in Basic Rate?** ticked. Only *On Net
    Total* rows are supported offline; other charge types are rejected with
-   `unsupported_tax`. Set it as the POS Profile's *Taxes and Charges*.
+   `unsupported_tax`. Set it as the POS Profile's *Taxes and Charges*. Further
+   templates of the company can be offered for switching at the till (see
+   *Tax templates*).
 4. **Zero rated / exempt items**: an *Item Tax Template* `Zero Rated`
    (VAT account at rate 0) for the company, added to the Item's *Taxes* table.
 5. **Customer**: a `Walk-in Customer` set as the POS Profile default customer.
@@ -95,21 +102,25 @@ Optional `site_config.json` keys:
 
 All methods are `POST {server}/api/method/crenya_pos_api.api.<module>.<fn>` with
 `Authorization: token <api_key>:<api_secret>`, except `auth.login`, which the
-till calls without auth to exchange username + password for that key pair. Money and quantities are decimal
+till calls without auth to exchange username + password for that key pair, and
+the `update.*` methods, which are `GET` (same token auth). Money and quantities are decimal
 strings. The full contract (payloads, error codes, idempotency rules) is the
 sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts` (GET or POST) |
+| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings), company, taxes, payment modes for the till |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), taxes, payment modes for the till |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
-| `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty |
+| `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
+| `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty, `taxes_and_charges` and `loyalty_amount` |
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
+| `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
+| `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
 
 #### Shifts
 
@@ -127,6 +138,78 @@ report per shift. The per-event result is the standard one with
 Request-level errors carry `error: {code, message, retryable}` in the JSON
 body next to Frappe's `exc_type`; per-event errors are returned inside the
 `push_batch` results.
+
+#### Tax templates
+
+The till can switch an invoice to another *Sales Taxes and Charges Template*
+of the company, for example a zero-rated or a VAT-exclusive one. Bootstrap
+`profile.tax_templates` lists every enabled template of the POS Profile's
+company whose rows are all *On Net Total* (the till computes them offline),
+each with `name`, `title`, `is_default` and its `taxes` rows (`account_head`,
+`description`, `rate`, `included_in_print_rate`). The POS Profile's own
+template is always listed first with `is_default: true`; templates with any
+other charge type (*Actual*, *On Previous Row Total*, …) are left out, and
+only the profile's own template makes bootstrap fail with `unsupported_tax`.
+
+A Sales Invoice payload's `taxes_and_charges` is applied when it is one of
+those templates; any other value (disabled, another company, unsupported
+rows, unknown) fails the event with `validation`. Omitted or null means the
+POS Profile's template. To offer a template, create it for the company, keep
+all rows *On Net Total* and leave it enabled; tills pick it up on their next
+bootstrap. Bill discounts need nothing extra: they arrive as line rates.
+
+Bootstrap `company.phone_country_code` is the dialling code of the company's
+country (`+968` Oman, `+971` United Arab Emirates, `+966` Saudi Arabia,
+`+974` Qatar, `+973` Bahrain, `+965` Kuwait, `+91` India, `+92` Pakistan,
+`+880` Bangladesh, `+63` Philippines, `+20` Egypt; anything else `+968`).
+
+#### Loyalty points
+
+Uses ERPNext's own **Loyalty Program**. Setup: create a Loyalty Program for
+the company (collection rules, *Conversion Factor* = currency value of one
+point, *Expense Account* and *Cost Center* for redemptions, *From Date* not in
+the future) and set it as the Customer's *Loyalty Program* (or tick *Auto Opt
+In* so new customers are enrolled). Bootstrap `profile.loyalty_enabled` is
+true when an active program exists for the company.
+
+- **Earning**: a till sale to an enrolled customer carries the customer's
+  program, so ERPNext books the earned points on submit exactly as for a desk
+  invoice. A till return against an original invoice carries the original's
+  program, so ERPNext re-books the points of the original sale (less the
+  returned amount) on submit, and again if the return is cancelled. As in the
+  desk, a return fails with `validation` when points earned on the original
+  have already been redeemed. Returns without a reference do not touch points.
+- **Balance**: `loyalty.get_details(device_id, customer)` (POST, online only)
+  returns `{customer, loyalty_program, loyalty_points, conversion_factor,
+  max_redeemable_amount, currency}` for the Customer (ERP name): the current
+  redeemable points from ERPNext's Loyalty Point Entries,
+  `max_redeemable_amount` = points × conversion factor rounded down to the
+  currency precision. `loyalty_program` is null (0 points) when the customer
+  is not enrolled in a program of the till's company.
+- **Redemption**: a Sales Invoice payload may carry
+  `loyalty: {"points": 120, "amount": "1.200"}` (points a positive integer,
+  amount a positive decimal string). The server sets `redeem_loyalty_points`,
+  `loyalty_points`, `loyalty_program` (the customer's) and `loyalty_amount`;
+  ERPNext checks the balance when the invoice is saved and posts the
+  redemption to the program's expense account. The payments must cover
+  `rounded_total − loyalty_amount` (ERPNext counts the loyalty amount as
+  paid), within the usual tolerance; an invoice paid entirely with points
+  is sent with a zero payment row of the default mode of payment, which
+  ERPNext clears on submit. `validation` when: the invoice is a return, the
+  customer is the POS Profile's default customer, the customer has no loyalty
+  program (of the company), the program is inactive or has no expense
+  account, `amount` is more than points × conversion factor or more than the
+  tolerance below it, `amount` exceeds the invoice total, or the customer
+  does not have enough points.
+- **Returns of redeemed invoices**: `returns.get_invoice_for_return` returns
+  the original's `taxes_and_charges` and `loyalty_amount` (`"0.000"` when no
+  points were redeemed). An invoice partly paid with points must be returned
+  from ERPNext: tills refuse it, and a till return against it (by
+  `return_against` or `return_against_local_id`) fails with `validation`
+  "Return this invoice from ERPNext: it was partly paid with loyalty points".
+
+`sync.get_sync_capabilities` announces both with `features.tax_templates`
+and `features.loyalty`.
 
 #### Cashier PINs
 
@@ -179,6 +262,46 @@ Security notes:
   user's API keys; a PIN never grants access to ERPNext.
 - The hash also appears in the User's version history (visible to users who
   can read the User's versions, normally System Managers).
+
+#### Till updates
+
+Tills update themselves from the ERPNext site with the Tauri updater: they
+ask `update.check` for a newer build and download it through
+`update.download`, both authorized like every other call (enabled device,
+registered to the calling user, POS Profile access).
+
+Publishing a release:
+
+1. Let CI build the till. For Windows it produces the NSIS installer
+   (`…_x64-setup.exe`) and its signature file (`…_x64-setup.exe.sig`).
+2. In ERPNext create a **Crenya POS Release**. *Version* is the till's
+   version as `X.Y.Z` (for example `0.2.0`, no `v` and no pre-release suffix)
+   and cannot be changed later; add *Notes* if the till should show any.
+3. In *Artifacts* add one row per target: *Target* `windows-x86_64`
+   (`windows-aarch64`, `darwin-aarch64`, `darwin-x86_64` and `linux-x86_64`
+   are also accepted), *File*: attach the `.exe` as a **private** file (public
+   attachments are refused), *Signature*: paste the whole content of the
+   `.exe.sig` file. Each target can appear only once.
+4. Tick **Published** and save. *Publication Date* is set to now if it is
+   empty.
+
+A till is offered the newest published release of its channel that is
+greater than the version it runs (semantic comparison: `0.1.10` is newer
+than `0.1.9`) and that has an artifact for its target; otherwise
+`update.check` answers HTTP 204 and the till stays as it is. Unticking
+*Published* withdraws a release from tills that have not installed it yet.
+
+Channels: every release is `stable` or `beta`, and every **Crenya POS
+Device** has an *Update Channel* (default `stable`, set by a System Manager on
+the device). Stable tills only receive stable releases; beta tills receive
+beta and stable releases, so a newer stable build also reaches them. Try a
+build on a few tills by publishing it as `beta` and switching those devices
+to the beta channel.
+
+Tills verify the signature with the updater public key built into the app
+before installing and reject any file that does not match, so a replaced or
+corrupted installer is never installed. A release therefore only works with
+installers signed by the CI signing key of the till.
 
 #### Tests
 

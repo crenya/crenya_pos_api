@@ -17,6 +17,7 @@ except ImportError:
 	from frappe.tests.utils import FrappeTestCase
 
 from crenya_pos_api.api import device as device_api
+from crenya_pos_api.api import loyalty as loyalty_api
 from crenya_pos_api.api import returns as returns_api
 from crenya_pos_api.api import sync as sync_api
 from crenya_pos_api.sync import errors
@@ -583,6 +584,8 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertEqual(lookup["items"][0]["row_name"], original.items[0].name)
 		self.assertEqual(lookup["items"][0]["returned_qty"], "1")
 		self.assertEqual(lookup["items"][0]["returnable_qty"], "2")
+		self.assertEqual(lookup["taxes_and_charges"], fixtures.TAX_TEMPLATE)
+		self.assertEqual(lookup["loyalty_amount"], "0.000")
 
 		by_offline_number = returns_api.get_invoice_for_return(
 			device_id=self.device_id, invoice=sale["offline_number"]
@@ -613,6 +616,269 @@ class TestCrenyaSync(FrappeTestCase):
 		ghost = {"local_id": new_id()}
 		ret = self.return_payload(ghost, [(fixtures.MILK, "-1", "0.600", 1)])
 		self.assertError(self.push_one(self.event(ret)), "dependency_missing", True)
+
+	# counter features: tax templates
+
+	def test_bootstrap_tax_templates_loyalty_and_phone_code(self):
+		data = device_api.get_bootstrap(device_id=self.device_id)
+		templates = {row["name"]: row for row in data["profile"]["tax_templates"]}
+		self.assertIn(fixtures.TAX_TEMPLATE, templates)
+		self.assertIn(fixtures.EXCLUSIVE_TEMPLATE, templates)
+		self.assertIn(fixtures.ZERO_SALES_TEMPLATE, templates)
+		self.assertNotIn(fixtures.ACTUAL_TEMPLATE, templates, "Actual charges cannot be computed offline")
+
+		self.assertEqual(data["profile"]["tax_templates"][0]["name"], fixtures.TAX_TEMPLATE)
+		self.assertEqual(
+			[name for name, row in templates.items() if row["is_default"]], [fixtures.TAX_TEMPLATE]
+		)
+		exclusive = templates[fixtures.EXCLUSIVE_TEMPLATE]
+		self.assertEqual(exclusive["title"], fixtures.EXCLUSIVE_TEMPLATE_TITLE)
+		self.assertEqual(
+			exclusive["taxes"],
+			[
+				{
+					"account_head": fixtures.VAT_ACCOUNT,
+					"description": "VAT 5%",
+					"rate": "5",
+					"included_in_print_rate": False,
+				}
+			],
+		)
+		self.assertEqual(templates[fixtures.ZERO_SALES_TEMPLATE]["taxes"][0]["rate"], "0")
+
+		self.assertIs(data["profile"]["loyalty_enabled"], True)
+		self.assertEqual(data["company"]["phone_country_code"], "+968")
+
+	def test_invoice_with_alternate_tax_template(self):
+		payload = self.sale_payload(
+			taxes_and_charges=fixtures.EXCLUSIVE_TEMPLATE,
+			grand_total="1.260",
+			payments=[{"mode_of_payment": fixtures.CASH, "amount": "1.260"}],
+		)
+		event = self.event(payload)
+		result = self.assertOk(self.push_one(event))
+		self.assertEqual(result["totals"]["grand_total"], "1.260")
+		self.assertEqual(result["totals"]["outstanding_amount"], "0.000")
+
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		self.assertEqual(doc.taxes_and_charges, fixtures.EXCLUSIVE_TEMPLATE)
+		self.assertEqual(len(doc.taxes), 1)
+		self.assertEqual(cint(doc.taxes[0].included_in_print_rate), 0)
+		self.assertAlmostEqual(doc.net_total, 1.2, places=3)
+		self.assertAlmostEqual(doc.total_taxes_and_charges, 0.06, places=3)
+		self.assertFalse(frappe.db.get_value(EVENT, event["event_id"], "note"))
+		lookup = returns_api.get_invoice_for_return(device_id=self.device_id, invoice=doc.name)
+		self.assertEqual(lookup["taxes_and_charges"], fixtures.EXCLUSIVE_TEMPLATE)
+
+		zero = self.assertOk(
+			self.push_one(self.event(self.sale_payload(taxes_and_charges=fixtures.ZERO_SALES_TEMPLATE)))
+		)
+		zero_doc = frappe.get_doc("Sales Invoice", zero["name"])
+		self.assertEqual(zero_doc.taxes_and_charges, fixtures.ZERO_SALES_TEMPLATE)
+		self.assertAlmostEqual(zero_doc.total_taxes_and_charges, 0, places=3)
+
+		# omitted / null -> the profile's template
+		default = self.assertOk(self.push_one(self.event(self.sale_payload(taxes_and_charges=None))))
+		self.assertEqual(
+			frappe.db.get_value("Sales Invoice", default["name"], "taxes_and_charges"), fixtures.TAX_TEMPLATE
+		)
+
+	def test_disallowed_tax_template_is_validation(self):
+		for template in (fixtures.ACTUAL_TEMPLATE, "_Test Crenya No Such Template"):
+			payload = self.sale_payload(taxes_and_charges=template)
+			result = self.assertError(self.push_one(self.event(payload)), "validation", False)
+			self.assertIn(template, result["error"]["message"])
+			self.assertFalse(self.invoices_with_local_id(payload["local_id"]))
+
+	# counter features: loyalty
+
+	def loyal_customer(self, earn_qty=50):
+		"""A new enrolled customer who earned `earn_qty` x 0.600 OMR worth of points at the till."""
+		customer = fixtures.make_customer(
+			f"_Test Crenya Loyal {uuid.uuid4().hex[:8]}", loyalty_program=fixtures.LOYALTY_PROGRAM
+		)
+		frappe.db.commit()
+		if earn_qty:
+			sale = self.sale_payload(lines=[(fixtures.MILK, str(earn_qty), "0.600")], customer=customer)
+			result = self.assertOk(self.push_one(self.event(sale)))
+			self.assertEqual(
+				frappe.db.get_value("Sales Invoice", result["name"], "loyalty_program"),
+				fixtures.LOYALTY_PROGRAM,
+			)
+		return customer
+
+	def loyalty_details(self, customer):
+		return loyalty_api.get_details(device_id=self.device_id, customer=customer)
+
+	def test_loyalty_details(self):
+		customer = self.loyal_customer(earn_qty=50)
+		details = self.loyalty_details(customer)
+		self.assertEqual(details["customer"], customer)
+		self.assertEqual(details["loyalty_program"], fixtures.LOYALTY_PROGRAM)
+		# 50 x 0.600 = 30.000 OMR at 1 point per OMR
+		self.assertEqual(details["loyalty_points"], 30)
+		self.assertEqual(details["conversion_factor"], "0.01")
+		self.assertEqual(details["max_redeemable_amount"], "0.300")
+		self.assertEqual(details["currency"], fixtures.CURRENCY)
+
+		none = self.loyalty_details(self.walk_in)
+		self.assertIsNone(none["loyalty_program"])
+		self.assertEqual((none["loyalty_points"], none["max_redeemable_amount"]), (0, "0.000"))
+
+		with self.assertRaises(frappe.ValidationError):
+			self.loyalty_details("_Test Crenya No Such Customer")
+
+	def test_loyalty_redemption(self):
+		customer = self.loyal_customer(earn_qty=50)
+		payload = self.sale_payload(
+			customer=customer,
+			payments=[{"mode_of_payment": fixtures.CASH, "amount": "1.000"}],
+			loyalty={"points": 20, "amount": "0.200"},
+		)
+		event = self.event(payload)
+		result = self.assertOk(self.push_one(event))
+		self.assertEqual(result["totals"]["grand_total"], "1.200")
+		self.assertEqual(result["totals"]["outstanding_amount"], "0.000")
+
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		self.assertEqual(doc.redeem_loyalty_points, 1)
+		self.assertEqual(doc.loyalty_points, 20)
+		self.assertEqual(doc.loyalty_program, fixtures.LOYALTY_PROGRAM)
+		self.assertAlmostEqual(doc.loyalty_amount, 0.2, places=3)
+		self.assertEqual(doc.loyalty_redemption_account, fixtures.LOYALTY_ACCOUNT)
+		self.assertAlmostEqual(sum(row.amount for row in doc.payments), 1.0, places=3)
+		self.assertAlmostEqual(doc.paid_amount, 1.2, places=3)
+		self.assertFalse(frappe.db.get_value(EVENT, event["event_id"], "note"))
+
+		redeemed = frappe.get_all(
+			"Loyalty Point Entry",
+			filters={"invoice": doc.name, "loyalty_points": ["<", 0]},
+			pluck="loyalty_points",
+		)
+		self.assertEqual(sum(redeemed), -20)
+		# 30 earned - 20 redeemed + 1 earned on the 1.200 sale
+		self.assertEqual(self.loyalty_details(customer)["loyalty_points"], 11)
+
+		# a till may not return an invoice partly paid with points
+		lookup = returns_api.get_invoice_for_return(device_id=self.device_id, invoice=doc.name)
+		self.assertEqual(lookup["loyalty_amount"], "0.200")
+		self.assertEqual(lookup["taxes_and_charges"], fixtures.TAX_TEMPLATE)
+		for reference in (
+			{"return_against_local_id": payload["local_id"]},
+			{"return_against": doc.name, "return_against_local_id": None},
+		):
+			ret = self.return_payload(payload, [(fixtures.MILK, "-1", "0.600", 1)], **reference)
+			result = self.assertError(self.push_one(self.event(ret)), "validation", False)
+			self.assertEqual(
+				result["error"]["message"],
+				"Return this invoice from ERPNext: it was partly paid with loyalty points",
+			)
+			self.assertFalse(self.invoices_with_local_id(ret["local_id"]))
+		self.assertEqual(self.loyalty_details(customer)["loyalty_points"], 11)
+
+	def test_loyalty_pays_whole_invoice(self):
+		customer = self.loyal_customer(earn_qty=100)
+		payload = self.sale_payload(
+			lines=[(fixtures.BREAD, "1", "0.500")],
+			customer=customer,
+			payments=[],
+			loyalty={"points": 50, "amount": "0.500"},
+		)
+		result = self.assertOk(self.push_one(self.event(payload)))
+		self.assertEqual(result["totals"]["outstanding_amount"], "0.000")
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		# the zero payment row satisfies ERPNext's POS check; ERPNext clears it on submit
+		self.assertFalse([row for row in doc.payments if row.amount])
+		self.assertAlmostEqual(doc.loyalty_amount, 0.5, places=3)
+		self.assertAlmostEqual(doc.paid_amount, 0.5, places=3)
+		self.assertEqual(doc.loyalty_points, 50)
+
+	def test_loyalty_over_redemption_is_validation(self):
+		customer = self.loyal_customer(earn_qty=50)
+		payload = self.sale_payload(
+			lines=[(fixtures.MILK, "100", "0.600")],
+			customer=customer,
+			payments=[{"mode_of_payment": fixtures.CASH, "amount": "50.000"}],
+			loyalty={"points": 1000, "amount": "10.000"},
+		)
+		self.assertError(self.push_one(self.event(payload)), "validation", False)
+		self.assertFalse(self.invoices_with_local_id(payload["local_id"]))
+		self.assertEqual(self.loyalty_details(customer)["loyalty_points"], 30)
+
+	def points_balance(self, customer):
+		from erpnext.accounts.doctype.loyalty_program.loyalty_program import (
+			get_loyalty_program_details_with_points,
+		)
+
+		details = get_loyalty_program_details_with_points(
+			customer, loyalty_program=fixtures.LOYALTY_PROGRAM, company=fixtures.COMPANY
+		)
+		return cint(details.loyalty_points)
+
+	def test_return_rebooks_earned_points(self):
+		customer = fixtures.make_customer(
+			f"_Test Crenya Loyal {uuid.uuid4().hex[:8]}", loyalty_program=fixtures.LOYALTY_PROGRAM
+		)
+		frappe.db.commit()
+		# 50 x 0.600 = 30.000 OMR -> 30 points
+		sale = self.sale_payload(lines=[(fixtures.MILK, "50", "0.600")], customer=customer)
+		self.assertOk(self.push_one(self.event(sale)))
+		before = self.points_balance(customer)
+		self.assertEqual(before, 30)
+
+		# return 20 x 0.600 = 12.000 OMR -> the sale now earns 18 points
+		ret = self.return_payload(sale, [(fixtures.MILK, "-20", "0.600", 1)])
+		result = self.assertOk(self.push_one(self.event(ret)))
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		self.assertEqual(doc.loyalty_program, fixtures.LOYALTY_PROGRAM)
+		self.assertEqual(cint(doc.redeem_loyalty_points), 0)
+		self.assertFalse(doc.loyalty_points)
+
+		after = self.points_balance(customer)
+		self.assertEqual(after, 18)
+		self.assertEqual(before - after, 12)
+		self.assertEqual(self.loyalty_details(customer)["loyalty_points"], 18)
+
+	def test_loyalty_rejections(self):
+		walk_in = self.sale_payload(
+			payments=[{"mode_of_payment": fixtures.CASH, "amount": "1.100"}],
+			loyalty={"points": 10, "amount": "0.100"},
+		)
+		result = self.assertError(self.push_one(self.event(walk_in)), "validation", False)
+		self.assertIn("default customer", result["error"]["message"])
+
+		not_enrolled = fixtures.make_customer(f"_Test Crenya Not Enrolled {uuid.uuid4().hex[:8]}")
+		frappe.db.commit()
+		payload = self.sale_payload(
+			customer=not_enrolled,
+			payments=[{"mode_of_payment": fixtures.CASH, "amount": "1.100"}],
+			loyalty={"points": 10, "amount": "0.100"},
+		)
+		result = self.assertError(self.push_one(self.event(payload)), "validation", False)
+		self.assertIn("Customer has no loyalty program", result["error"]["message"])
+
+		customer = self.loyal_customer(earn_qty=50)
+		wrong_amount = self.sale_payload(
+			customer=customer,
+			payments=[{"mode_of_payment": fixtures.CASH, "amount": "0.700"}],
+			loyalty={"points": 10, "amount": "0.500"},
+		)
+		self.assertError(self.push_one(self.event(wrong_amount)), "validation", False)
+
+		# payments must cover rounded_total - loyalty_amount, not the full total
+		overpaid = self.sale_payload(
+			customer=customer,
+			payments=[{"mode_of_payment": fixtures.CASH, "amount": "1.200"}],
+			loyalty={"points": 20, "amount": "0.200"},
+		)
+		self.assertError(self.push_one(self.event(overpaid)), "total_mismatch", False)
+
+		sale = self.sale_payload(customer=customer, lines=[(fixtures.MILK, "2", "0.600")])
+		self.assertOk(self.push_one(self.event(sale)))
+		ret = self.return_payload(
+			sale, [(fixtures.MILK, "-1", "0.600", 1)], loyalty={"points": 1, "amount": "0.010"}
+		)
+		self.assertError(self.push_one(self.event(ret)), "validation", False)
 
 	# pull
 

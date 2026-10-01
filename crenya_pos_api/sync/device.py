@@ -30,6 +30,7 @@ from crenya_pos_api.sync.locale_data import (
 	phone_country_codes,
 )
 from crenya_pos_api.sync.loyalty import loyalty_enabled
+from crenya_pos_api.sync.open_returns import allows_return_without_invoice
 from crenya_pos_api.sync.taxes import get_tax_templates
 from crenya_pos_api.utils.dates import utc_now_iso
 from crenya_pos_api.utils.decimal import format_money, format_number
@@ -306,6 +307,7 @@ def bootstrap(ctx):
 			"ignore_pricing_rule": True,
 			"allow_rate_change": bool(cint(profile.get("allow_rate_change"))),
 			"allow_discount_change": bool(cint(profile.get("allow_discount_change"))),
+			"allow_return_without_invoice": allows_return_without_invoice(profile),
 			"disable_rounded_total": bool(is_rounded_total_disabled(profile)),
 			"taxes_and_charges": profile.taxes_and_charges,
 			"tax_templates": get_tax_templates(profile),

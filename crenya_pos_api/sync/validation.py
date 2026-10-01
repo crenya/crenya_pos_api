@@ -307,6 +307,20 @@ def _validate_loyalty(value, is_return):
 	return {"points": points, "amount": amount}
 
 
+def is_open_return(data):
+	"""A return that names no original invoice (a return without an invoice)."""
+	return bool(data["is_return"]) and not (data["return_against"] or data["return_against_local_id"])
+
+
+def _validate_open_return(lines, remarks):
+	"""Return without an invoice: no original rows to point at, and the reason is required."""
+	for index, line in enumerate(lines):
+		if line["against_line_no"] or line["against_row_name"]:
+			_fail(f"items[{index}] references an original row but the return names no original invoice")
+	if not remarks:
+		_fail("remarks (the return reason) is required on a return without an invoice")
+
+
 def validate_invoice_payload(payload):
 	"""Validate a Sales Invoice payload; returns a normalized dict."""
 	is_return = _flag(payload.get("is_return"), "is_return")
@@ -327,6 +341,10 @@ def validate_invoice_payload(payload):
 	if not is_return and (return_against or return_against_local_id):
 		_fail("return_against is only allowed on a return")
 
+	remarks = _optional_str(payload, "remarks", max_length=2000)
+	if is_return and not (return_against or return_against_local_id):
+		_validate_open_return(lines, remarks)
+
 	return {
 		"local_id": _required_str(payload, "local_id"),
 		"offline_number": _optional_str(payload, "offline_number"),
@@ -343,7 +361,7 @@ def validate_invoice_payload(payload):
 		"taxes_and_charges": _optional_str(payload, "taxes_and_charges"),
 		"buyer_vatin": _optional_str(payload, "buyer_vatin", max_length=40),
 		"cashier": _optional_str(payload, "cashier"),
-		"remarks": _optional_str(payload, "remarks", max_length=2000),
+		"remarks": remarks,
 		# optional: tills older than shift support omit the key
 		"shift_local_id": _optional_str(payload, "shift_local_id"),
 		"items": lines,

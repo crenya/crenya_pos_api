@@ -107,6 +107,17 @@ CUSTOM_FIELDS = {
 			"translatable": 0,
 		},
 	],
+	"POS Profile": [
+		{
+			"fieldname": "crenya_allow_return_without_invoice",
+			"fieldtype": "Check",
+			"label": "Allow returns without invoice (Crenya POS)",
+			"description": "Crenya POS tills may refund items without the original invoice "
+			"(a credit note with a reason; batch tracked items name their batch).",
+			"default": "0",
+			"insert_after": "allow_discount_change",
+		},
+	],
 	"Company": [
 		{
 			"fieldname": "crenya_company_name_ar",

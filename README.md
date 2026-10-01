@@ -47,6 +47,8 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   - Customer: `crenya_local_id` (unique)
   - Item: `crenya_item_name_ar` (Item Name (Arabic))
   - Company: `crenya_company_name_ar`, `crenya_cr_number` (CR Number)
+  - POS Profile: `crenya_allow_return_without_invoice` (Allow returns without invoice
+    (Crenya POS), Check, default off; see *Returns without an invoice*)
 
 #### Installation
 
@@ -118,10 +120,10 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches` (GET or POST) |
+| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), `settings.qty_precision`, taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`), company (incl. `phone_country_code`), `settings.qty_precision`, taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
@@ -358,6 +360,44 @@ Batch tracked items (*Has Batch No*) are sold per batch, the ERPNext v15 way
 - Batch prices (*Item Price* with a batch) are not used by tills yet.
 
 `sync.get_sync_capabilities` announces this with `features.batches`.
+
+#### Returns without an invoice
+
+A till can refund items without the original invoice (the customer has no
+receipt) when its POS Profile allows it: tick **Allow returns without invoice
+(Crenya POS)** (`crenya_allow_return_without_invoice`, off by default). Bootstrap
+sends it as `profile.allow_return_without_invoice`.
+
+- **Payload**: a normal return (`is_return = 1`, negative quantities and refund
+  payments) with no `return_against` / `return_against_local_id` and items
+  without `against_row_name` / `against_line_no`. Rows carry `rate`, `uom`,
+  `conversion_factor` and, for batch tracked items, `batch_no`, like a sale;
+  `remarks` carries the return reason.
+- **ERPNext document**: a POS Sales Invoice credit note without *Return
+  Against*, `update_stock` from the profile (as for sales), `remarks` = the
+  reason, negative payments. Batch rows get `batch_no` and
+  `use_serial_batch_fields = 1`; on submit ERPNext builds an inward Serial and
+  Batch Bundle into that batch. ERPNext checks batch expiry on outward rows
+  only, so stock can go back into an **expired** batch (it stays unsellable:
+  tills and ERPNext refuse expired batches on sales).
+- **Valuation**: stock comes back at ERPNext's valuation, not at the selling
+  rate. The server sets each stock row's *Incoming Rate* from ERPNext's
+  `get_incoming_rate` (the batch's average rate in the warehouse for a batch row,
+  or the warehouse valuation when the batch holds nothing; else the item's FIFO
+  / LIFO / Moving Average rate in the warehouse; else the Item's *Valuation
+  Rate*). ERPNext v15.120+ and v16 no longer compute it themselves for a
+  standalone credit note and would otherwise book the stock at the row's selling
+  rate. When no valuation exists at all, ERPNext's own rule applies. Selling
+  Settings → *Set Incoming Rate as Zero for Expired Batch* is respected.
+- **`validation` errors**: the profile does not allow returns without an
+  invoice (checked when the return is pushed, not only when the till made it),
+  `remarks` empty, a row referencing an original row, a quantity that is not
+  negative or a refund that is positive, a batch tracked item row without
+  `batch_no`, a batch of another item or a batch that does not exist, and
+  ERPNext's own checks.
+- Returns against an invoice are unchanged and do not need the flag.
+
+`sync.get_sync_capabilities` announces this with `features.open_returns`.
 
 #### Receipt verification (Fawtara)
 

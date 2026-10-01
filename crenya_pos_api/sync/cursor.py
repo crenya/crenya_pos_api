@@ -2,7 +2,10 @@
 
 The cursor is base64 JSON. `m`/`n` are the (modified, name) of the last record
 delivered; `tc`/`tn` the (creation, name) of the last tombstone delivered; `e`
-pins the cursor to its entity. Clients store it verbatim.
+pins the cursor to its entity. Entities that also follow stock movements
+(`batch`) carry `sm`/`sn`, the (modified, name) of the last Stock Ledger Entry
+looked at; the keys are left out for all other entities. Clients store it
+verbatim.
 """
 
 import base64
@@ -26,15 +29,21 @@ class Cursor:
 	name: str | None = None
 	tomb_creation: str | None = None
 	tomb_name: str | None = None
+	stock_modified: str | None = None
+	stock_name: str | None = None
 
 	def to_dict(self):
-		return {
+		data = {
 			"e": self.entity,
 			"m": self.modified,
 			"n": self.name,
 			"tc": self.tomb_creation,
 			"tn": self.tomb_name,
 		}
+		if self.stock_modified is not None:
+			data["sm"] = self.stock_modified
+			data["sn"] = self.stock_name or ""
+		return data
 
 
 def encode_cursor(cursor):
@@ -71,15 +80,19 @@ def decode_cursor(token, entity=None):
 	name = _optional_str(data, "n")
 	tomb_creation = _optional_str(data, "tc")
 	tomb_name = _optional_str(data, "tn")
+	stock_modified = _optional_str(data, "sm")
+	stock_name = _optional_str(data, "sn")
 	cursor_entity = _optional_str(data, "e")
 
 	if (modified is None) != (name is None):
 		raise InvalidCursor("cursor must carry both m and n")
-	for value in (modified, tomb_creation):
+	for value in (modified, tomb_creation, stock_modified):
 		if value is not None and not is_db_datetime(value):
 			raise InvalidCursor("cursor timestamp is not valid")
 	if tomb_creation is None and tomb_name is not None:
 		raise InvalidCursor("cursor tombstone position is not valid")
+	if stock_modified is None and stock_name is not None:
+		raise InvalidCursor("cursor stock position is not valid")
 	if entity is not None and cursor_entity is not None and cursor_entity != entity:
 		raise InvalidCursor(f"cursor belongs to entity {cursor_entity}, not {entity}")
 
@@ -89,4 +102,6 @@ def decode_cursor(token, entity=None):
 		name=name,
 		tomb_creation=tomb_creation,
 		tomb_name=tomb_name or "",
+		stock_modified=stock_modified,
+		stock_name=(stock_name or "") if stock_modified is not None else None,
 	)

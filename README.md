@@ -118,15 +118,15 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page` (GET or POST) |
+| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
-| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule` + tombstones |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`), company (incl. `phone_country_code`), `settings.qty_precision`, taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
+| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
 | `fawtara.get_status` | Fawtara status and ASP document id of up to 50 till invoices (`device_id`, `local_ids`; POST) |
-| `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty, `taxes_and_charges` and `loyalty_amount` |
+| `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty, `batch_no` / `expiry_date` per row, `taxes_and_charges` and `loyalty_amount` |
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
 | `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
@@ -306,6 +306,58 @@ and a discount percentage is re-priced from its price list rate. Keeping the
 names off the rows until then leaves the till's rates exactly as sent.
 
 `sync.get_sync_capabilities` announces this with `features.promotions`.
+
+#### Batches (pharmacy)
+
+Batch tracked items (*Has Batch No*) are sold per batch, the ERPNext v15 way
+(Serial and Batch Bundles); nothing is configured in the app itself.
+
+- **Item records** carry `has_batch_no` and `has_expiry_date`.
+- **Entity `batch`** of `pull_changes`: the batches of the profile's items
+  (same item filter as `item`, batch tracked items only) as `name, item_code,
+  expiry_date, manufacturing_date, disabled, qty, modified`. `qty` is the
+  batch's stock in the POS Profile warehouse in stock UOM, counted as ERPNext
+  counts batch stock (Serial and Batch Entries of the warehouse's non-cancelled
+  Stock Ledger Entries, plus the `batch_no` of ledger entries from before
+  bundles), with no reservations subtracted. Expired and disabled batches are
+  sent like any other: the till decides by date what it may sell. A batch is
+  sent again when the Batch changes **or** its stock in the warehouse moves:
+  besides the Batch keyset the cursor keeps a second position (`sm` / `sn`) in
+  the warehouse's Stock Ledger Entries of those items, ordered by
+  (`modified`, `name`), so a sale at another till, a receipt or a cancellation
+  re-sends the batches it touched with their current qty (one grouped query per
+  page). Deleted batches arrive as tombstones.
+- **Sales Invoice payload items** may carry `batch_no` (at most 140
+  characters); tills split a line across batches themselves (FEFO), so a line
+  has at most one batch. ERPNext rounds a row's `qty` to the precision of Sales
+  Invoice Item *Qty* (a property setter on the field included, else System
+  Settings → *Float Precision*) and derives `stock_qty` from it, so tills use a
+  batch share only when it is exact at that precision; bootstrap sends it as
+  `settings.qty_precision`. The server checks that the batch exists and belongs to
+  the line's batch tracked item, then sets `batch_no` and
+  `use_serial_batch_fields = 1` on the row; on submit ERPNext builds the row's
+  Serial and Batch Bundle from those fields. ERPNext's own checks decide the
+  rest: an expired batch (expiry before the posting date) or a batch without
+  enough stock in the warehouse fail with `validation`. Lines without
+  `batch_no` (tills without batch support) keep ERPNext's automatic pick, which
+  needs Stock Settings → *Auto Create Serial and Batch Bundle For Outward*
+  (on by default) and follows *Pick Serial / Batch Based On*.
+- **Returns** take the batch from the original row, not from the till: a
+  return row goes back into the original row's batch (its `batch_no`, or the
+  single batch of its bundle). When the original row consumed several batches
+  (for example a desk invoice that ERPNext auto-picked), the return line is
+  split into one row per batch, each referencing the original row: shares are
+  proportional to what each batch sold, capped by what it can still take back
+  (sold less already returned, from ERPNext's
+  `sales_and_purchase_return.get_available_serial_batches`), in whole units when
+  the UOM must be a whole number. Returning more than the batches can take back
+  fails with `validation`. Serial numbered items keep ERPNext's own return
+  handling.
+- `returns.get_invoice_for_return` items carry `batch_no` and `expiry_date`,
+  both null when the row has no batch or consumed several.
+- Batch prices (*Item Price* with a batch) are not used by tills yet.
+
+`sync.get_sync_capabilities` announces this with `features.batches`.
 
 #### Receipt verification (Fawtara)
 

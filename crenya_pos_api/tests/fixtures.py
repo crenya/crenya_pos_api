@@ -37,6 +37,13 @@ BRAND = "_Test Crenya Brand"
 CHIPS = "_TC-PROMO-CHIPS"
 JUICE = "_TC-PROMO-JUICE"
 CASH = "Cash"
+# pharmacy batches: a batch tracked item with two valid batches and one that has expired
+BATCH_ITEM = "_TC-PARA-500"
+BATCH_ONE = "_TC-PARA-B1"
+BATCH_TWO = "_TC-PARA-B2"
+BATCH_EXPIRED = "_TC-PARA-BX"
+BATCH_STOCK = 100
+EXPIRED_STOCK = 10
 
 
 def _insert(doc):
@@ -185,7 +192,9 @@ def ensure_brand(name):
 		_insert({"doctype": "Brand", "brand": name})
 
 
-def ensure_item(item_code, rate, item_group=ITEM_GROUP_LEAF, zero_rated=False, is_stock_item=1, brand=None):
+def ensure_item(
+	item_code, rate, item_group=ITEM_GROUP_LEAF, zero_rated=False, is_stock_item=1, brand=None, **extra
+):
 	if not frappe.db.exists("Item", item_code):
 		doc = {
 			"doctype": "Item",
@@ -202,6 +211,7 @@ def ensure_item(item_code, rate, item_group=ITEM_GROUP_LEAF, zero_rated=False, i
 		}
 		if zero_rated:
 			doc["taxes"] = [{"item_tax_template": ZERO_TEMPLATE}]
+		doc.update(extra)
 		_insert(doc)
 	if not frappe.db.exists("Item Price", {"item_code": item_code, "price_list": PRICE_LIST}):
 		_insert(
@@ -354,4 +364,67 @@ def setup_promotion_fixtures():
 	ensure_brand(BRAND)
 	ensure_item(CHIPS, 1.0, item_group=ITEM_GROUP_PROMO, is_stock_item=0, brand=BRAND)
 	ensure_item(JUICE, 0.6, item_group=ITEM_GROUP_PROMO, is_stock_item=0)
+	frappe.db.commit()
+
+
+def ensure_batch(batch_id, item_code, expiry_date, manufacturing_date=None):
+	if not frappe.db.exists("Batch", batch_id):
+		_insert(
+			{
+				"doctype": "Batch",
+				"batch_id": batch_id,
+				"item": item_code,
+				"expiry_date": expiry_date,
+				"manufacturing_date": manufacturing_date,
+			}
+		)
+	return frappe.db.get_value("Batch", batch_id, "expiry_date")
+
+
+def batch_stock(batch_no):
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+	return get_batch_qty(
+		batch_no=batch_no, warehouse=WAREHOUSE, for_stock_levels=True, ignore_reserved_stock=True
+	)
+
+
+def receive_batch(item_code, batch_no, qty, posting_date):
+	"""Material Receipt into one batch, posted on `posting_date` (a day the batch is valid)."""
+	from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+
+	ensure_fiscal_year(posting_date)
+	return make_stock_entry(
+		item_code=item_code,
+		to_warehouse=WAREHOUSE,
+		qty=qty,
+		rate=0.3,
+		company=COMPANY,
+		batch_no=batch_no,
+		posting_date=posting_date,
+		posting_time="00:00:01",
+	)
+
+
+def ensure_batch_stock(item_code, batch_no, qty, posting_date):
+	if batch_stock(batch_no) >= qty / 2:
+		return
+	receive_batch(item_code, batch_no, qty, posting_date)
+
+
+def setup_batch_fixtures():
+	"""A batch tracked item with batches B1, B2 (valid) and BX (expired yesterday), all in stock.
+
+	BX was received ten days ago, while it was still valid.
+	"""
+	ensure_item(BATCH_ITEM, 1.0, has_batch_no=1, has_expiry_date=1, create_new_batch=0)
+	today = nowdate()
+	ensure_batch(BATCH_ONE, BATCH_ITEM, add_days(today, 365), add_days(today, -30))
+	ensure_batch(BATCH_TWO, BATCH_ITEM, add_days(today, 730), add_days(today, -20))
+	expired_on = ensure_batch(BATCH_EXPIRED, BATCH_ITEM, add_days(today, -1), add_days(today, -60))
+	# the oldest receipt first, so no later ledger entry has to be reposted
+	if not batch_stock(BATCH_EXPIRED):
+		receive_batch(BATCH_ITEM, BATCH_EXPIRED, EXPIRED_STOCK, add_days(expired_on, -9))
+	ensure_batch_stock(BATCH_ITEM, BATCH_ONE, BATCH_STOCK, add_days(today, -1))
+	ensure_batch_stock(BATCH_ITEM, BATCH_TWO, BATCH_STOCK, add_days(today, -1))
 	frappe.db.commit()

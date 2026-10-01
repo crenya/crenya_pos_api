@@ -14,6 +14,7 @@ from datetime import timedelta
 import frappe
 from frappe.utils import cint, get_datetime, getdate, now_datetime, nowdate
 
+from crenya_pos_api.sync.batches import batch_quantities, batches_of_bundles, build_batch_records
 from crenya_pos_api.sync.cashier import PIN_HASH_FIELD
 from crenya_pos_api.sync.context import POS_USER_ROLE, get_pull_lag_seconds, money_precision, profile_users
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
@@ -55,6 +56,8 @@ def _keyset_condition(table, cursor):
 class EntitySpec:
 	doctype = None
 	fields = ()
+	# entities whose records also change with stock movements (see BatchSpec)
+	follows_stock = False
 
 	def select(self, table):
 		return [getattr(table, field) for field in self.fields]
@@ -76,16 +79,13 @@ class ItemSpec(EntitySpec):
 		"brand",
 		"stock_uom",
 		"is_stock_item",
+		"has_batch_no",
+		"has_expiry_date",
 		"disabled",
 	)
 
 	def filters(self, table, ctx):
-		conditions = [table.is_sales_item == 1]
-		roots = [row.item_group for row in ctx.profile.get("item_groups") or []]
-		if roots:
-			groups = _descendants("Item Group", roots)
-			conditions.append(table.item_group.isin(groups or [""]))
-		return conditions
+		return _profile_item_conditions(table, ctx)
 
 	def select(self, table):
 		columns = super().select(table)
@@ -109,6 +109,8 @@ class ItemSpec(EntitySpec):
 					"brand": row.brand or None,
 					"stock_uom": row.stock_uom,
 					"is_stock_item": cint(row.is_stock_item),
+					"has_batch_no": cint(row.has_batch_no),
+					"has_expiry_date": cint(row.has_expiry_date),
 					"disabled": cint(row.disabled),
 					"item_tax_template": tax_templates.get(row.name),
 					"barcodes": [
@@ -122,6 +124,85 @@ class ItemSpec(EntitySpec):
 				}
 			)
 		return records
+
+
+class BatchSpec(EntitySpec):
+	"""Batches of the profile's batch tracked items with their stock in the profile warehouse.
+
+	A batch is (re)sent when the Batch changes (keyset on Batch `modified`) and when
+	its stock in the warehouse moves: a second keyset position (`sm`/`sn` in the
+	cursor) walks the warehouse's Stock Ledger Entries of those items by
+	(modified, name), which catches new entries as well as cancellations (ERPNext
+	sets `is_cancelled` and `modified` on the cancelled entries and adds reversing
+	ones). Expired and disabled batches are sent like any other.
+	"""
+
+	doctype = "Batch"
+	fields = ("name", "item", "expiry_date", "manufacturing_date", "disabled")
+	follows_stock = True
+
+	def _items(self, ctx):
+		item = frappe.qb.DocType("Item")
+		query = frappe.qb.from_(item).select(item.name).where(item.has_batch_no == 1)
+		for condition in _profile_item_conditions(item, ctx):
+			query = query.where(condition)
+		return query
+
+	def filters(self, table, ctx):
+		return [table.item.isin(self._items(ctx))]
+
+	def fetch_stock_changes(self, ctx, position, upper, limit):
+		"""Batches touched by the next `limit` Stock Ledger Entries after `position` (modified, name).
+
+		Returns (batch rows, more entries pending, new position or None).
+		"""
+		warehouse = ctx.profile.warehouse
+		if not warehouse:
+			return [], False, None
+		sle = frappe.qb.DocType("Stock Ledger Entry")
+		start_modified, start_name = position
+		entries = (
+			frappe.qb.from_(sle)
+			.select(sle.name, sle.modified, sle.serial_and_batch_bundle, sle.batch_no)
+			.where(
+				(sle.warehouse == warehouse)
+				& (sle.modified <= upper)
+				& sle.item_code.isin(self._items(ctx))
+				& (
+					(sle.modified > start_modified)
+					| ((sle.modified == start_modified) & (sle.name > (start_name or "")))
+				)
+			)
+			.orderby(sle.modified)
+			.orderby(sle.name)
+			.limit(limit + 1)
+			.run(as_dict=True)
+		)
+		more = len(entries) > limit
+		entries = entries[:limit]
+		if not entries:
+			return [], False, None
+
+		names = {entry.batch_no for entry in entries if entry.batch_no}
+		for batches in batches_of_bundles(entry.serial_and_batch_bundle for entry in entries).values():
+			names.update(batches)
+		rows = []
+		if names:
+			table = frappe.qb.DocType(self.doctype)
+			query = (
+				frappe.qb.from_(table)
+				.select(*self.select(table), table.modified)
+				.where(table.name.isin(sorted(names)))
+			)
+			for condition in self.filters(table, ctx):
+				query = query.where(condition)
+			rows = query.orderby(table.modified).orderby(table.name).run(as_dict=True)
+		last = entries[-1]
+		return rows, more, (format_db_datetime(get_datetime(last.modified)), last.name)
+
+	def build(self, rows, ctx):
+		quantities = batch_quantities([row.name for row in rows], ctx.profile.warehouse)
+		return build_batch_records(rows, quantities, frappe.get_precision("Stock Ledger Entry", "actual_qty"))
 
 
 class ItemPriceSpec(EntitySpec):
@@ -441,7 +522,18 @@ ENTITIES = {
 	"cashier": CashierSpec(),
 	"item_group": ItemGroupSpec(),
 	"pricing_rule": PricingRuleSpec(),
+	"batch": BatchSpec(),
 }
+
+
+def _profile_item_conditions(table, ctx):
+	"""Items a till of the profile sells: sales items of the profile's item groups (and sub-groups)."""
+	conditions = [table.is_sales_item == 1]
+	roots = [row.item_group for row in ctx.profile.get("item_groups") or []]
+	if roots:
+		groups = _descendants("Item Group", roots)
+		conditions.append(table.item_group.isin(groups or [""]))
+	return conditions
 
 
 def _group_children(doctype, parents, fields, parenttype="Item"):
@@ -548,11 +640,28 @@ def pull_changes(ctx, entity, cursor_token=None, limit=None):
 
 	upper = format_db_datetime(now_datetime() - timedelta(seconds=get_pull_lag_seconds()))
 	if cursor is None:
-		# first pull: the snapshot replaces local data, only later deletions matter
-		cursor = Cursor(entity=entity, tomb_creation=upper, tomb_name="")
+		# first pull: the snapshot replaces local data, only later deletions / stock movements matter
+		cursor = Cursor(
+			entity=entity,
+			tomb_creation=upper,
+			tomb_name="",
+			stock_modified=upper if spec.follows_stock else None,
+			stock_name="" if spec.follows_stock else None,
+		)
 
 	rows, records_more = _fetch_records(spec, ctx, cursor, upper, limit)
 	tomb_rows, tombs_more = _fetch_tombstones(spec.doctype, cursor, upper, limit)
+
+	stock_modified, stock_name, stock_rows, stock_more = None, None, [], False
+	if spec.follows_stock:
+		# a cursor without a stock position follows stock from its record position on
+		stock_modified = cursor.stock_modified or cursor.modified or upper
+		stock_name = cursor.stock_name if cursor.stock_modified else ""
+		stock_rows, stock_more, position = spec.fetch_stock_changes(
+			ctx, (stock_modified, stock_name), upper, limit
+		)
+		if position:
+			stock_modified, stock_name = position
 
 	modified, name = cursor.modified, cursor.name
 	if rows:
@@ -569,13 +678,20 @@ def pull_changes(ctx, entity, cursor_token=None, limit=None):
 		name=name,
 		tomb_creation=tomb_creation,
 		tomb_name=tomb_name,
+		stock_modified=stock_modified,
+		stock_name=stock_name,
 	)
+
+	if spec.follows_stock:
+		# records whose stock moved, sent again with their current quantities
+		seen = {row.name for row in rows}
+		rows = rows + [row for row in stock_rows if row.name not in seen]
 
 	return {
 		"entity": entity,
 		"records": spec.build(rows, ctx),
 		"tombstones": _still_deleted(spec.doctype, [row.deleted_name for row in tomb_rows]),
 		"next_cursor": encode_cursor(next_cursor),
-		"has_more": bool(records_more or tombs_more),
+		"has_more": bool(records_more or tombs_more or stock_more),
 		"server_time": utc_now_iso(),
 	}

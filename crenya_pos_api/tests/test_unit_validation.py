@@ -5,6 +5,7 @@ from decimal import Decimal
 from crenya_pos_api.sync.errors import SyncError
 from crenya_pos_api.sync.hashing import payload_hash
 from crenya_pos_api.sync.validation import (
+	is_open_return,
 	validate_customer_payload,
 	validate_envelope,
 	validate_invoice_payload,
@@ -63,6 +64,15 @@ def make_return():
 	payload["items"][0].update({"qty": "-1", "amount": "-0.600", "against_line_no": 1})
 	payload["payments"] = [{"mode_of_payment": "Cash", "amount": "-0.600"}]
 	payload["client_totals"]["grand_total"] = "-0.600"
+	return payload
+
+
+def make_open_return():
+	"""A return without an invoice: no original invoice, no original rows, a reason."""
+	payload = make_return()
+	payload["return_against_local_id"] = None
+	payload["items"][0]["against_line_no"] = None
+	payload["remarks"] = "Damaged pack"
 	return payload
 
 
@@ -202,10 +212,81 @@ class TestInvoicePayload(unittest.TestCase):
 		self.assertInvalid(payload, "negative on a return")
 
 	def test_return_without_reference_is_allowed(self):
+		payload = make_open_return()
+		data = validate_invoice_payload(payload)
+		self.assertIsNone(data["return_against"])
+		self.assertIsNone(data["return_against_local_id"])
+		self.assertTrue(is_open_return(data))
+		self.assertEqual(data["remarks"], "Damaged pack")
+
+
+class TestOpenReturnPayload(unittest.TestCase):
+	def assertInvalid(self, payload, fragment):
+		with self.assertRaises(SyncError) as ctx:
+			validate_invoice_payload(payload)
+		self.assertEqual(ctx.exception.code, "validation")
+		self.assertIn(fragment, ctx.exception.message)
+
+	def test_valid_open_return_is_normalized(self):
+		payload = make_open_return()
+		payload["items"][0]["batch_no"] = "PARA-B1"
+		data = validate_invoice_payload(payload)
+		line = data["items"][0]
+		self.assertEqual(data["is_return"], 1)
+		self.assertEqual(line["qty"], Decimal("-1"))
+		self.assertEqual(line["rate"], Decimal("0.600"))
+		self.assertEqual(line["uom"], "Nos")
+		self.assertEqual(line["conversion_factor"], Decimal("1"))
+		self.assertEqual(line["batch_no"], "PARA-B1")
+		self.assertIsNone(line["against_line_no"])
+		self.assertEqual(data["payments"], [{"mode_of_payment": "Cash", "amount": Decimal("-0.600")}])
+
+	def test_open_return_flags(self):
+		self.assertTrue(is_open_return(validate_invoice_payload(make_open_return())))
+		self.assertFalse(is_open_return(validate_invoice_payload(make_return())))
+		self.assertFalse(is_open_return(validate_invoice_payload(copy.deepcopy(SALE))))
+		by_name = make_return()
+		by_name.update(return_against="SINV-0001", return_against_local_id=None)
+		self.assertFalse(is_open_return(validate_invoice_payload(by_name)))
+
+	def test_reason_is_required(self):
+		for remarks in (None, "", "   "):
+			with self.subTest(remarks=remarks):
+				payload = make_open_return()
+				payload["remarks"] = remarks
+				self.assertInvalid(payload, "remarks (the return reason) is required")
+		payload = make_open_return()
+		del payload["remarks"]
+		self.assertInvalid(payload, "remarks")
+
+	def test_reason_is_optional_against_an_invoice(self):
 		payload = make_return()
-		payload["return_against_local_id"] = None
-		payload["items"][0]["against_line_no"] = None
-		self.assertEqual(validate_invoice_payload(payload)["return_against"], None)
+		payload["remarks"] = None
+		self.assertIsNone(validate_invoice_payload(payload)["remarks"])
+
+	def test_rows_must_not_reference_an_original(self):
+		payload = make_open_return()
+		payload["items"][0]["against_line_no"] = 1
+		self.assertInvalid(payload, "items[0] references an original row")
+		payload = make_open_return()
+		payload["items"][0]["against_row_name"] = "abc123"
+		self.assertInvalid(payload, "items[0] references an original row")
+
+	def test_quantity_and_payment_signs(self):
+		payload = make_open_return()
+		payload["items"][0]["qty"] = "1"
+		self.assertInvalid(payload, "items[0].qty must be negative on a return")
+		payload = make_open_return()
+		payload["items"][0]["qty"] = "0"
+		self.assertInvalid(payload, "items[0].qty must not be zero")
+		payload = make_open_return()
+		payload["payments"][0]["amount"] = "0.600"
+		self.assertInvalid(payload, "payments[0].amount must be negative on a return")
+
+	def test_no_loyalty_redemption(self):
+		payload = make_open_return()
+		payload["loyalty"] = {"points": 10, "amount": "0.100"}
+		self.assertInvalid(payload, "cannot be redeemed on a return")
 
 
 class TestCustomerPayload(unittest.TestCase):

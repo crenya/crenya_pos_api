@@ -50,6 +50,11 @@ def build_batch_record(row, qty, precision):
 	}
 
 
+def lines_missing_batch(lines, tracked):
+	"""Lines of batch tracked items (`tracked`: item codes) that name no `batch_no`."""
+	return [line for line in lines if line["item_code"] in tracked and not line.get("batch_no")]
+
+
 def build_batch_records(rows, quantities, precision):
 	return [build_batch_record(row, quantities.get(row["name"]), precision) for row in rows]
 
@@ -251,6 +256,20 @@ def check_line_batches(lines):
 			raise SyncError(VALIDATION, f"{label}: batch {batch_no} does not exist")
 		if batch.item != line["item_code"]:
 			raise SyncError(VALIDATION, f"{label}: batch {batch_no} belongs to item {batch.item}")
+
+
+def require_line_batches(lines):
+	"""A return without an invoice has no original row to take the batch from: every line of a
+	batch tracked item must name the batch it goes back into."""
+	tracked = _batch_tracked_items(line["item_code"] for line in lines)
+	missing = lines_missing_batch(lines, tracked)
+	if missing:
+		line = missing[0]
+		raise SyncError(
+			VALIDATION,
+			f"Line {line['line_no']} ({line['item_code']}): batch_no is required for a batch tracked "
+			"item on a return without an invoice",
+		)
 
 
 def _returnable_batches(row_names):

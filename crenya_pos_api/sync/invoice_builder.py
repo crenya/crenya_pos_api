@@ -10,7 +10,7 @@ import json
 import frappe
 from frappe.utils import cint, flt
 
-from crenya_pos_api.sync.batches import check_line_batches, plan_return_batches
+from crenya_pos_api.sync.batches import check_line_batches, plan_return_batches, require_line_batches
 from crenya_pos_api.sync.cashier import enabled_user
 from crenya_pos_api.sync.context import (
 	get_total_tolerance,
@@ -21,7 +21,9 @@ from crenya_pos_api.sync.context import (
 )
 from crenya_pos_api.sync.errors import DEPENDENCY_MISSING, TOTAL_MISMATCH, VALIDATION, SyncError
 from crenya_pos_api.sync.loyalty import apply_redemption, customer_program
+from crenya_pos_api.sync.open_returns import assert_allowed, set_valuation_incoming_rates
 from crenya_pos_api.sync.taxes import allowed_template_names, resolve_invoice_template
+from crenya_pos_api.sync.validation import is_open_return
 from crenya_pos_api.utils.dates import format_db_datetime
 from crenya_pos_api.utils.decimal import as_decimal, format_money, quantize, within_tolerance
 
@@ -382,6 +384,10 @@ def build_invoice(ctx, data, notes):
 
 	customer = resolve_customer(ctx, data)
 	original = resolve_return_against(ctx, data)
+	open_return = is_open_return(data)
+	if open_return:
+		# a till may have been allowed when it sold offline: the profile decides at push time
+		assert_allowed(profile)
 	return_rows = None
 	batch_plan = {}
 	if original:
@@ -423,11 +429,15 @@ def build_invoice(ctx, data, notes):
 		doc.cost_center = profile.cost_center
 
 	check_line_batches([line for line in data["items"] if line["line_no"] not in batch_plan])
+	if open_return:
+		require_line_batches(data["items"])
 	_append_items(doc, ctx, data["items"], return_rows, batch_plan)
 
 	doc.set_missing_values(for_validate=True)
 	# POS Profile values must not re-enable pricing rules: the till's rate is final
 	doc.ignore_pricing_rule = 1
+	if open_return:
+		set_valuation_incoming_rates(doc)
 	if doc.taxes_and_charges and not doc.get("taxes"):
 		from erpnext.controllers.accounts_controller import get_taxes_and_charges
 

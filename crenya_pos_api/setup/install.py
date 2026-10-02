@@ -3,6 +3,13 @@
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from crenya_pos_api.sync.tax_wording import (
+	DEFAULT_CREDIT_NOTE_TITLE,
+	DEFAULT_INVOICE_TITLE,
+	DEFAULT_RECEIPT_QR_OPTION,
+	RECEIPT_QR_OPTIONS,
+)
+
 POS_USER_ROLE = "Crenya POS User"
 
 CUSTOM_FIELDS = {
@@ -131,6 +138,125 @@ CUSTOM_FIELDS = {
 			"label": "CR Number",
 			"insert_after": "tax_id",
 		},
+		# receipt wording, own collapsible section at the end of the address & contact section
+		# (address_html is its last field in ERPNext v15 and v16)
+		{
+			"fieldname": "crenya_pos_section",
+			"fieldtype": "Section Break",
+			"label": "Crenya POS",
+			"collapsible": 1,
+			"insert_after": "address_html",
+		},
+		{
+			"fieldname": "crenya_tax_name",
+			"fieldtype": "Data",
+			"label": "Tax Name",
+			"description": "Name of the tax on receipts (for example VAT or GST). "
+			"Blank: taken from the POS Profile's taxes template.",
+			"insert_after": "crenya_pos_section",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_tax_id_label",
+			"fieldtype": "Data",
+			"label": "Tax ID Label",
+			"description": "Label of the company tax ID on receipts (for example VATIN, TRN or GSTIN). "
+			"Blank: the label of the Tax ID field.",
+			"insert_after": "crenya_tax_name",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_invoice_title",
+			"fieldtype": "Data",
+			"label": "Invoice Title",
+			"description": f"Title of full (A4) sales invoices. Blank: {DEFAULT_INVOICE_TITLE}.",
+			"insert_after": "crenya_tax_id_label",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_credit_note_title",
+			"fieldtype": "Data",
+			"label": "Credit Note Title",
+			"description": f"Title of full (A4) credit notes. Blank: {DEFAULT_CREDIT_NOTE_TITLE}.",
+			"insert_after": "crenya_invoice_title",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_receipt_title",
+			"fieldtype": "Data",
+			"label": "Receipt Title",
+			"description": "Title of thermal sales receipts (for example Simplified Tax Invoice). "
+			"Blank: the Invoice Title.",
+			"insert_after": "crenya_credit_note_title",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_receipt_credit_note_title",
+			"fieldtype": "Data",
+			"label": "Receipt Credit Note Title",
+			"description": "Title of thermal return receipts. Blank: the Credit Note Title.",
+			"insert_after": "crenya_receipt_title",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_receipt_qr",
+			"fieldtype": "Select",
+			"label": "Receipt QR Code",
+			"options": RECEIPT_QR_OPTIONS,
+			"default": DEFAULT_RECEIPT_QR_OPTION,
+			"description": "Verification link: the invoice's public verification page. "
+			"ZATCA (KSA): the phase 1 QR code (seller, VAT number, time, totals). None: no QR code.",
+			"insert_after": "crenya_receipt_credit_note_title",
+		},
+		{
+			"fieldname": "crenya_pos_column_break",
+			"fieldtype": "Column Break",
+			"insert_after": "crenya_receipt_qr",
+		},
+		{
+			"fieldname": "crenya_tax_name_ar",
+			"fieldtype": "Data",
+			"label": "Tax Name (Arabic)",
+			"insert_after": "crenya_pos_column_break",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_tax_id_label_ar",
+			"fieldtype": "Data",
+			"label": "Tax ID Label (Arabic)",
+			"insert_after": "crenya_tax_name_ar",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_invoice_title_ar",
+			"fieldtype": "Data",
+			"label": "Invoice Title (Arabic)",
+			"insert_after": "crenya_tax_id_label_ar",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_credit_note_title_ar",
+			"fieldtype": "Data",
+			"label": "Credit Note Title (Arabic)",
+			"insert_after": "crenya_invoice_title_ar",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_receipt_title_ar",
+			"fieldtype": "Data",
+			"label": "Receipt Title (Arabic)",
+			"description": "Blank: the Invoice Title (Arabic).",
+			"insert_after": "crenya_credit_note_title_ar",
+			"translatable": 0,
+		},
+		{
+			"fieldname": "crenya_receipt_credit_note_title_ar",
+			"fieldtype": "Data",
+			"label": "Receipt Credit Note Title (Arabic)",
+			"description": "Blank: the Credit Note Title (Arabic).",
+			"insert_after": "crenya_receipt_title_ar",
+			"translatable": 0,
+		},
 	],
 }
 
@@ -151,14 +277,24 @@ def make_custom_fields():
 	create_custom_fields(CUSTOM_FIELDS, ignore_validate=True, update=True)
 
 
-def after_install():
+def ensure_setup():
+	"""Role and custom fields (idempotent); returns what the app ensures, per doctype."""
 	make_role()
 	make_custom_fields()
+	return {
+		"role": POS_USER_ROLE,
+		"custom_fields": {
+			doctype: [field["fieldname"] for field in fields] for doctype, fields in CUSTOM_FIELDS.items()
+		},
+	}
+
+
+def after_install():
+	ensure_setup()
 
 
 def after_migrate():
-	make_role()
-	make_custom_fields()
+	ensure_setup()
 
 
 def before_tests():

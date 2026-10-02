@@ -49,6 +49,7 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"verify_page": True,
 			"batches": True,
 			"open_returns": True,
+			"tax_wording": True,
 			"fawtara": COMPLIANCE_APP in installed,
 		},
 	}

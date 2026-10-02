@@ -46,7 +46,12 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
     (POS PIN, Password) and the hidden `crenya_pos_pin_hash` (see *Cashier PINs*)
   - Customer: `crenya_local_id` (unique)
   - Item: `crenya_item_name_ar` (Item Name (Arabic))
-  - Company: `crenya_company_name_ar`, `crenya_cr_number` (CR Number)
+  - Company: `crenya_company_name_ar`, `crenya_cr_number` (CR Number), and a collapsible
+    section **Crenya POS** (after the address) with the receipt wording `crenya_tax_name`,
+    `crenya_tax_id_label`, `crenya_invoice_title`, `crenya_credit_note_title`,
+    `crenya_receipt_title`, `crenya_receipt_credit_note_title` (each with an `_ar` Arabic
+    twin) and `crenya_receipt_qr` (Receipt QR Code: Verification link / ZATCA (KSA) /
+    None); see *Tax and invoice wording*
   - POS Profile: `crenya_allow_return_without_invoice` (Allow returns without invoice
     (Crenya POS), Check, default off; see *Returns without an invoice*)
 
@@ -58,6 +63,19 @@ bench get-app $URL_OF_THIS_REPO --branch main
 bench --site <site> install-app crenya_pos_api   # requires erpnext
 bench --site <site> migrate
 ```
+
+The role and custom fields are created after install and after every migrate.
+If a deploy did not run the app's `after_migrate` hook (custom fields missing,
+e.g. no *Crenya POS* section on Company), a System Manager can apply the same
+idempotent setup without a migrate:
+
+```bash
+curl -X POST "$SITE/api/method/crenya_pos_api.api.setup.ensure_custom_fields" \
+  -H "Authorization: token <api_key>:<api_secret>"
+```
+
+It returns `{role, custom_fields: {doctype: [fieldnames]}}`; anyone else gets
+HTTP 403. Running it again changes nothing.
 
 Optional `site_config.json` keys:
 
@@ -120,15 +138,16 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns` (GET or POST) |
+| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`), company (incl. `phone_country_code`), `settings.qty_precision`, taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
 | `fawtara.get_status` | Fawtara status and ASP document id of up to 50 till invoices (`device_id`, `local_ids`; POST) |
 | `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty, `batch_no` / `expiry_date` per row, `taxes_and_charges` and `loyalty_amount` |
+| `setup.ensure_custom_fields` | create / update the app's role and custom fields, as after a migrate (System Manager only, POST, idempotent) |
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
 | `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
@@ -168,6 +187,47 @@ rows, unknown) fails the event with `validation`. Omitted or null means the
 POS Profile's template. To offer a template, create it for the company, keep
 all rows *On Net Total* and leave it enabled; tills pick it up on their next
 bootstrap. Bill discounts need nothing extra: they arrive as line rates.
+
+#### Tax and invoice wording
+
+The till hardcodes no tax name, tax ID label, invoice title or QR format, so
+the same till prints Omani, Emirati, Saudi or Indian receipts. Bootstrap's
+`company` block carries, per company:
+
+| key | from Company | when blank |
+|---|---|---|
+| `country` | *Country* | `null` |
+| `tax_name`, `tax_name_ar` | *Tax Name* (`crenya_tax_name`, `_ar`) | the leading words of the POS Profile template's first tax row description (else its account, without the company abbreviation): "VAT 5%" → `VAT`, "CGST @ 9" → `CGST`; `_ar` `null` |
+| `tax_id_label`, `tax_id_label_ar` | *Tax ID Label* (`crenya_tax_id_label`, `_ar`) | the label of Company *Tax ID* as the site shows it ("Tax ID"), or of India Compliance's `gstin` field when the site has it; `_ar` `null` |
+| `invoice_title`, `invoice_title_ar` | *Invoice Title* (`crenya_invoice_title`, `_ar`): A4 / full tax invoice | `Tax Invoice`; `_ar` `null` |
+| `credit_note_title`, `credit_note_title_ar` | *Credit Note Title* (`crenya_credit_note_title`, `_ar`): A4 / full credit note | `Credit Note`; `_ar` `null` |
+| `receipt_title`, `receipt_title_ar` | *Receipt Title* (`crenya_receipt_title`, `_ar`): thermal receipt | `invoice_title` / `invoice_title_ar` |
+| `receipt_credit_note_title`, `receipt_credit_note_title_ar` | *Receipt Credit Note Title* (`crenya_receipt_credit_note_title`, `_ar`): thermal return receipt | `credit_note_title` / `credit_note_title_ar` |
+| `receipt_qr` | *Receipt QR Code* (`crenya_receipt_qr`): Verification link → `verify_link`, ZATCA (KSA) → `zatca_tlv`, None → `none` | `verify_link` |
+| `tax_code_label` | label of Item `gst_hsn_code` (India Compliance's HSN/SAC) | `null` when the site has no such field |
+| `tax_id` | *Tax ID*, else `gstin` when the site has that field | `null` |
+
+- **Item records** carry `tax_code`: Item `gst_hsn_code` when the site has
+  that field, else `null`.
+- **Customer records**: `tax_id` falls back to the customer's `gstin` when the
+  site has that field and *Tax ID* is empty.
+- With *Receipt QR Code* = ZATCA (KSA) the till prints the ZATCA phase 1 QR
+  (seller name, VAT number = `tax_id`, time stamp, total, VAT) offline. ZATCA
+  phase 2 and India e-invoicing (IRN) are done by the country's compliance app
+  in ERPNext after sync.
+
+Each language falls back on its own: a blank *Receipt Title (Arabic)* prints
+the *Invoice Title (Arabic)*, even when *Receipt Title* is set.
+
+Examples: Saudi Arabia: Tax ID Label `VAT No.`, Invoice Title `Tax Invoice` /
+`فاتورة ضريبية`, Receipt Title `Simplified Tax Invoice` / `فاتورة ضريبية
+مبسطة`, Receipt QR Code *ZATCA (KSA)*. UAE: Tax ID
+Label `TRN`. India: install India Compliance (GSTIN, HSN/SAC come from its
+fields; a CGST + SGST template prints both rows). Oman: nothing to set
+(`VAT`, `Tax ID`, `Tax Invoice`, verification link), or Tax ID Label `VATIN`
+and Receipt Title `Simplified Tax Invoice`.
+
+`sync.get_sync_capabilities` announces this with `features.tax_wording`.
 
 #### Locale data
 

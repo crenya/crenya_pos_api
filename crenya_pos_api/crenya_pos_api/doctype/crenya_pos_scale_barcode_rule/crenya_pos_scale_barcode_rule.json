@@ -1,0 +1,63 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-10-02 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "prefix",
+  "plu_length",
+  "value_type",
+  "value_decimals"
+ ],
+ "fields": [
+  {
+   "description": "1 to 3 digits the scale prints first, for example 21",
+   "fieldname": "prefix",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Prefix",
+   "reqd": 1
+  },
+  {
+   "default": "5",
+   "description": "Digits of the item's barcode or code after the prefix",
+   "fieldname": "plu_length",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "PLU Length",
+   "reqd": 1
+  },
+  {
+   "default": "Weight",
+   "fieldname": "value_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Value Type",
+   "options": "Weight\nPrice",
+   "reqd": 1
+  },
+  {
+   "description": "Decimals of the embedded value. Blank: 3 for weight (grams), the currency's precision for price",
+   "fieldname": "value_decimals",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Value Decimals",
+   "options": "\n0\n1\n2\n3\n4\n5\n6"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Crenya Pos Api",
+ "name": "Crenya POS Scale Barcode Rule",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

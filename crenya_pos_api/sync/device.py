@@ -31,8 +31,10 @@ from crenya_pos_api.sync.locale_data import (
 )
 from crenya_pos_api.sync.loyalty import loyalty_enabled
 from crenya_pos_api.sync.open_returns import allows_return_without_invoice
+from crenya_pos_api.sync.scale_rules import scale_barcode_rules
 from crenya_pos_api.sync.tax_wording import bootstrap_company_wording, company_wording_fields
 from crenya_pos_api.sync.taxes import get_tax_templates
+from crenya_pos_api.sync.terminals import payment_terminals
 from crenya_pos_api.utils.dates import utc_now_iso
 from crenya_pos_api.utils.decimal import format_money, format_number
 
@@ -324,6 +326,7 @@ def bootstrap(ctx):
 			"allow_negative_stock": bool(
 				cint(frappe.db.get_single_value("Stock Settings", "allow_negative_stock"))
 			),
+			"scale_barcode_rules": scale_barcode_rules(profile),
 		},
 		"company": _company_info(profile, company, taxes),
 		"settings": {
@@ -335,6 +338,8 @@ def bootstrap(ctx):
 		"cash_denominations": cash_denominations(currency),
 		"site_timezone": get_system_timezone(),
 		"payment_methods": _payment_methods(profile),
+		# secrets included: get_device_context has authorized this registered device
+		"payment_terminals": payment_terminals(profile),
 		"taxes": taxes,
 		"item_tax_templates": _item_tax_templates(profile.company),
 		"server_time": utc_now_iso(),

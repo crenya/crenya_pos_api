@@ -124,6 +124,23 @@ CUSTOM_FIELDS = {
 			"default": "0",
 			"insert_after": "allow_discount_change",
 		},
+		# own collapsible section after the Filters section (customer_groups is its last field)
+		{
+			"fieldname": "crenya_scale_section",
+			"fieldtype": "Section Break",
+			"label": "Crenya POS Scale Barcodes",
+			"collapsible": 1,
+			"insert_after": "customer_groups",
+		},
+		{
+			"fieldname": "crenya_scale_barcode_rules",
+			"fieldtype": "Table",
+			"label": "Scale Barcode Rules",
+			"options": "Crenya POS Scale Barcode Rule",
+			"description": "EAN-13 labels printed by scales: prefix, PLU, then the weight or price. "
+			"When rules are set they replace the scale settings of the tills.",
+			"insert_after": "crenya_scale_section",
+		},
 	],
 	"Company": [
 		{

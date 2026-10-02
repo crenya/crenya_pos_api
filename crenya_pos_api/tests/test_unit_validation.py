@@ -133,7 +133,9 @@ class TestInvoicePayload(unittest.TestCase):
 		self.assertEqual(line["qty"], Decimal("2"))
 		self.assertEqual(line["rate"], Decimal("0.600"))
 		self.assertEqual(line["conversion_factor"], Decimal("1"))
-		self.assertEqual(data["payments"], [{"mode_of_payment": "Cash", "amount": Decimal("1.200")}])
+		self.assertEqual(
+			data["payments"], [{"mode_of_payment": "Cash", "amount": Decimal("1.200"), "reference_no": None}]
+		)
 		self.assertEqual(data["client_totals"]["grand_total"], Decimal("1.200"))
 
 	def test_valid_return(self):
@@ -153,8 +155,8 @@ class TestInvoicePayload(unittest.TestCase):
 		self.assertEqual(
 			data["payments"],
 			[
-				{"mode_of_payment": "Cash", "amount": Decimal("1.100")},
-				{"mode_of_payment": "Card", "amount": Decimal("0.100")},
+				{"mode_of_payment": "Cash", "amount": Decimal("1.100"), "reference_no": None},
+				{"mode_of_payment": "Card", "amount": Decimal("0.100"), "reference_no": None},
 			],
 		)
 
@@ -239,7 +241,9 @@ class TestOpenReturnPayload(unittest.TestCase):
 		self.assertEqual(line["conversion_factor"], Decimal("1"))
 		self.assertEqual(line["batch_no"], "PARA-B1")
 		self.assertIsNone(line["against_line_no"])
-		self.assertEqual(data["payments"], [{"mode_of_payment": "Cash", "amount": Decimal("-0.600")}])
+		self.assertEqual(
+			data["payments"], [{"mode_of_payment": "Cash", "amount": Decimal("-0.600"), "reference_no": None}]
+		)
 
 	def test_open_return_flags(self):
 		self.assertTrue(is_open_return(validate_invoice_payload(make_open_return())))

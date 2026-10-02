@@ -37,6 +37,12 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   `note` / `coin`, enabled): the notes and coins tills offer when cashiers
   count cash (see *Locale data*). System Manager manages them; Crenya POS
   User can read them. The app creates none.
+- DocType **Crenya POS Payment Terminal**: a card / UPI terminal tills drive
+  for one mode of payment (see *Payment terminals*). System Manager and
+  Accounts Manager manage them; Crenya POS User has no access (tills receive
+  them through bootstrap).
+- Child DocType **Crenya POS Scale Barcode Rule** (prefix, PLU length, value
+  type, value decimals) on the POS Profile (see *Scale barcode rules*).
 - Role **Crenya POS User**.
 - Custom fields (created on install and on every migrate):
   - Sales Invoice: `crenya_local_id` (unique), `crenya_offline_number`, `crenya_device`,
@@ -53,7 +59,9 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
     twin) and `crenya_receipt_qr` (Receipt QR Code: Verification link / ZATCA (KSA) /
     None); see *Tax and invoice wording*
   - POS Profile: `crenya_allow_return_without_invoice` (Allow returns without invoice
-    (Crenya POS), Check, default off; see *Returns without an invoice*)
+    (Crenya POS), Check, default off; see *Returns without an invoice*), and a collapsible
+    section **Crenya POS Scale Barcodes** (after *Filters*) with the table
+    `crenya_scale_barcode_rules` (see *Scale barcode rules*)
 
 #### Installation
 
@@ -138,10 +146,10 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording` (GET or POST) |
+| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording`, `payment_terminals`, `scale_rules` (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, taxes, payment modes, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
+| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch` + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
@@ -458,6 +466,81 @@ sends it as `profile.allow_return_without_invoice`.
 - Returns against an invoice are unchanged and do not need the flag.
 
 `sync.get_sync_capabilities` announces this with `features.open_returns`.
+
+#### Payment terminals
+
+Tills can take card and UPI payments on a terminal and book them to a mode of
+payment. Create one **Crenya POS Payment Terminal** per terminal (Accounts
+Manager or System Manager):
+
+- *Label* (shown on the till's pay button), *Provider*, *Company*, *Mode of
+  Payment* and, optionally, *POS Profile* (blank: every POS Profile of the
+  company). The mode of payment needs an account for the company (Mode of
+  Payment → *Accounts*) and, with a POS Profile, must be in that profile's
+  payment methods. Only the chosen provider's settings are shown:
+  - **UPI QR** (India, works offline): *UPI ID (VPA)* in the form
+    `name@bank` (required) and *Payee Name* (optional). The
+    till shows a `upi://pay` QR code with the amount; the cashier confirms
+    the payment.
+  - **Pine Labs Cloud** (needs internet): *Environment* (UAT / Production),
+    *Merchant ID*, *Store ID*, *Client ID* (required, as issued by Pine
+    Labs), *User ID*, *Security Token* (required, stored encrypted),
+    *Allowed Payment Mode* (Pine Labs code, for example `1` or `1,10`) and
+    *Auto Cancel (Minutes)* (0 to 1440, blank: Pine Labs' default).
+  - **Geidea**, **Network International ECR**, **Bank ECR**: *Host*, *Port*,
+    *Terminal ID*, *Notes*. Stored now; tills offer them once their adapters
+    are integrated.
+- Records are named `<Label> - <POS Profile>`, or `<Label> - <company
+  abbreviation>` for every profile (a number is added when the name is
+  taken).
+
+Bootstrap sends `payment_terminals`: the enabled terminals of the device's
+company whose POS Profile is the device's (or blank) and whose mode of payment
+the profile offers, as `{name, provider, mode_of_payment, label,
+needs_internet, config}`. `provider` is `upi_qr`, `pinelabs_cloud`, `geidea`,
+`network_ecr` or `bank_ecr`; `needs_internet` is false for `upi_qr` and
+`bank_ecr` (shop LAN) and true for the others. `config` holds only the
+provider's own settings:
+
+| provider | `config` keys |
+|---|---|
+| `upi_qr` | `upi_vpa`, `upi_payee_name` |
+| `pinelabs_cloud` | `environment` (`uat` / `production`), `merchant_id`, `store_id`, `client_id`, `user_id`, `security_token`, `allowed_payment_mode`, `auto_cancel_minutes` (null when blank) |
+| `geidea`, `network_ecr`, `bank_ecr` | `host`, `port` (null when blank), `terminal_id` |
+
+The Pine Labs security token is decrypted only for the bootstrap of a
+registered, enabled device of the calling user (the same check as every
+device call); the record shows it masked and tills keep it in the operating
+system's keychain.
+
+Sale and return payloads may carry `reference_no` on a payment row (terminal
+RRN / UTR / approval code, at most 140 characters), stored in the Sales
+Invoice payment row's *Reference No*. Payment rows of the same mode of payment
+are merged into one ERPNext row as before; their distinct references are
+joined with `, ` (together at most 140 characters, else `validation`).
+
+`sync.get_sync_capabilities` announces this with `features.payment_terminals`.
+
+#### Scale barcode rules
+
+Scales print EAN-13 labels: prefix, PLU (the item's barcode or item code),
+the weight or price, check digit. Set the rules per POS Profile in the
+section **Crenya POS Scale Barcodes** (`crenya_scale_barcode_rules`), one row
+per prefix:
+
+- *Prefix*: 1 to 3 digits (for example `21`); each prefix once, and no prefix
+  may start another one (`2` and `21` are refused).
+- *PLU Length*: 1 to 10 digits; prefix and PLU together must stay under 12
+  digits, leaving room for the value.
+- *Value Type*: Weight or Price.
+- *Value Decimals*: blank (weight: 3, grams to kilograms; price: the
+  currency's precision) or 0 to 6.
+
+Bootstrap sends them as `profile.scale_barcode_rules: [{prefix, plu_length,
+value_type ("weight" / "price"), value_decimals (null when blank)}]` in table
+order. Non-empty rules replace the till's local scale settings; an empty table
+leaves them as configured on the till. `sync.get_sync_capabilities` announces
+this with `features.scale_rules`.
 
 #### Receipt verification (Fawtara)
 

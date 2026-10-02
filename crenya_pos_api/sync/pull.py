@@ -20,6 +20,7 @@ from crenya_pos_api.sync.context import POS_USER_ROLE, get_pull_lag_seconds, mon
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.promotions import rule_is_active
+from crenya_pos_api.sync.tax_wording import GSTIN_FIELD, item_tax_code_field, tax_id_value
 from crenya_pos_api.utils.dates import format_date, format_db_datetime, utc_now_iso
 from crenya_pos_api.utils.decimal import format_money, format_number
 
@@ -89,8 +90,13 @@ class ItemSpec(EntitySpec):
 
 	def select(self, table):
 		columns = super().select(table)
-		if frappe.get_meta("Item").has_field("crenya_item_name_ar"):
+		meta = frappe.get_meta("Item")
+		if meta.has_field("crenya_item_name_ar"):
 			columns.append(table.crenya_item_name_ar)
+		# India Compliance's HSN/SAC code, when the site has it
+		code_field = item_tax_code_field(meta)
+		if code_field:
+			columns.append(getattr(table, code_field))
 		return columns
 
 	def build(self, rows, ctx):
@@ -98,6 +104,7 @@ class ItemSpec(EntitySpec):
 		barcodes = _group_children("Item Barcode", names, ["parent", "barcode", "uom"])
 		uoms = _group_children("UOM Conversion Detail", names, ["parent", "uom", "conversion_factor"])
 		tax_templates = _item_tax_templates(names, ctx.company)
+		code_field = item_tax_code_field(frappe.get_meta("Item"))
 		records = []
 		for row in rows:
 			records.append(
@@ -113,6 +120,7 @@ class ItemSpec(EntitySpec):
 					"has_expiry_date": cint(row.has_expiry_date),
 					"disabled": cint(row.disabled),
 					"item_tax_template": tax_templates.get(row.name),
+					"tax_code": (row.get(code_field) or None) if code_field else None,
 					"barcodes": [
 						{"barcode": child.barcode, "uom": child.uom} for child in barcodes.get(row.name, [])
 					],
@@ -242,11 +250,15 @@ class CustomerSpec(EntitySpec):
 
 	def select(self, table):
 		columns = super().select(table)
-		if frappe.get_meta("Customer").has_field("crenya_local_id"):
+		meta = frappe.get_meta("Customer")
+		if meta.has_field("crenya_local_id"):
 			columns.append(table.crenya_local_id)
+		if meta.has_field(GSTIN_FIELD):
+			columns.append(getattr(table, GSTIN_FIELD))
 		return columns
 
 	def build(self, rows, ctx):
+		has_gstin = frappe.get_meta("Customer").has_field(GSTIN_FIELD)
 		return [
 			{
 				"name": row.name,
@@ -254,7 +266,8 @@ class CustomerSpec(EntitySpec):
 				"customer_group": row.customer_group,
 				"mobile_no": row.mobile_no,
 				"email_id": row.email_id,
-				"tax_id": row.tax_id,
+				# empty tax_id falls back to India Compliance's GSTIN
+				"tax_id": tax_id_value(row, has_gstin) or row.tax_id,
 				"disabled": cint(row.disabled),
 				"crenya_local_id": row.get("crenya_local_id") or None,
 				"modified": format_db_datetime(row.modified),

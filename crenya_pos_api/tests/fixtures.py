@@ -44,6 +44,10 @@ BATCH_TWO = "_TC-PARA-B2"
 BATCH_EXPIRED = "_TC-PARA-BX"
 BATCH_STOCK = 100
 EXPIRED_STOCK = 10
+# payment terminals: a profile of its own with card and UPI modes besides cash
+TERMINAL_PROFILE = "_Test Crenya POS Terminals"
+CARD = "_Test Crenya Card"
+UPI = "_Test Crenya UPI"
 
 
 def _insert(doc):
@@ -286,9 +290,21 @@ def make_customer(customer_name, loyalty_program=None):
 	).name
 
 
-def ensure_pos_profile(company, customer):
-	if frappe.db.exists("POS Profile", POS_PROFILE):
-		return frappe.get_doc("POS Profile", POS_PROFILE)
+def ensure_mode_of_payment(mode, mode_type, company, account=None):
+	if not frappe.db.exists("Mode of Payment", mode):
+		_insert({"doctype": "Mode of Payment", "mode_of_payment": mode, "type": mode_type, "enabled": 1})
+	if not frappe.db.exists("Mode of Payment Account", {"parent": mode, "company": company.name}):
+		doc = frappe.get_doc("Mode of Payment", mode)
+		doc.append(
+			"accounts",
+			{"company": company.name, "default_account": account or company.default_cash_account},
+		)
+		doc.save(ignore_permissions=True)
+
+
+def ensure_pos_profile(company, customer, name=POS_PROFILE, payments=None):
+	if frappe.db.exists("POS Profile", name):
+		return frappe.get_doc("POS Profile", name)
 	profile = frappe.get_doc(
 		{
 			"doctype": "POS Profile",
@@ -304,11 +320,11 @@ def ensure_pos_profile(company, customer):
 			"taxes_and_charges": TAX_TEMPLATE,
 			"disable_rounded_total": 1,
 			"ignore_pricing_rule": 1,
-			"payments": [{"mode_of_payment": CASH, "default": 1}],
+			"payments": payments or [{"mode_of_payment": CASH, "default": 1}],
 			"item_groups": [{"item_group": ITEM_GROUP_ROOT}],
 		}
 	)
-	return profile.insert(ignore_permissions=True, set_name=POS_PROFILE)
+	return profile.insert(ignore_permissions=True, set_name=name)
 
 
 def setup_fixtures():
@@ -428,3 +444,25 @@ def setup_batch_fixtures():
 	ensure_batch_stock(BATCH_ITEM, BATCH_ONE, BATCH_STOCK, add_days(today, -1))
 	ensure_batch_stock(BATCH_ITEM, BATCH_TWO, BATCH_STOCK, add_days(today, -1))
 	frappe.db.commit()
+
+
+def setup_terminal_fixtures():
+	"""Card and UPI modes of payment and a POS Profile offering cash, card and UPI, on top of
+	`setup_fixtures`."""
+	company = frappe.get_doc("Company", COMPANY)
+	account = company.default_cash_account or f"Cash - {ABBR}"
+	ensure_mode_of_payment(CARD, "Bank", company, account)
+	ensure_mode_of_payment(UPI, "Bank", company, account)
+	customer = frappe.db.get_value("Customer", {"customer_name": CUSTOMER}, "name")
+	profile = ensure_pos_profile(
+		company,
+		customer,
+		name=TERMINAL_PROFILE,
+		payments=[
+			{"mode_of_payment": CASH, "default": 1},
+			{"mode_of_payment": CARD},
+			{"mode_of_payment": UPI},
+		],
+	)
+	frappe.db.commit()
+	return profile

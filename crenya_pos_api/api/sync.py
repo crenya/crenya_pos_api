@@ -50,6 +50,8 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"batches": True,
 			"open_returns": True,
 			"tax_wording": True,
+			"payment_terminals": True,
+			"scale_rules": True,
 			"fawtara": COMPLIANCE_APP in installed,
 		},
 	}

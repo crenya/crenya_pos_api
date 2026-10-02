@@ -148,6 +148,8 @@ doc_events = {
 	"POS Profile": {
 		# tills learn about cashiers added to / removed from Applicable for Users
 		"on_update": "crenya_pos_api.sync.cashier.pos_profile_on_update",
+		# scale barcode rules: valid prefixes and lengths, no prefix twice
+		"validate": "crenya_pos_api.sync.scale_rules.pos_profile_validate",
 	},
 	"Sales Invoice": {
 		# till invoices: promotion names go onto the item rows after ERPNext's last validation

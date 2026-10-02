@@ -184,6 +184,7 @@ def _append_payments(doc, ctx, payments):
 				"account": details.default_account,
 				"type": details.type,
 				"default": 1 if mode == default_mode else 0,
+				"reference_no": payment.get("reference_no"),
 			},
 		)
 	return default_mode

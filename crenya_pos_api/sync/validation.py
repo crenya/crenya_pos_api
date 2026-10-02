@@ -24,6 +24,8 @@ MAX_SHIFT_PAYMENT_ROWS = 50
 MAX_SHIFT_INVOICE_IDS = 100000
 MAX_NOTES_LENGTH = 2000
 MAX_PRICING_RULES_PER_LINE = 20
+# Sales Invoice Payment reference_no (Data)
+MAX_REFERENCE_LENGTH = 140
 
 _EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,139}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -251,6 +253,7 @@ def _validate_payments(payments, is_return):
 		_fail("payments must be a list")
 
 	merged = {}
+	references = {}
 	for index, row in enumerate(payments):
 		label = f"payments[{index}]"
 		if not isinstance(row, dict):
@@ -261,9 +264,24 @@ def _validate_payments(payments, is_return):
 			_fail(f"{label}.amount must be negative on a return")
 		if not is_return and amount < 0:
 			_fail(f"{label}.amount must not be negative on a sale")
+		# optional: terminal RRN / UTR / approval code
+		reference = _optional_str(row, "reference_no", f"{label}.reference_no", MAX_REFERENCE_LENGTH)
 		merged[mode] = merged.get(mode, parse_decimal("0")) + amount
+		mode_references = references.setdefault(mode, [])
+		if reference and reference not in mode_references:
+			mode_references.append(reference)
 
-	return [{"mode_of_payment": mode, "amount": amount} for mode, amount in merged.items()]
+	result = []
+	for mode, amount in merged.items():
+		# one ERPNext payment row per mode: several terminal payments keep all their references
+		reference = ", ".join(references[mode]) or None
+		if reference and len(reference) > MAX_REFERENCE_LENGTH:
+			_fail(
+				f"payments of {mode}: reference numbers are longer than {MAX_REFERENCE_LENGTH} "
+				"characters together"
+			)
+		result.append({"mode_of_payment": mode, "amount": amount, "reference_no": reference})
+	return result
 
 
 CLIENT_TOTAL_FIELDS = (

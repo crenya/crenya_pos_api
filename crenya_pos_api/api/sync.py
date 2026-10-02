@@ -52,6 +52,7 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"tax_wording": True,
 			"payment_terminals": True,
 			"scale_rules": True,
+			"uom_entity": True,
 			"fawtara": COMPLIANCE_APP in installed,
 		},
 	}

@@ -32,9 +32,16 @@ WORDING_FIELDS = {
 	"invoice_title": "crenya_invoice_title",
 	"credit_note_title": "crenya_credit_note_title",
 }
+# thermal receipt titles: protocol key -> (Company field, key of the A4 title it defaults to);
+# `<key>_ar` reads `<field>_ar` and defaults to `<A4 key>_ar`
+RECEIPT_TITLE_FIELDS = {
+	"receipt_title": ("crenya_receipt_title", "invoice_title"),
+	"receipt_credit_note_title": ("crenya_receipt_credit_note_title", "credit_note_title"),
+}
 RECEIPT_QR_FIELD = "crenya_receipt_qr"
 COMPANY_WORDING_FIELDS = (
 	*(field + suffix for field in WORDING_FIELDS.values() for suffix in ("", "_ar")),
+	*(field + suffix for field, _a4 in RECEIPT_TITLE_FIELDS.values() for suffix in ("", "_ar")),
 	RECEIPT_QR_FIELD,
 )
 
@@ -105,6 +112,9 @@ def item_tax_code_field(item_meta):
 def company_wording(row, company_meta, item_meta, tax_rows):
 	"""Wording keys of the bootstrap `company` block (pure).
 
+	`invoice_title` / `credit_note_title` are the A4 (full) titles, `receipt_title` /
+	`receipt_credit_note_title` the thermal receipt ones (blank: the A4 title).
+
 	`row`: Company values (custom fields only when the site has them); `tax_rows`: rows of the POS
 	Profile's default Sales Taxes and Charges Template in idx order.
 	"""
@@ -118,6 +128,10 @@ def company_wording(row, company_meta, item_meta, tax_rows):
 	for key, field in WORDING_FIELDS.items():
 		result[key] = _text(row.get(field)) or defaults[key]
 		result[f"{key}_ar"] = _text(row.get(f"{field}_ar"))
+	# thermal receipt titles default to the A4 titles (each language on its own)
+	for key, (field, a4_key) in RECEIPT_TITLE_FIELDS.items():
+		result[key] = _text(row.get(field)) or result[a4_key]
+		result[f"{key}_ar"] = _text(row.get(f"{field}_ar")) or result[f"{a4_key}_ar"]
 	result["receipt_qr"] = receipt_qr_mode(row.get(RECEIPT_QR_FIELD))
 	code_field = item_tax_code_field(item_meta)
 	result["tax_code_label"] = field_label(item_meta, code_field) if code_field else None

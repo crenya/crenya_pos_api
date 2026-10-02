@@ -158,6 +158,11 @@ class TestCompanyWording(unittest.TestCase):
 				"invoice_title_ar": None,
 				"credit_note_title": DEFAULT_CREDIT_NOTE_TITLE,
 				"credit_note_title_ar": None,
+				# thermal titles default to the A4 ones
+				"receipt_title": DEFAULT_INVOICE_TITLE,
+				"receipt_title_ar": None,
+				"receipt_credit_note_title": DEFAULT_CREDIT_NOTE_TITLE,
+				"receipt_credit_note_title_ar": None,
 				"receipt_qr": "verify_link",
 				"tax_code_label": None,
 				"tax_id": None,
@@ -193,6 +198,10 @@ class TestCompanyWording(unittest.TestCase):
 		self.assertEqual(wording["invoice_title"], "Simplified Tax Invoice")
 		self.assertEqual(wording["invoice_title_ar"], "فاتورة ضريبية مبسطة")
 		self.assertEqual(wording["credit_note_title_ar"], "إشعار دائن")
+		self.assertEqual(wording["receipt_title"], "Simplified Tax Invoice")
+		self.assertEqual(wording["receipt_title_ar"], "فاتورة ضريبية مبسطة")
+		self.assertEqual(wording["receipt_credit_note_title"], "Credit Note")
+		self.assertEqual(wording["receipt_credit_note_title_ar"], "إشعار دائن")
 		self.assertEqual(wording["receipt_qr"], "zatca_tlv")
 		self.assertEqual(wording["tax_id"], "300000000000003")
 		self.assertEqual(wording["country"], "Saudi Arabia")
@@ -203,6 +212,40 @@ class TestCompanyWording(unittest.TestCase):
 		self.assertEqual(wording["tax_name"], "VAT")
 		self.assertEqual(wording["invoice_title"], "Tax Invoice")
 		self.assertEqual(wording["receipt_qr"], "verify_link")
+
+	def test_receipt_titles(self):
+		values = {
+			"crenya_invoice_title": "Tax Invoice",
+			"crenya_invoice_title_ar": "فاتورة ضريبية",
+			"crenya_receipt_title": "Simplified Tax Invoice",
+			"crenya_receipt_title_ar": "فاتورة ضريبية مبسطة",
+			"crenya_receipt_credit_note_title": "Refund",
+			"crenya_receipt_credit_note_title_ar": "استرداد",
+		}
+		wording = company_wording(values, ERPNEXT_COMPANY, ERPNEXT_ITEM, VAT_TAXES)
+		self.assertEqual(wording["invoice_title"], "Tax Invoice")
+		self.assertEqual(wording["invoice_title_ar"], "فاتورة ضريبية")
+		self.assertEqual(wording["receipt_title"], "Simplified Tax Invoice")
+		self.assertEqual(wording["receipt_title_ar"], "فاتورة ضريبية مبسطة")
+		self.assertEqual(wording["credit_note_title"], "Credit Note")
+		self.assertIsNone(wording["credit_note_title_ar"])
+		self.assertEqual(wording["receipt_credit_note_title"], "Refund")
+		self.assertEqual(wording["receipt_credit_note_title_ar"], "استرداد")
+
+	def test_receipt_titles_fall_back_per_language(self):
+		# a thermal title in one language only: the other language takes the A4 title
+		values = {
+			"crenya_invoice_title_ar": "فاتورة ضريبية",
+			"crenya_receipt_title": "Simplified Tax Invoice",
+			"crenya_credit_note_title": "Credit Memo",
+			"crenya_receipt_credit_note_title": "  ",
+			"crenya_receipt_credit_note_title_ar": "إشعار دائن",
+		}
+		wording = company_wording(values, ERPNEXT_COMPANY, ERPNEXT_ITEM, VAT_TAXES)
+		self.assertEqual(wording["receipt_title"], "Simplified Tax Invoice")
+		self.assertEqual(wording["receipt_title_ar"], "فاتورة ضريبية")
+		self.assertEqual(wording["receipt_credit_note_title"], "Credit Memo")
+		self.assertEqual(wording["receipt_credit_note_title_ar"], "إشعار دائن")
 
 	def test_india_compliance_site(self):
 		taxes = [row("CGST @ 9.0", "Output Tax CGST - IN"), row("SGST @ 9.0", "Output Tax SGST - IN")]

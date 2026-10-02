@@ -48,8 +48,9 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   - Item: `crenya_item_name_ar` (Item Name (Arabic))
   - Company: `crenya_company_name_ar`, `crenya_cr_number` (CR Number), and a collapsible
     section **Crenya POS** (after the address) with the receipt wording `crenya_tax_name`,
-    `crenya_tax_id_label`, `crenya_invoice_title`, `crenya_credit_note_title` (each with an
-    `_ar` Arabic twin) and `crenya_receipt_qr` (Receipt QR Code: Verification link / ZATCA (KSA) /
+    `crenya_tax_id_label`, `crenya_invoice_title`, `crenya_credit_note_title`,
+    `crenya_receipt_title`, `crenya_receipt_credit_note_title` (each with an `_ar` Arabic
+    twin) and `crenya_receipt_qr` (Receipt QR Code: Verification link / ZATCA (KSA) /
     None); see *Tax and invoice wording*
   - POS Profile: `crenya_allow_return_without_invoice` (Allow returns without invoice
     (Crenya POS), Check, default off; see *Returns without an invoice*)
@@ -198,8 +199,10 @@ the same till prints Omani, Emirati, Saudi or Indian receipts. Bootstrap's
 | `country` | *Country* | `null` |
 | `tax_name`, `tax_name_ar` | *Tax Name* (`crenya_tax_name`, `_ar`) | the leading words of the POS Profile template's first tax row description (else its account, without the company abbreviation): "VAT 5%" → `VAT`, "CGST @ 9" → `CGST`; `_ar` `null` |
 | `tax_id_label`, `tax_id_label_ar` | *Tax ID Label* (`crenya_tax_id_label`, `_ar`) | the label of Company *Tax ID* as the site shows it ("Tax ID"), or of India Compliance's `gstin` field when the site has it; `_ar` `null` |
-| `invoice_title`, `invoice_title_ar` | *Invoice Title* (`crenya_invoice_title`, `_ar`) | `Tax Invoice`; `_ar` `null` |
-| `credit_note_title`, `credit_note_title_ar` | *Credit Note Title* (`crenya_credit_note_title`, `_ar`) | `Credit Note`; `_ar` `null` |
+| `invoice_title`, `invoice_title_ar` | *Invoice Title* (`crenya_invoice_title`, `_ar`): A4 / full tax invoice | `Tax Invoice`; `_ar` `null` |
+| `credit_note_title`, `credit_note_title_ar` | *Credit Note Title* (`crenya_credit_note_title`, `_ar`): A4 / full credit note | `Credit Note`; `_ar` `null` |
+| `receipt_title`, `receipt_title_ar` | *Receipt Title* (`crenya_receipt_title`, `_ar`): thermal receipt | `invoice_title` / `invoice_title_ar` |
+| `receipt_credit_note_title`, `receipt_credit_note_title_ar` | *Receipt Credit Note Title* (`crenya_receipt_credit_note_title`, `_ar`): thermal return receipt | `credit_note_title` / `credit_note_title_ar` |
 | `receipt_qr` | *Receipt QR Code* (`crenya_receipt_qr`): Verification link → `verify_link`, ZATCA (KSA) → `zatca_tlv`, None → `none` | `verify_link` |
 | `tax_code_label` | label of Item `gst_hsn_code` (India Compliance's HSN/SAC) | `null` when the site has no such field |
 | `tax_id` | *Tax ID*, else `gstin` when the site has that field | `null` |
@@ -213,11 +216,16 @@ the same till prints Omani, Emirati, Saudi or Indian receipts. Bootstrap's
   phase 2 and India e-invoicing (IRN) are done by the country's compliance app
   in ERPNext after sync.
 
-Examples: Saudi Arabia: Tax ID Label `VAT No.`, Invoice Title `Simplified Tax
-Invoice` / `فاتورة ضريبية مبسطة`, Receipt QR Code *ZATCA (KSA)*. UAE: Tax ID
+Each language falls back on its own: a blank *Receipt Title (Arabic)* prints
+the *Invoice Title (Arabic)*, even when *Receipt Title* is set.
+
+Examples: Saudi Arabia: Tax ID Label `VAT No.`, Invoice Title `Tax Invoice` /
+`فاتورة ضريبية`, Receipt Title `Simplified Tax Invoice` / `فاتورة ضريبية
+مبسطة`, Receipt QR Code *ZATCA (KSA)*. UAE: Tax ID
 Label `TRN`. India: install India Compliance (GSTIN, HSN/SAC come from its
 fields; a CGST + SGST template prints both rows). Oman: nothing to set
-(`VAT`, `Tax ID`, `Tax Invoice`, verification link), or Tax ID Label `VATIN`.
+(`VAT`, `Tax ID`, `Tax Invoice`, verification link), or Tax ID Label `VATIN`
+and Receipt Title `Simplified Tax Invoice`.
 
 `sync.get_sync_capabilities` announces this with `features.tax_wording`.
 

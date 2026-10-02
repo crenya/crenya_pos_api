@@ -34,6 +34,10 @@ WORDING_KEYS = (
 	"invoice_title_ar",
 	"credit_note_title",
 	"credit_note_title_ar",
+	"receipt_title",
+	"receipt_title_ar",
+	"receipt_credit_note_title",
+	"receipt_credit_note_title_ar",
 	"receipt_qr",
 	"tax_code_label",
 	"tax_id",
@@ -148,9 +152,18 @@ class TestCrenyaTaxWording(FrappeTestCase):
 		self.assertEqual(company["tax_id_label"], company_meta.get_field(id_field).label)
 		self.assertEqual(company["invoice_title"], "Tax Invoice")
 		self.assertEqual(company["credit_note_title"], "Credit Note")
+		self.assertEqual(company["receipt_title"], "Tax Invoice")
+		self.assertEqual(company["receipt_credit_note_title"], "Credit Note")
 		self.assertEqual(company["receipt_qr"], "verify_link")
 		self.assertIsNone(company["tax_id"])
-		for key in ("tax_name_ar", "tax_id_label_ar", "invoice_title_ar", "credit_note_title_ar"):
+		for key in (
+			"tax_name_ar",
+			"tax_id_label_ar",
+			"invoice_title_ar",
+			"credit_note_title_ar",
+			"receipt_title_ar",
+			"receipt_credit_note_title_ar",
+		):
 			self.assertIsNone(company[key], key)
 		if item_meta.has_field(TAX_CODE_FIELD):
 			self.assertEqual(company["tax_code_label"], item_meta.get_field(TAX_CODE_FIELD).label)
@@ -164,10 +177,14 @@ class TestCrenyaTaxWording(FrappeTestCase):
 			"crenya_tax_name_ar": "ضريبة القيمة المضافة",
 			"crenya_tax_id_label": "VATIN",
 			"crenya_tax_id_label_ar": "الرقم الضريبي",
-			"crenya_invoice_title": "Simplified Tax Invoice",
-			"crenya_invoice_title_ar": "فاتورة ضريبية مبسطة",
+			"crenya_invoice_title": "Tax Invoice",
+			"crenya_invoice_title_ar": "فاتورة ضريبية",
 			"crenya_credit_note_title": "Refund Note",
 			"crenya_credit_note_title_ar": "إشعار دائن",
+			"crenya_receipt_title": "Simplified Tax Invoice",
+			"crenya_receipt_title_ar": "فاتورة ضريبية مبسطة",
+			"crenya_receipt_credit_note_title": "Refund",
+			"crenya_receipt_credit_note_title_ar": "استرداد",
 			"crenya_receipt_qr": "ZATCA (KSA)",
 		}
 		frappe.db.set_value("Company", fixtures.COMPANY, values)
@@ -177,11 +194,34 @@ class TestCrenyaTaxWording(FrappeTestCase):
 		self.assertEqual(company["tax_name_ar"], "ضريبة القيمة المضافة")
 		self.assertEqual(company["tax_id_label"], "VATIN")
 		self.assertEqual(company["tax_id_label_ar"], "الرقم الضريبي")
-		self.assertEqual(company["invoice_title"], "Simplified Tax Invoice")
-		self.assertEqual(company["invoice_title_ar"], "فاتورة ضريبية مبسطة")
+		self.assertEqual(company["invoice_title"], "Tax Invoice")
+		self.assertEqual(company["invoice_title_ar"], "فاتورة ضريبية")
 		self.assertEqual(company["credit_note_title"], "Refund Note")
 		self.assertEqual(company["credit_note_title_ar"], "إشعار دائن")
+		self.assertEqual(company["receipt_title"], "Simplified Tax Invoice")
+		self.assertEqual(company["receipt_title_ar"], "فاتورة ضريبية مبسطة")
+		self.assertEqual(company["receipt_credit_note_title"], "Refund")
+		self.assertEqual(company["receipt_credit_note_title_ar"], "استرداد")
 		self.assertEqual(company["receipt_qr"], "zatca_tlv")
+
+		# blank thermal titles fall back to the A4 titles
+		frappe.db.set_value(
+			"Company",
+			fixtures.COMPANY,
+			dict.fromkeys(
+				(
+					"crenya_receipt_title",
+					"crenya_receipt_title_ar",
+					"crenya_receipt_credit_note_title",
+					"crenya_receipt_credit_note_title_ar",
+				)
+			),
+		)
+		company = self.bootstrap_company()
+		self.assertEqual(company["receipt_title"], "Tax Invoice")
+		self.assertEqual(company["receipt_title_ar"], "فاتورة ضريبية")
+		self.assertEqual(company["receipt_credit_note_title"], "Refund Note")
+		self.assertEqual(company["receipt_credit_note_title_ar"], "إشعار دائن")
 
 		frappe.db.set_value("Company", fixtures.COMPANY, "crenya_receipt_qr", "None")
 		self.assertEqual(self.bootstrap_company()["receipt_qr"], "none")

@@ -527,6 +527,28 @@ class PricingRuleSpec(EntitySpec):
 		return records
 
 
+class UomSpec(EntitySpec):
+	"""Every UOM with ERPNext's whole-number flag: tills refuse fractional quantities in such a
+	UOM, as ERPNext does on submit ("Quantity cannot be a fraction")."""
+
+	doctype = "UOM"
+	fields = ("name", "must_be_whole_number")
+
+	def build(self, rows, ctx):
+		return build_uom_records(rows)
+
+
+def build_uom_records(rows):
+	return [
+		{
+			"name": row.name,
+			"must_be_whole_number": bool(cint(row.must_be_whole_number)),
+			"modified": format_db_datetime(row.modified),
+		}
+		for row in rows
+	]
+
+
 ENTITIES = {
 	"item": ItemSpec(),
 	"item_price": ItemPriceSpec(),
@@ -536,6 +558,7 @@ ENTITIES = {
 	"item_group": ItemGroupSpec(),
 	"pricing_rule": PricingRuleSpec(),
 	"batch": BatchSpec(),
+	"uom": UomSpec(),
 }
 
 

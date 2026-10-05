@@ -157,7 +157,7 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `sync.get_sync_capabilities` | ping, `protocol_version` (2), versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording`, `payment_terminals`, `scale_rules`, `uom_entity`, `extensions`, plus flags of installed extension apps (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
 | `device.register_device` | idempotent device registration, assigns `D01`…; optional `device_type` (lower case letters, digits, `_`, `-`; default `till`, kept when a later registration omits it) |
-| `device.get_bootstrap` | device (incl. `device_type`), profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till, plus keys of installed extension apps |
+| `device.get_bootstrap` | device (incl. `device_type`), profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, `settings.rate_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till, plus keys of installed extension apps |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch`, `uom` (+ entities of installed extension apps) + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit, + aggregates and operations of installed extension apps), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
@@ -268,6 +268,12 @@ till needs, read from the site:
 - `site_timezone`: System Settings *Time Zone* (also in
   `sync.get_sync_capabilities`); tills use it for posting dates / times and
   "today", not the PC's zone.
+- `settings.rate_precision` (integer): decimals ERPNext rounds a Sales Invoice
+  Item *Rate* to (a property setter on the field included, else the currency
+  precision), as `frappe.get_precision` resolves it. A row's amount is
+  `flt(rate * qty)` at the money precision, so a till that derives a rate from
+  a target amount (for example a shared dish split over several lines) rounds
+  the rate to this before checking the amount. Older tills ignore it.
 - Totals tolerance: `site_config.crenya_pos_total_tolerance` when set, else
   10 × the smallest unit of the invoice currency's precision (`0.10` with 2
   decimals, `0.010` with 3).

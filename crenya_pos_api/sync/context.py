@@ -219,3 +219,9 @@ def qty_precision():
 	"""Decimals ERPNext rounds Sales Invoice Item `qty` to: the field's precision (property
 	setters included), else System Settings float precision, as `frappe.get_precision` resolves it."""
 	return cint(frappe.get_precision("Sales Invoice Item", "qty"))
+
+
+def rate_precision(currency=None):
+	"""Decimals ERPNext rounds Sales Invoice Item `rate` to: the field's precision (property
+	setters included), else the currency precision, as `frappe.get_precision` resolves it."""
+	return cint(frappe.get_precision("Sales Invoice Item", "rate", currency=currency))

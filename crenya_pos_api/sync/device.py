@@ -15,6 +15,7 @@ from crenya_pos_api.sync.context import (
 	is_system_manager,
 	money_precision,
 	qty_precision,
+	rate_precision,
 	require_device_role,
 	user_can_use_profile,
 )
@@ -359,6 +360,8 @@ def bootstrap(ctx):
 		"settings": {
 			# ERPNext rounds item row qty to this (property setters included); batch shares must be exact
 			"qty_precision": qty_precision(),
+			# ERPNext rounds item row rate to this; amount = flt(rate * qty) per row
+			"rate_precision": rate_precision(currency),
 		},
 		"currency": currency_info(currency, precision),
 		"phone_country_codes": phone_country_codes(company.get("country") or None),

@@ -31,7 +31,10 @@ HOOKS = {
 	"crenya_pos_capabilities": ["crenya_pos_api.tests.extension_dummy.features"],
 	"crenya_pos_invoice_extenders": ["crenya_pos_api.tests.extension_dummy.extend_invoice"],
 	"crenya_pos_device_roles": [DEVICE_ROLE],
+	"crenya_pos_profile_flags": ["crenya_pos_api.tests.extension_dummy.profile_flags"],
 }
+# profiles the dummy app flags in list_pos_profiles (tests set it; empty = none)
+FLAGGED_PROFILES = set()
 
 
 def _as_frappe_hooks(hooks):
@@ -173,6 +176,15 @@ def features():
 	return {APP: True, "sales": False}
 
 
+def profile_flags(names):
+	"""crenya_pos_profile_flags: flag every listed profile; `name` and `company` are core keys
+	and must not be overwritten."""
+	return {
+		name: {"test_outlet": name in FLAGGED_PROFILES, "name": "overwritten", "company": None}
+		for name in names
+	}
+
+
 def extend_invoice(ctx, doc, data, notes):
 	ext = data["extensions"].get(APP)
 	if not ext:
@@ -209,3 +221,19 @@ class BadRetentionAggregate(TaskAggregate):
 
 def not_a_dict():
 	return ["flag"]
+
+
+def flags_for_unknown_profiles(names):
+	return {"no such profile": {"test_outlet": True}}
+
+
+def flags_as_a_list(names):
+	return list(names)
+
+
+def flags_not_a_dict(names):
+	return {name: True for name in names}
+
+
+def no_flags(names):
+	return None

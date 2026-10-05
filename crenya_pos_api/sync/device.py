@@ -33,7 +33,7 @@ from crenya_pos_api.sync.locale_data import (
 )
 from crenya_pos_api.sync.loyalty import loyalty_enabled
 from crenya_pos_api.sync.open_returns import allows_return_without_invoice
-from crenya_pos_api.sync.registry import extend_bootstrap
+from crenya_pos_api.sync.registry import extend_bootstrap, extend_profiles
 from crenya_pos_api.sync.scale_rules import scale_barcode_rules
 from crenya_pos_api.sync.tax_wording import bootstrap_company_wording, company_wording_fields
 from crenya_pos_api.sync.taxes import get_tax_templates
@@ -72,7 +72,7 @@ def list_profiles():
 			users_by_profile.setdefault(row.parent, set()).add(row.user)
 
 	manager = is_system_manager(user)
-	return [
+	listed = [
 		{
 			"name": profile.name,
 			"company": profile.company,
@@ -83,6 +83,8 @@ def list_profiles():
 		for profile in profiles
 		if manager or not users_by_profile.get(profile.name) or user in users_by_profile[profile.name]
 	]
+	# other apps' crenya_pos_profile_flags hooks, e.g. which profiles are restaurant outlets
+	return extend_profiles(listed)
 
 
 def _next_device_short():

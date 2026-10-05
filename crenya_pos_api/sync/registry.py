@@ -8,6 +8,7 @@ Other Frappe apps plug into the till protocol from their `hooks.py`:
         crenya_pos_capabilities = ["<dotted path of fn() -> dict>"]       # merged into `features`
         crenya_pos_invoice_extenders = ["<dotted path of fn(ctx, doc, data, notes)>"]
         crenya_pos_device_roles = ["<role allowed to use a device besides Crenya POS User>"]
+        crenya_pos_profile_flags = ["<dotted path of fn(names) -> {profile name: {flag: value}}>"]
 
 Built-ins always come first and cannot be replaced; hook entries follow in app install
 order. When two apps register the same entity or aggregate name the later app wins (as
@@ -32,6 +33,7 @@ BOOTSTRAP_HOOK = "crenya_pos_bootstrap"
 CAPABILITY_HOOK = "crenya_pos_capabilities"
 INVOICE_EXTENDER_HOOK = "crenya_pos_invoice_extenders"
 DEVICE_ROLE_HOOK = "crenya_pos_device_roles"
+PROFILE_FLAG_HOOK = "crenya_pos_profile_flags"
 
 _CACHE_ATTR = "crenya_pos_registry"
 _ENTITY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -274,6 +276,11 @@ def invoice_extenders():
 	return _cached(INVOICE_EXTENDER_HOOK, lambda: _load_functions(INVOICE_EXTENDER_HOOK))
 
 
+def profile_flag_hooks():
+	"""`crenya_pos_profile_flags` functions: fn(names) -> {profile name: {flag: value}}."""
+	return _cached(PROFILE_FLAG_HOOK, lambda: _load_functions(PROFILE_FLAG_HOOK))
+
+
 def extend_bootstrap(ctx, doc):
 	for function in bootstrap_hooks():
 		function(ctx, doc)
@@ -292,6 +299,36 @@ def extend_features(features):
 		for key, value in extra.items():
 			features.setdefault(key, value)
 	return features
+
+
+def extend_profiles(profiles):
+	"""Add the profile flag hooks' flags to the `list_pos_profiles` rows (dicts with `name`).
+
+	Each hook gets the names of the listed profiles once and returns {name: {flag: value}};
+	profiles it leaves out get nothing. Keys already on a row (core's, or an earlier hook's) are
+	kept. Without hooks the rows are returned unchanged."""
+	functions = profile_flag_hooks()
+	if not functions or not profiles:
+		return profiles
+	names = [profile["name"] for profile in profiles]
+	for function in functions:
+		flags = function(list(names))
+		if flags is None:
+			continue
+		label = f"{function.__module__}.{function.__name__}"
+		if not isinstance(flags, dict):
+			_fail(f"{PROFILE_FLAG_HOOK}: {label} must return a dict of profile name -> dict of flags")
+		for profile in profiles:
+			extra = flags.get(profile["name"])
+			if extra is None:
+				continue
+			if not isinstance(extra, dict):
+				_fail(
+					f"{PROFILE_FLAG_HOOK}: {label} returned {type(extra).__name__} for {profile['name']!r}, not a dict"
+				)
+			for key, value in extra.items():
+				profile.setdefault(key, value)
+	return profiles
 
 
 def extend_invoice(ctx, doc, data, notes):

@@ -156,7 +156,7 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
 | `sync.get_sync_capabilities` | ping, `protocol_version` (2), versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording`, `payment_terminals`, `scale_rules`, `uom_entity`, `extensions`, plus flags of installed extension apps (GET or POST) |
-| `device.list_pos_profiles` | POS Profiles the user may use |
+| `device.list_pos_profiles` | POS Profiles the user may use: `{name, company, warehouse, currency}`, plus flags of installed extension apps (`crenya_pos_profile_flags`) |
 | `device.register_device` | idempotent device registration, assigns `D01`…; optional `device_type` (lower case letters, digits, `_`, `-`; default `till`, kept when a later registration omits it) |
 | `device.get_bootstrap` | device (incl. `device_type`), profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, `settings.rate_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till, plus keys of installed extension apps |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch`, `uom` (+ entities of installed extension apps) + tombstones |
@@ -599,7 +599,8 @@ the till checks offline.
 
 Setting a PIN: open the cashier's **User** in ERPNext, tab *Roles &
 Permissions*, section **Crenya POS**, type the PIN into **POS PIN** and save.
-The user needs the **Crenya POS User** role (and, if the POS Profile's
+The user needs the **Crenya POS User** role, or a role an extension app allows
+on devices (`crenya_pos_device_roles`, e.g. Restaurant Manager) (and, if the POS Profile's
 *Applicable for Users* table is filled, must be listed there). On save the
 PIN must be 4 to 6 digits 0-9, otherwise the save is refused. The server
 replaces it with a salted hash (`pbkdf2_sha256$120000$<salt>$<key>`,
@@ -612,12 +613,19 @@ System Manager calls `crenya_pos_api.api.cashier.clear_pin` with `user`
 (e.g. `bench --site <site> execute crenya_pos_api.sync.cashier.clear_user_pin --args "['cashier1@store.om']"`).
 
 Tills receive cashiers through `pull_changes` entity `cashier`:
-`{name, full_name, enabled, pin_hash, modified}`, keyset-paginated on the
-User's `modified`. It contains the holders of the **Crenya POS User** role
-(limited to the profile's *Applicable for Users* when that table is not
-empty) and users that have a PIN. `enabled` is 1 only for an enabled user who
-still has the role and may use the profile; `pin_hash` is null when no PIN is
-set and for every record with `enabled: 0`. Removing the role or disabling the
+`{name, full_name, enabled, pin_hash, roles, modified}`, keyset-paginated on the
+User's `modified`. It contains the holders of a **device role** (Crenya POS
+User and the roles of `crenya_pos_device_roles`; limited to the profile's
+*Applicable for Users* when that table is not empty) and users that have a
+PIN. `enabled` is 1 only for an enabled user who still has a device role and
+may use the profile; `pin_hash` is null when no PIN is set and for every record
+with `enabled: 0`. `roles` lists the device roles the user holds, Crenya POS
+User first and then the hooked roles in hook order, for example
+`["Crenya POS User", "Restaurant Manager"]`. No other ERPNext role of the user
+is ever sent. A device uses it to decide who may approve a manager-only action
+(which role counts as a manager is up to the extension app). `roles` is `[]`
+when `enabled` is 0. Adding or removing a role saves the User, so the change
+reaches the tills on their next pull. Removing the role or disabling the
 user saves the User, so the till receives `enabled: 0` on its next pull (a
 user who loses the role and never had a PIN is simply no longer sent; without
 a PIN they cannot unlock a till anyway); deleted users arrive as tombstones. A change to the POS Profile's
@@ -687,15 +695,18 @@ installers signed by the CI signing key of the till.
 
 Another Frappe app (`required_apps = ["crenya_pos_api"]`) can add pull
 entities, push aggregates with their own operations, bootstrap keys,
-capability flags, invoice data and device roles, without changing this app.
-Everything is registered in the other app's `hooks.py` and read through
+capability flags, invoice data, device roles and POS Profile flags, without
+changing this app. Everything is registered in the other app's `hooks.py` and read through
 `frappe.get_hooks()` once per request. Built-ins always come first and cannot
 be replaced. When two apps register the same entity or aggregate name, the
 app installed later wins.
 
 Import only from `crenya_pos_api.extension` (`EntitySpec`, `AggregateHandler`,
 `DeviceContext`, `SyncError` and the error codes, `ExtensionHookError`,
-`registry`, `PROTOCOL_VERSION`). Everything else is internal.
+`registry`, `staff_roles`, `PROTOCOL_VERSION`). Everything else is internal.
+`staff_roles(profile)` returns `{user: [device roles]}` of the enabled staff of
+a POS Profile: the same people and roles the `cashier` pull sends with
+`enabled: 1`.
 
 | hook | shape | called |
 |---|---|---|
@@ -704,7 +715,8 @@ Import only from `crenya_pos_api.extension` (`EntitySpec`, `AggregateHandler`,
 | `crenya_pos_bootstrap` | `["<dotted path of fn(ctx, doc) -> None>"]` | end of `device.get_bootstrap`. `doc` is the bootstrap dict; add your own top-level key. |
 | `crenya_pos_capabilities` | `["<dotted path of fn() -> dict>"]` | `sync.get_sync_capabilities`. The dict is merged into `features`; keys already there (core flags, or an earlier hook's) are kept. |
 | `crenya_pos_invoice_extenders` | `["<dotted path of fn(ctx, doc, data, notes) -> None>"]` | after the Sales Invoice is built (rows, taxes, payments, totals checked), before `insert` and `submit` |
-| `crenya_pos_device_roles` | `["<role name>"]` | these roles may sign in, register and use a device, besides **Crenya POS User** |
+| `crenya_pos_device_roles` | `["<role name>"]` | these roles may sign in, register and use a device, besides **Crenya POS User**. Their holders are pulled as cashiers, and their cashier records list these roles in `roles`. |
+| `crenya_pos_profile_flags` | `["<dotted path of fn(names) -> {profile name: {flag: value}}>"]` | `device.list_pos_profiles`. Called once with the names of the listed profiles; the flags are added to each row. Keys already there (core keys, or an earlier hook's) are kept, and a profile the function leaves out gets nothing. Without the hook the rows are unchanged. |
 
 `ctx` is the `DeviceContext` of the authorized device (`device_id`,
 `device_type`, `profile`, `company`, `currency`, and the `device` row).

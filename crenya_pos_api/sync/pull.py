@@ -15,8 +15,8 @@ import frappe
 from frappe.utils import cint, get_datetime, getdate, now_datetime, nowdate
 
 from crenya_pos_api.sync.batches import batch_quantities, batches_of_bundles, build_batch_records
-from crenya_pos_api.sync.cashier import PIN_HASH_FIELD
-from crenya_pos_api.sync.context import POS_USER_ROLE, get_pull_lag_seconds, money_precision, profile_users
+from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, device_roles_of
+from crenya_pos_api.sync.context import device_roles, get_pull_lag_seconds, money_precision, profile_users
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.promotions import rule_is_active
@@ -310,12 +310,17 @@ class StockSpec(EntitySpec):
 
 
 class CashierSpec(EntitySpec):
-	"""Till cashiers: Users holding the Crenya POS User role.
+	"""Till cashiers: Users holding a device role (Crenya POS User, or a role another app
+	registers with `crenya_pos_device_roles`, e.g. a restaurant manager or captain).
 
-	Users with a PIN hash are always included, so a cashier who loses the role,
-	is disabled, or is removed from the profile's Applicable for Users comes back
-	with `enabled: 0` (profile changes bump `modified` of the affected users, see
+	Users with a PIN hash are always included, so a cashier who loses every device role, is
+	disabled, or is removed from the profile's Applicable for Users comes back with
+	`enabled: 0` (profile changes bump `modified` of the affected users, see
 	`pos_profile_on_update`). `pin_hash` is only sent for enabled cashiers.
+
+	`roles` lists the device roles the user holds (in `device_roles()` order) and nothing else:
+	a device decides with it who may approve a manager-only action. It is [] when
+	`enabled` is 0. Adding or removing a role saves the User, so the change is pulled.
 	"""
 
 	doctype = "User"
@@ -335,7 +340,7 @@ class CashierSpec(EntitySpec):
 		holders = (
 			frappe.qb.from_(has_role)
 			.select(has_role.parent)
-			.where((has_role.parenttype == "User") & (has_role.role == POS_USER_ROLE))
+			.where((has_role.parenttype == "User") & has_role.role.isin(list(device_roles())))
 		)
 		candidate = table.name.isin(holders)
 		allowed = profile_users(ctx.profile)
@@ -347,27 +352,20 @@ class CashierSpec(EntitySpec):
 		return [table.name != "Guest", candidate]
 
 	def build(self, rows, ctx):
-		names = [row.name for row in rows]
-		holders = set()
-		if names:
-			holders = set(
-				frappe.get_all(
-					"Has Role",
-					filters={"parent": ["in", names], "parenttype": "User", "role": POS_USER_ROLE},
-					pluck="parent",
-				)
-			)
+		held = device_roles_of([row.name for row in rows])
 		allowed = set(profile_users(ctx.profile))
 
 		records = []
 		for row in rows:
-			enabled = cint(row.enabled) and row.name in holders and (not allowed or row.name in allowed)
+			roles = held.get(row.name) or []
+			enabled = cint(row.enabled) and roles and (not allowed or row.name in allowed)
 			records.append(
 				{
 					"name": row.name,
 					"full_name": row.full_name,
 					"enabled": 1 if enabled else 0,
 					"pin_hash": (row.get(PIN_HASH_FIELD) or None) if enabled else None,
+					"roles": list(roles) if enabled else [],
 					"modified": format_db_datetime(row.modified),
 				}
 			)

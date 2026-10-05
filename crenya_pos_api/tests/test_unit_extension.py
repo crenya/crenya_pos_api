@@ -81,6 +81,13 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		self.assertEqual(registry.device_roles(), ("Crenya POS User",))
 		features = {"sales": True}
 		self.assertEqual(registry.extend_features(features), {"sales": True})
+		self.assertEqual(registry.profile_flag_hooks(), [])
+
+	def test_profiles_are_unchanged_without_hooks(self):
+		profiles = [{"name": "Main", "company": "C", "warehouse": "W", "currency": "OMR"}]
+		expected = copy.deepcopy(profiles)
+		self.assertEqual(registry.extend_profiles(profiles), expected)
+		self.assertEqual(registry.extend_profiles([]), [])
 
 	def test_unknown_aggregate_message_is_unchanged(self):
 		with self.assertRaises(SyncError) as ctx:
@@ -140,6 +147,32 @@ class TestRegistryMerge(unittest.TestCase):
 			self.assertEqual(registry.capability_hooks(), [dummy.features])
 			self.assertEqual(registry.invoice_extenders(), [dummy.extend_invoice])
 			self.assertEqual(registry.device_roles(), ("Crenya POS User", dummy.DEVICE_ROLE))
+
+	def test_profile_flags_are_added_and_core_keys_kept(self):
+		profiles = [
+			{"name": "Bistro", "company": "C", "warehouse": "W", "currency": "OMR"},
+			{"name": "Shop", "company": "C", "warehouse": "W2", "currency": "OMR"},
+		]
+		dummy.FLAGGED_PROFILES.add("Bistro")
+		try:
+			with dummy.fake_hooks(site_ready=True):
+				self.assertEqual(registry.profile_flag_hooks(), [dummy.profile_flags])
+				result = registry.extend_profiles(profiles)
+		finally:
+			dummy.FLAGGED_PROFILES.clear()
+		self.assertEqual(
+			result,
+			[
+				{"name": "Bistro", "company": "C", "warehouse": "W", "currency": "OMR", "test_outlet": True},
+				{"name": "Shop", "company": "C", "warehouse": "W2", "currency": "OMR", "test_outlet": False},
+			],
+		)
+
+	def test_profile_flags_for_other_names_or_none_add_nothing(self):
+		for path in (f"{DUMMY}.flags_for_unknown_profiles", f"{DUMMY}.no_flags"):
+			profiles = [{"name": "Shop", "company": "C"}]
+			with dummy.fake_hooks(hooks(crenya_pos_profile_flags=[path]), site_ready=True):
+				self.assertEqual(registry.extend_profiles(profiles), [{"name": "Shop", "company": "C"}])
 
 	def test_capabilities_keep_core_flags(self):
 		with dummy.fake_hooks(site_ready=True):
@@ -264,6 +297,22 @@ class TestRegistryErrors(unittest.TestCase):
 		with dummy.fake_hooks(hooks(crenya_pos_capabilities=[f"{DUMMY}.not_a_dict"]), site_ready=True):
 			with self.assertRaises(ExtensionHookError):
 				registry.extend_features({})
+
+	def test_profile_flag_hook_must_return_dicts(self):
+		for path, fragment in (
+			(f"{DUMMY}.flags_as_a_list", "must return a dict"),
+			(f"{DUMMY}.flags_not_a_dict", "not a dict"),
+		):
+			with dummy.fake_hooks(hooks(crenya_pos_profile_flags=[path]), site_ready=True):
+				with self.assertRaises(ExtensionHookError) as ctx:
+					registry.extend_profiles([{"name": "Shop"}])
+			self.assertIn("crenya_pos_profile_flags", str(ctx.exception))
+			self.assertIn(fragment, str(ctx.exception))
+		self.assertHookError(
+			{"crenya_pos_profile_flags": "no_such_app.flags"},
+			"cannot import no_such_app",
+			call=registry.profile_flag_hooks,
+		)
 
 	def test_broken_hook_is_not_cached(self):
 		broken = {"crenya_pos_aggregates": {"Crenya Order": "no_such_app.Order"}}

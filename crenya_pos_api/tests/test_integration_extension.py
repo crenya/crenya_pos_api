@@ -18,6 +18,7 @@ except ImportError:
 from crenya_pos_api import tasks
 from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import sync as sync_api
+from crenya_pos_api.extension import staff_roles
 from crenya_pos_api.sync import errors, registry
 from crenya_pos_api.sync.context import get_device_context
 from crenya_pos_api.sync.hashing import payload_hash
@@ -29,6 +30,8 @@ EVENT = "Crenya Sync Event"
 DEVICE = "Crenya POS Device"
 NO_ROLE_USER = "_test_crenya_ext_norole@example.com"
 HOOK_ROLE_USER = "_test_crenya_ext_hookrole@example.com"
+HOOK_STAFF_USER = "_test_crenya_ext_staff@example.com"
+BOTH_ROLES_USER = "_test_crenya_ext_both@example.com"
 EXT_BRAND = "_Test Crenya Ext Brand"
 
 
@@ -363,6 +366,89 @@ class TestCrenyaExtensions(FrappeTestCase):
 		# the hook is gone (app uninstalled): the role no longer opens the device
 		with self.assertRaises(frappe.PermissionError):
 			get_device_context(device_id)
+
+	def test_cashier_pull_includes_hooked_roles_with_their_roles(self):
+		ensure_user(HOOK_STAFF_USER, [dummy.DEVICE_ROLE, "Sales User"])
+		ensure_user(BOTH_ROLES_USER, ["Crenya POS User", dummy.DEVICE_ROLE, "Accounts User"])
+		ensure_user(NO_ROLE_USER, ["Sales User"])
+		frappe.db.commit()
+
+		# without the hook the role is nobody's business: not pulled, not in the roles
+		records = {record["name"]: record for record in self.pull_all("cashier")}
+		self.assertNotIn(HOOK_STAFF_USER, records)
+		self.assertEqual(records[BOTH_ROLES_USER]["roles"], ["Crenya POS User"])
+		self.assertNotIn(HOOK_STAFF_USER, staff_roles(self.profile))
+
+		with dummy.fake_hooks():
+			records = {record["name"]: record for record in self.pull_all("cashier")}
+			staff = staff_roles(self.profile)
+		self.assertNotIn(NO_ROLE_USER, records)
+		self.assertEqual(records[HOOK_STAFF_USER]["enabled"], 1)
+		# device roles only, Crenya POS User first: never Sales User / Accounts User
+		self.assertEqual(records[HOOK_STAFF_USER]["roles"], [dummy.DEVICE_ROLE])
+		self.assertEqual(records[BOTH_ROLES_USER]["roles"], ["Crenya POS User", dummy.DEVICE_ROLE])
+		self.assertEqual(staff[HOOK_STAFF_USER], [dummy.DEVICE_ROLE])
+		self.assertEqual(staff[BOTH_ROLES_USER], ["Crenya POS User", dummy.DEVICE_ROLE])
+		self.assertNotIn(NO_ROLE_USER, staff)
+		self.assertEqual(list(staff), sorted(staff))
+
+		# a disabled user is pulled disabled with no roles, and is not staff
+		user = frappe.get_doc("User", HOOK_STAFF_USER)
+		user.enabled = 0
+		user.save(ignore_permissions=True)
+		frappe.db.commit()
+		try:
+			with dummy.fake_hooks():
+				records = {record["name"]: record for record in self.pull_all("cashier")}
+				staff = staff_roles(self.profile)
+			self.assertEqual(
+				(records[HOOK_STAFF_USER]["enabled"], records[HOOK_STAFF_USER]["roles"]), (0, [])
+			)
+			self.assertNotIn(HOOK_STAFF_USER, staff)
+		finally:
+			ensure_user(HOOK_STAFF_USER, [dummy.DEVICE_ROLE, "Sales User"])
+			frappe.db.commit()
+
+	def test_staff_roles_follow_applicable_for_users(self):
+		ensure_user(HOOK_STAFF_USER, [dummy.DEVICE_ROLE])
+		ensure_user(BOTH_ROLES_USER, ["Crenya POS User"])
+		frappe.db.commit()
+		profile = frappe.get_doc("POS Profile", self.profile.name)
+		profile.append("applicable_for_users", {"user": BOTH_ROLES_USER})
+		profile.append("applicable_for_users", {"user": "Administrator"})
+		profile.save(ignore_permissions=True)
+		frappe.db.commit()
+		try:
+			with dummy.fake_hooks():
+				staff = staff_roles(frappe.get_doc("POS Profile", self.profile.name))
+			self.assertIn(BOTH_ROLES_USER, staff)
+			self.assertNotIn(HOOK_STAFF_USER, staff, "not listed on the POS Profile")
+		finally:
+			profile.reload()
+			profile.set("applicable_for_users", [])
+			profile.save(ignore_permissions=True)
+			frappe.db.commit()
+
+	# list_pos_profiles flags
+
+	def test_profile_flags_hook(self):
+		core_keys = {"name", "company", "warehouse", "currency"}
+		profiles = {row["name"]: row for row in device_api.list_pos_profiles()}
+		self.assertEqual(set(profiles[self.profile.name]), core_keys, "no hook: the retail shape")
+
+		dummy.FLAGGED_PROFILES.add(self.profile.name)
+		try:
+			with dummy.fake_hooks():
+				profiles = {row["name"]: row for row in device_api.list_pos_profiles()}
+		finally:
+			dummy.FLAGGED_PROFILES.clear()
+		row = profiles[self.profile.name]
+		self.assertEqual(set(row), core_keys | {"test_outlet"})
+		self.assertIs(row["test_outlet"], True)
+		# core keys are kept when a hook returns them
+		self.assertEqual((row["name"], row["company"]), (self.profile.name, self.profile.company))
+		others = [value for name, value in profiles.items() if name != self.profile.name]
+		self.assertTrue(all(value["test_outlet"] is False for value in others))
 
 	# device_type
 

@@ -182,8 +182,10 @@ class TestCrenyaCashiers(FrappeTestCase):
 		self.assertNotIn("Guest", records)
 
 		cashier = records[CASHIER]
-		self.assertEqual(set(cashier), {"name", "full_name", "enabled", "pin_hash", "modified"})
+		self.assertEqual(set(cashier), {"name", "full_name", "enabled", "pin_hash", "roles", "modified"})
 		self.assertEqual(cashier["enabled"], 1)
+		# only device roles, never the user's other roles (CASHIER also has Sales User)
+		self.assertEqual(cashier["roles"], [POS_USER_ROLE])
 		self.assertEqual(cashier["full_name"], frappe.db.get_value("User", CASHIER, "full_name"))
 		self.assertTrue(verify_pin("4826", cashier["pin_hash"]))
 		self.assertIsNone(records[SECOND]["pin_hash"], "no PIN set → null")
@@ -249,12 +251,14 @@ class TestCrenyaCashiers(FrappeTestCase):
 			self.assertIn(SECOND, records, "a user who lost the role must be sent again")
 			self.assertEqual(records[SECOND]["enabled"], 0)
 			self.assertIsNone(records[SECOND]["pin_hash"])
+			self.assertEqual(records[SECOND]["roles"], [])
 
 			frappe.get_doc("User", SECOND).add_roles(POS_USER_ROLE)
 			frappe.db.commit()
 			records, cursor = self._pull_all(cursor)
 			self.assertEqual(records[SECOND]["enabled"], 1)
 			self.assertTrue(verify_pin("1111", records[SECOND]["pin_hash"]))
+			self.assertEqual(records[SECOND]["roles"], [POS_USER_ROLE])
 
 			user = frappe.get_doc("User", SECOND)
 			user.enabled = 0

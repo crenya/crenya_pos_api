@@ -6,6 +6,10 @@ The PIN (4 to 6 ASCII digits) is typed into the User field `crenya_pos_pin`
 stored reversibly (not in the User table and not in `__Auth`). Tills receive
 the hash through the `cashier` pull entity and check the PIN offline.
 
+Cashier records also carry `roles`: the device roles the user holds (Crenya POS User and the
+roles other apps register with `crenya_pos_device_roles`), never any other ERPNext role, so a
+device can tell, for example, which staff may approve a manager-only action.
+
 Hash format: pbkdf2_sha256$<iterations>$<salt base64>$<key base64>
 (PBKDF2-HMAC-SHA256, 120000 iterations, 16-byte salt, 32-byte key, standard
 base64 with padding).
@@ -21,6 +25,8 @@ import re
 import frappe
 from frappe import _
 from frappe.utils import cint
+
+from crenya_pos_api.sync.context import device_roles, profile_users
 
 PIN_FIELD = "crenya_pos_pin"
 PIN_HASH_FIELD = "crenya_pos_pin_hash"
@@ -155,6 +161,53 @@ def clear_user_pin(user):
 	doc.save()
 	_forget_stored_pin(doc)
 	return {"user": doc.name, "pin_set": False}
+
+
+# device roles of staff
+
+
+def device_roles_of(users):
+	"""{user: [device roles the user holds]} for the users holding at least one, each list in
+	`device_roles()` order (Crenya POS User first, then the hooked roles). No other role of
+	the user is ever returned."""
+	users = sorted({user for user in users or [] if user})
+	if not users:
+		return {}
+	roles = device_roles()
+	held = {}
+	for row in frappe.get_all(
+		"Has Role",
+		filters={"parent": ["in", users], "parenttype": "User", "role": ["in", list(roles)]},
+		fields=["parent", "role"],
+	):
+		held.setdefault(row.parent, set()).add(row.role)
+	return {user: [role for role in roles if role in held[user]] for user in users if user in held}
+
+
+def staff_roles(profile):
+	"""{user: [device roles]} of the staff a device of `profile` knows as enabled cashiers:
+	enabled users (not Guest) with a device role, limited to the profile's Applicable for
+	Users when that table is filled. Users in name order."""
+	has_role = frappe.qb.DocType("Has Role")
+	user = frappe.qb.DocType("User")
+	query = (
+		frappe.qb.from_(has_role)
+		.join(user)
+		.on(user.name == has_role.parent)
+		.select(has_role.parent)
+		.distinct()
+		.where(
+			(has_role.parenttype == "User")
+			& has_role.role.isin(list(device_roles()))
+			& (user.enabled == 1)
+			& (user.name != "Guest")
+		)
+	)
+	allowed = profile_users(profile)
+	if allowed:
+		query = query.where(has_role.parent.isin(allowed))
+	held = device_roles_of(query.run(pluck=True))
+	return {name: held[name] for name in sorted(held)}
 
 
 # cashier on pushed documents

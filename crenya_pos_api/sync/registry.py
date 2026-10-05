@@ -7,7 +7,7 @@ Other Frappe apps plug into the till protocol from their `hooks.py`:
         crenya_pos_bootstrap = ["<dotted path of fn(ctx, doc)>"]          # mutates the bootstrap dict
         crenya_pos_capabilities = ["<dotted path of fn() -> dict>"]       # merged into `features`
         crenya_pos_invoice_extenders = ["<dotted path of fn(ctx, doc, data, notes)>"]
-        crenya_pos_device_roles = ["<role allowed to use a device besides Crenya POS User>"]
+        crenya_pos_device_roles = ["<role>", {"role": "<role>", "device_types": ["<device_type>", ...]}]
         crenya_pos_profile_flags = ["<dotted path of fn(names) -> {profile name: {flag: value}}>"]
 
 Built-ins always come first and cannot be replaced; hook entries follow in app install
@@ -24,7 +24,7 @@ import re
 
 import frappe
 
-from crenya_pos_api.sync.context import POS_USER_ROLE
+from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, DEVICE_TYPE_RE, POS_USER_ROLE
 from crenya_pos_api.sync.errors import ExtensionHookError, clean_message, error_dict
 
 ENTITY_HOOK = "crenya_pos_pull_entities"
@@ -341,18 +341,65 @@ def extend_invoice(ctx, doc, data, notes):
 # device roles
 
 
-def _load_device_roles():
-	extra = _path_list(_hook(DEVICE_ROLE_HOOK, []))
-	if extra is None:
-		_fail(f"{DEVICE_ROLE_HOOK} must be a list of role names")
-	roles = [POS_USER_ROLE]
-	for role in extra:
-		if not isinstance(role, str) or not role.strip():
-			_fail(f"{DEVICE_ROLE_HOOK}: {role!r} is not a role name")
-		roles.append(role.strip())
-	return tuple(dict.fromkeys(roles))
+def _role_rule(entry):
+	"""(role, device types or None = every type) of one `crenya_pos_device_roles` entry."""
+	if isinstance(entry, str):
+		if not entry.strip():
+			_fail(f"{DEVICE_ROLE_HOOK}: {entry!r} is not a role name")
+		return entry.strip(), None
+	if not isinstance(entry, dict) or set(entry) - {"role", "device_types"}:
+		_fail(
+			f"{DEVICE_ROLE_HOOK}: {entry!r} must be a role name or "
+			'{"role": "<role>", "device_types": ["<device_type>", ...]}'
+		)
+	role = entry.get("role")
+	if not isinstance(role, str) or not role.strip():
+		_fail(f"{DEVICE_ROLE_HOOK}: {role!r} is not a role name")
+	types = entry.get("device_types")
+	if isinstance(types, str) or not isinstance(types, list | tuple) or not types:
+		_fail(f"{DEVICE_ROLE_HOOK}[{role!r}]: device_types must be a non-empty list of device types")
+	for device_type in types:
+		if not isinstance(device_type, str) or not DEVICE_TYPE_RE.match(device_type):
+			_fail(
+				f"{DEVICE_ROLE_HOOK}[{role!r}]: device type {device_type!r} must be lower case letters, "
+				"digits, _ or -"
+			)
+	return role.strip(), frozenset(types)
 
 
-def device_roles():
-	"""Roles that may register and use a device: Crenya POS User, then `crenya_pos_device_roles`."""
-	return _cached(DEVICE_ROLE_HOOK, _load_device_roles)
+def _load_device_role_rules():
+	"""{role: frozenset of device types, or None for every type}, Crenya POS User first.
+	A role declared twice (two apps) applies to the union of its types."""
+	entries = _hook(DEVICE_ROLE_HOOK, [])
+	if isinstance(entries, str):
+		entries = [entries]
+	if not isinstance(entries, list | tuple):
+		_fail(f"{DEVICE_ROLE_HOOK} must be a list of role names or {{role, device_types}} entries")
+	rules = {POS_USER_ROLE: None}
+	for entry in entries:
+		role, types = _role_rule(entry)
+		if role in rules:
+			current = rules[role]
+			rules[role] = None if current is None or types is None else current | types
+		else:
+			rules[role] = types
+	return rules
+
+
+def device_role_rules():
+	"""{role: frozenset of device types or None (every type)}: Crenya POS User (every type),
+	then the `crenya_pos_device_roles` entries in hook order."""
+	return _cached(DEVICE_ROLE_HOOK, _load_device_role_rules)
+
+
+def device_roles(device_type=DEFAULT_DEVICE_TYPE):
+	"""Roles that may register and use a device of `device_type` (blank = the default "till"):
+	Crenya POS User, then the hooked roles declared for every type or for this one. A retail
+	till therefore only ever accepts Crenya POS User and roles hooked without device_types."""
+	device_type = device_type or DEFAULT_DEVICE_TYPE
+	return tuple(role for role, types in device_role_rules().items() if types is None or device_type in types)
+
+
+def all_device_roles():
+	"""Every device role of any device type (sign-in, which happens before a device is known)."""
+	return tuple(device_role_rules())

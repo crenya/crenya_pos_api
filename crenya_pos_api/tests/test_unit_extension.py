@@ -174,6 +174,43 @@ class TestRegistryMerge(unittest.TestCase):
 			with dummy.fake_hooks(hooks(crenya_pos_profile_flags=[path]), site_ready=True):
 				self.assertEqual(registry.extend_profiles(profiles), [{"name": "Shop", "company": "C"}])
 
+	def test_device_roles_are_scoped_by_device_type(self):
+		pos = "Crenya POS User"
+		with dummy.fake_hooks(site_ready=True):
+			# a retail till (default type, or blank) never accepts the kds-only role
+			self.assertEqual(registry.device_roles(), (pos, dummy.DEVICE_ROLE))
+			self.assertEqual(registry.device_roles("till"), (pos, dummy.DEVICE_ROLE))
+			self.assertEqual(registry.device_roles(None), (pos, dummy.DEVICE_ROLE))
+			self.assertEqual(registry.device_roles(""), (pos, dummy.DEVICE_ROLE))
+			for device_type in dummy.KDS_TYPES:
+				self.assertEqual(registry.device_roles(device_type), (pos, dummy.DEVICE_ROLE, dummy.KDS_ROLE))
+			self.assertEqual(registry.all_device_roles(), (pos, dummy.DEVICE_ROLE, dummy.KDS_ROLE))
+			self.assertEqual(
+				registry.device_role_rules(),
+				{pos: None, dummy.DEVICE_ROLE: None, dummy.KDS_ROLE: frozenset(dummy.KDS_TYPES)},
+			)
+
+	def test_a_role_declared_twice_gets_the_union_of_its_types(self):
+		roles = [
+			{"role": "R", "device_types": ["kds"]},
+			{"role": "R", "device_types": ["waiter"]},
+			{"role": "S", "device_types": ["kds"]},
+			"S",
+		]
+		with dummy.fake_hooks(hooks(crenya_pos_device_roles=roles), site_ready=True):
+			rules = registry.device_role_rules()
+			self.assertEqual(rules["R"], frozenset({"kds", "waiter"}))
+			# a plain name opens every type
+			self.assertIsNone(rules["S"])
+			self.assertEqual(registry.device_roles("till"), ("Crenya POS User", "S"))
+			self.assertEqual(registry.device_roles("waiter"), ("Crenya POS User", "R", "S"))
+			# Crenya POS User cannot be narrowed by a hook
+			with dummy.fake_hooks(
+				hooks(crenya_pos_device_roles=[{"role": "Crenya POS User", "device_types": ["kds"]}]),
+				site_ready=True,
+			):
+				self.assertIn("Crenya POS User", registry.device_roles("till"))
+
 	def test_capabilities_keep_core_flags(self):
 		with dummy.fake_hooks(site_ready=True):
 			features = registry.extend_features({"sales": True, "extensions": True})
@@ -291,6 +328,18 @@ class TestRegistryErrors(unittest.TestCase):
 		)
 		self.assertHookError(
 			{"crenya_pos_device_roles": [""]}, "is not a role name", call=registry.device_roles
+		)
+		for entry, fragment in (
+			({"role": "", "device_types": ["kds"]}, "is not a role name"),
+			({"role": "R", "device_types": []}, "non-empty list"),
+			({"role": "R", "device_types": "kds"}, "non-empty list"),
+			({"role": "R", "device_types": ["KDS"]}, "device type 'KDS'"),
+			({"role": "R", "types": ["kds"]}, "must be a role name or"),
+			(["R"], "must be a role name or"),
+		):
+			self.assertHookError({"crenya_pos_device_roles": [entry]}, fragment, call=registry.device_roles)
+		self.assertHookError(
+			{"crenya_pos_device_roles": {"R": "kds"}}, "must be a list", call=registry.device_roles
 		)
 
 	def test_capability_hook_must_return_a_dict(self):

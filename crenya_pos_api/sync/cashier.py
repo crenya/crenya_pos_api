@@ -6,9 +6,11 @@ The PIN (4 to 6 ASCII digits) is typed into the User field `crenya_pos_pin`
 stored reversibly (not in the User table and not in `__Auth`). Tills receive
 the hash through the `cashier` pull entity and check the PIN offline.
 
-Cashier records also carry `roles`: the device roles the user holds (Crenya POS User and the
-roles other apps register with `crenya_pos_device_roles`), never any other ERPNext role, so a
-device can tell, for example, which staff may approve a manager-only action.
+Cashier records also carry `roles`: the roles the user holds that open the pulling device's
+type (Crenya POS User, and the roles other apps register with `crenya_pos_device_roles` for
+that type), never any other ERPNext role, so a device can tell, for example, which staff may
+approve a manager-only action. A retail till (type "till") only ever sees Crenya POS User and
+roles hooked for every device type.
 
 Hash format: pbkdf2_sha256$<iterations>$<salt base64>$<key base64>
 (PBKDF2-HMAC-SHA256, 120000 iterations, 16-byte salt, 32-byte key, standard
@@ -166,14 +168,14 @@ def clear_user_pin(user):
 # device roles of staff
 
 
-def device_roles_of(users):
-	"""{user: [device roles the user holds]} for the users holding at least one, each list in
-	`device_roles()` order (Crenya POS User first, then the hooked roles). No other role of
-	the user is ever returned."""
+def device_roles_of(users, device_type):
+	"""{user: [roles of `device_type` the user holds]} for the users holding at least one, each
+	list in `device_roles(device_type)` order (Crenya POS User first, then the hooked roles).
+	No other role of the user is ever returned."""
 	users = sorted({user for user in users or [] if user})
 	if not users:
 		return {}
-	roles = device_roles()
+	roles = device_roles(device_type)
 	held = {}
 	for row in frappe.get_all(
 		"Has Role",
@@ -184,10 +186,10 @@ def device_roles_of(users):
 	return {user: [role for role in roles if role in held[user]] for user in users if user in held}
 
 
-def staff_roles(profile):
-	"""{user: [device roles]} of the staff a device of `profile` knows as enabled cashiers:
-	enabled users (not Guest) with a device role, limited to the profile's Applicable for
-	Users when that table is filled. Users in name order."""
+def staff_roles(profile, device_type):
+	"""{user: [roles of `device_type`]} of the staff a device of `profile` and `device_type`
+	knows as enabled cashiers: enabled users (not Guest) with a role for that type, limited to
+	the profile's Applicable for Users when that table is filled. Users in name order."""
 	has_role = frappe.qb.DocType("Has Role")
 	user = frappe.qb.DocType("User")
 	query = (
@@ -198,7 +200,7 @@ def staff_roles(profile):
 		.distinct()
 		.where(
 			(has_role.parenttype == "User")
-			& has_role.role.isin(list(device_roles()))
+			& has_role.role.isin(list(device_roles(device_type)))
 			& (user.enabled == 1)
 			& (user.name != "Guest")
 		)
@@ -206,7 +208,7 @@ def staff_roles(profile):
 	allowed = profile_users(profile)
 	if allowed:
 		query = query.where(has_role.parent.isin(allowed))
-	held = device_roles_of(query.run(pluck=True))
+	held = device_roles_of(query.run(pluck=True), device_type)
 	return {name: held[name] for name in sorted(held)}
 
 

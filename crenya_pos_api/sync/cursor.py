@@ -4,8 +4,9 @@ The cursor is base64 JSON. `m`/`n` are the (modified, name) of the last record
 delivered; `tc`/`tn` the (creation, name) of the last tombstone delivered; `e`
 pins the cursor to its entity. Entities that also follow stock movements
 (`batch`) carry `sm`/`sn`, the (modified, name) of the last Stock Ledger Entry
-looked at; the keys are left out for all other entities. Clients store it
-verbatim.
+looked at; the keys are left out for all other entities. `s` is the entity's
+scope when it has one (`cashier`: the device type's role set); a cursor of
+another scope restarts the records. Clients store it verbatim.
 """
 
 import base64
@@ -31,6 +32,7 @@ class Cursor:
 	tomb_name: str | None = None
 	stock_modified: str | None = None
 	stock_name: str | None = None
+	scope: str | None = None
 
 	def to_dict(self):
 		data = {
@@ -43,6 +45,8 @@ class Cursor:
 		if self.stock_modified is not None:
 			data["sm"] = self.stock_modified
 			data["sn"] = self.stock_name or ""
+		if self.scope is not None:
+			data["s"] = self.scope
 		return data
 
 
@@ -83,6 +87,7 @@ def decode_cursor(token, entity=None):
 	stock_modified = _optional_str(data, "sm")
 	stock_name = _optional_str(data, "sn")
 	cursor_entity = _optional_str(data, "e")
+	scope = _optional_str(data, "s")
 
 	if (modified is None) != (name is None):
 		raise InvalidCursor("cursor must carry both m and n")
@@ -104,4 +109,5 @@ def decode_cursor(token, entity=None):
 		tomb_name=tomb_name or "",
 		stock_modified=stock_modified,
 		stock_name=(stock_name or "") if stock_modified is not None else None,
+		scope=scope,
 	)

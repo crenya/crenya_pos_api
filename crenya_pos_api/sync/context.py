@@ -1,5 +1,6 @@
 """Device / POS Profile resolution and authorization shared by all API methods."""
 
+import re
 from dataclasses import dataclass
 
 import frappe
@@ -24,6 +25,8 @@ EVENT_DOCTYPE = "Crenya Sync Event"
 POS_USER_ROLE = "Crenya POS User"
 SUPPORTED_CHARGE_TYPES = ("On Net Total",)
 DEFAULT_DEVICE_TYPE = "till"
+# device_type values: lower case letters, digits, _ and - (at most 40)
+DEVICE_TYPE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 
 # default totals tolerance: this many smallest units of the invoice currency
 TOTAL_TOLERANCE_UNITS = 10
@@ -80,28 +83,41 @@ def require_login():
 		raise frappe.PermissionError("Login required")
 
 
-def device_roles():
-	"""Roles that may register and use a device: Crenya POS User plus `crenya_pos_device_roles`."""
+def device_roles(device_type=DEFAULT_DEVICE_TYPE):
+	"""Roles that may register and use a device of `device_type`: Crenya POS User plus the
+	`crenya_pos_device_roles` roles declared for every type or for this one."""
 	from crenya_pos_api.sync.registry import device_roles as registered_roles
+
+	return registered_roles(device_type)
+
+
+def all_device_roles():
+	"""Device roles of any device type (before a device is known: sign-in, profile list)."""
+	from crenya_pos_api.sync.registry import all_device_roles as registered_roles
 
 	return registered_roles()
 
 
-def has_device_role(user=None):
+def has_device_role(user=None, device_type=None):
+	"""True when the user holds a role for `device_type`, or (None) for any device type."""
 	roles = set(frappe.get_roles(user or frappe.session.user))
-	return any(role in roles for role in device_roles())
+	wanted = all_device_roles() if device_type is None else device_roles(device_type)
+	return any(role in roles for role in wanted)
 
 
-def require_device_role():
+def require_device_role(device_type=None):
 	"""Signed in is not enough for till data (customers, PIN hashes, terminal secrets): the user
-	must hold Crenya POS User, or a role another app allows with `crenya_pos_device_roles`."""
+	must hold Crenya POS User, or a role another app allows with `crenya_pos_device_roles`.
+	With `device_type`, only the roles of that type count: a retail till (type "till") accepts
+	Crenya POS User and roles hooked for every type, never a role scoped to other device types."""
 	require_login()
 	user = frappe.session.user
-	if has_device_role(user):
+	if has_device_role(user, device_type):
 		return
-	roles = device_roles()
+	roles = all_device_roles() if device_type is None else device_roles(device_type)
 	wanted = f"the {roles[0]} role" if len(roles) == 1 else f"one of the roles {', '.join(roles)}"
-	raise_api_error(DevicePermissionError, f"User {user} does not have {wanted}")
+	scope = f" for {device_type} devices" if device_type is not None else ""
+	raise_api_error(DevicePermissionError, f"User {user} does not have {wanted}{scope}")
 
 
 def device_fields():
@@ -172,6 +188,8 @@ def get_device_context(device_id, touch=True):
 	user = frappe.session.user
 	if device.user != user and not is_system_manager(user):
 		raise_api_error(DevicePermissionError, f"Device {device_id} is registered to another user")
+	# roles scoped to other device types (e.g. restaurant staff) never open a retail till
+	require_device_role(device.get("device_type") or DEFAULT_DEVICE_TYPE)
 
 	profile = get_profile(device.pos_profile)
 	if not user_can_use_profile(profile, user):

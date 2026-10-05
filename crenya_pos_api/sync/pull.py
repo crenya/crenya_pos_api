@@ -9,6 +9,8 @@ POS item search); access is governed by the authorized device and its POS
 Profile.
 """
 
+import hashlib
+from dataclasses import replace
 from datetime import timedelta
 
 import frappe
@@ -64,6 +66,9 @@ class EntitySpec:
 	- `select(table)`: the pypika columns to read (default: `fields`); `modified` is added.
 	- `filters(table, ctx)`: extra pypika conditions for the device (`ctx` is DeviceContext).
 	- `build(rows, ctx)`: the records sent to the device (default: the rows as they are).
+	- `cursor_scope(ctx)`: a short string the records depend on besides the rows themselves
+	  (default None). A cursor issued under another scope restarts the records from the
+	  beginning (tombstones keep their position), so the device gets every record again.
 	"""
 
 	doctype = None
@@ -79,6 +84,9 @@ class EntitySpec:
 
 	def build(self, rows, ctx):
 		return rows
+
+	def cursor_scope(self, ctx):
+		return None
 
 
 class ItemSpec(EntitySpec):
@@ -310,17 +318,24 @@ class StockSpec(EntitySpec):
 
 
 class CashierSpec(EntitySpec):
-	"""Till cashiers: Users holding a device role (Crenya POS User, or a role another app
-	registers with `crenya_pos_device_roles`, e.g. a restaurant manager or captain).
+	"""Till cashiers: Users holding a role that opens the pulling device's type (Crenya POS User,
+	or a role another app registers with `crenya_pos_device_roles` for every device type or for
+	this one, e.g. a restaurant manager on a `restaurant_pos` device). On a retail till (type
+	"till") a role scoped to other device types counts for nothing: such a user is not a
+	cashier there (with a PIN: `enabled: 0`, `roles: []`).
 
 	Users with a PIN hash are always included, so a cashier who loses every device role, is
 	disabled, or is removed from the profile's Applicable for Users comes back with
 	`enabled: 0` (profile changes bump `modified` of the affected users, see
 	`pos_profile_on_update`). `pin_hash` is only sent for enabled cashiers.
 
-	`roles` lists the device roles the user holds (in `device_roles()` order) and nothing else:
-	a device decides with it who may approve a manager-only action. It is [] when
-	`enabled` is 0. Adding or removing a role saves the User, so the change is pulled.
+	`roles` lists the roles of the device's type the user holds (in `device_roles()` order)
+	and nothing else: a device decides with it who may approve a manager-only action. It is []
+	when `enabled` is 0. Adding or removing a role saves the User, so the change is pulled.
+
+	The cursor is scoped to the device type's role set (`cursor_scope`): when it changes (the
+	device registers again with another type, or an app adds a role for the type) the next
+	pull sends every cashier again with the new `enabled` / `roles`.
 	"""
 
 	doctype = "User"
@@ -335,12 +350,16 @@ class CashierSpec(EntitySpec):
 			columns.append(getattr(table, PIN_HASH_FIELD))
 		return columns
 
+	def cursor_scope(self, ctx):
+		roles = "\n".join(device_roles(ctx.device_type))
+		return hashlib.sha256(roles.encode("utf-8")).hexdigest()[:16]
+
 	def filters(self, table, ctx):
 		has_role = frappe.qb.DocType("Has Role")
 		holders = (
 			frappe.qb.from_(has_role)
 			.select(has_role.parent)
-			.where((has_role.parenttype == "User") & has_role.role.isin(list(device_roles())))
+			.where((has_role.parenttype == "User") & has_role.role.isin(list(device_roles(ctx.device_type))))
 		)
 		candidate = table.name.isin(holders)
 		allowed = profile_users(ctx.profile)
@@ -352,7 +371,7 @@ class CashierSpec(EntitySpec):
 		return [table.name != "Guest", candidate]
 
 	def build(self, rows, ctx):
-		held = device_roles_of([row.name for row in rows])
+		held = device_roles_of([row.name for row in rows], ctx.device_type)
 		allowed = set(profile_users(ctx.profile))
 
 		records = []
@@ -694,6 +713,11 @@ def pull_changes(ctx, entity, cursor_token=None, limit=None):
 		raise_api_error(InvalidRequestError, f"Invalid cursor: {e}")
 
 	upper = format_db_datetime(now_datetime() - timedelta(seconds=get_pull_lag_seconds()))
+	scope = spec.cursor_scope(ctx)
+	if cursor is not None and cursor.scope != scope:
+		# the records depend on something that changed since this cursor (e.g. the device's
+		# type for `cashier`): send them all again, keep the tombstone / stock positions
+		cursor = replace(cursor, modified=None, name=None)
 	if cursor is None:
 		# first pull: the snapshot replaces local data, only later deletions / stock movements matter
 		cursor = Cursor(
@@ -729,6 +753,7 @@ def pull_changes(ctx, entity, cursor_token=None, limit=None):
 
 	next_cursor = Cursor(
 		entity=entity,
+		scope=scope,
 		modified=modified,
 		name=name,
 		tomb_creation=tomb_creation,

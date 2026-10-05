@@ -8,6 +8,7 @@ from frappe.utils import cint, get_system_timezone, now
 from crenya_pos_api.sync.context import (
 	DEFAULT_DEVICE_TYPE,
 	DEVICE_DOCTYPE,
+	DEVICE_TYPE_RE,
 	assert_supported_taxes,
 	get_profile,
 	get_update_stock,
@@ -43,7 +44,6 @@ from crenya_pos_api.utils.decimal import format_money, format_number
 
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,139}$")
 _SHORT_RE = re.compile(r"^D(\d+)$")
-_DEVICE_TYPE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 
 
 def offline_prefix(device_short):
@@ -104,7 +104,7 @@ def _device_type(value):
 	"""Optional kind of device (till, kds, waiter, ...): lower case letters, digits, _ and -."""
 	if value is None or (isinstance(value, str) and not value.strip()):
 		return None
-	if not isinstance(value, str) or not _DEVICE_TYPE_RE.match(value.strip()):
+	if not isinstance(value, str) or not DEVICE_TYPE_RE.match(value.strip()):
 		raise_api_error(
 			InvalidRequestError,
 			"device_type must be lower case letters, digits, _ or - (at most 40), e.g. till",
@@ -121,6 +121,13 @@ def register(
 	device_type = _device_type(device_type)
 	# a site whose last deploy skipped `bench migrate` has no device_type column yet
 	has_device_type = frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type")
+
+	# the type the device will have: the one sent, else the stored one, else "till"; a role
+	# scoped to other device types (e.g. restaurant staff) cannot register a retail till
+	stored_type = None
+	if has_device_type and frappe.db.exists(DEVICE_DOCTYPE, device_id):
+		stored_type = frappe.db.get_value(DEVICE_DOCTYPE, device_id, "device_type")
+	require_device_role((device_type if has_device_type else None) or stored_type or DEFAULT_DEVICE_TYPE)
 
 	profile = get_profile(pos_profile)
 	user = frappe.session.user

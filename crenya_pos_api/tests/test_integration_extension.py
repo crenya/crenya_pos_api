@@ -20,6 +20,7 @@ from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import sync as sync_api
 from crenya_pos_api.extension import staff_roles
 from crenya_pos_api.sync import errors, registry
+from crenya_pos_api.sync.cashier import PIN_FIELD, verify_pin
 from crenya_pos_api.sync.context import get_device_context
 from crenya_pos_api.sync.hashing import payload_hash
 from crenya_pos_api.tests import extension_dummy as dummy
@@ -32,6 +33,8 @@ NO_ROLE_USER = "_test_crenya_ext_norole@example.com"
 HOOK_ROLE_USER = "_test_crenya_ext_hookrole@example.com"
 HOOK_STAFF_USER = "_test_crenya_ext_staff@example.com"
 BOTH_ROLES_USER = "_test_crenya_ext_both@example.com"
+KDS_USER = "_test_crenya_ext_kds@example.com"
+POS_ONLY_USER = "_test_crenya_ext_pos@example.com"
 EXT_BRAND = "_Test Crenya Ext Brand"
 
 
@@ -98,6 +101,7 @@ class TestCrenyaExtensions(FrappeTestCase):
 		fixtures.ensure_brand(EXT_BRAND)
 		dummy.ensure_task_doctype()
 		ensure_role(dummy.DEVICE_ROLE)
+		ensure_role(dummy.KDS_ROLE)
 		cls.device_id = new_id()
 		cls.device = device_api.register_device(
 			device_id=cls.device_id, device_name="Ext Till", pos_profile=cls.profile.name
@@ -377,11 +381,11 @@ class TestCrenyaExtensions(FrappeTestCase):
 		records = {record["name"]: record for record in self.pull_all("cashier")}
 		self.assertNotIn(HOOK_STAFF_USER, records)
 		self.assertEqual(records[BOTH_ROLES_USER]["roles"], ["Crenya POS User"])
-		self.assertNotIn(HOOK_STAFF_USER, staff_roles(self.profile))
+		self.assertNotIn(HOOK_STAFF_USER, staff_roles(self.profile, "till"))
 
 		with dummy.fake_hooks():
 			records = {record["name"]: record for record in self.pull_all("cashier")}
-			staff = staff_roles(self.profile)
+			staff = staff_roles(self.profile, "till")
 		self.assertNotIn(NO_ROLE_USER, records)
 		self.assertEqual(records[HOOK_STAFF_USER]["enabled"], 1)
 		# device roles only, Crenya POS User first: never Sales User / Accounts User
@@ -400,7 +404,7 @@ class TestCrenyaExtensions(FrappeTestCase):
 		try:
 			with dummy.fake_hooks():
 				records = {record["name"]: record for record in self.pull_all("cashier")}
-				staff = staff_roles(self.profile)
+				staff = staff_roles(self.profile, "till")
 			self.assertEqual(
 				(records[HOOK_STAFF_USER]["enabled"], records[HOOK_STAFF_USER]["roles"]), (0, [])
 			)
@@ -420,7 +424,7 @@ class TestCrenyaExtensions(FrappeTestCase):
 		frappe.db.commit()
 		try:
 			with dummy.fake_hooks():
-				staff = staff_roles(frappe.get_doc("POS Profile", self.profile.name))
+				staff = staff_roles(frappe.get_doc("POS Profile", self.profile.name), "till")
 			self.assertIn(BOTH_ROLES_USER, staff)
 			self.assertNotIn(HOOK_STAFF_USER, staff, "not listed on the POS Profile")
 		finally:
@@ -428,6 +432,117 @@ class TestCrenyaExtensions(FrappeTestCase):
 			profile.set("applicable_for_users", [])
 			profile.save(ignore_permissions=True)
 			frappe.db.commit()
+
+	# device roles scoped to device types: a kds-only role never opens a retail till
+
+	def kds_user_with_pin(self):
+		ensure_user(POS_ONLY_USER, ["Crenya POS User"])
+		ensure_user(KDS_USER, [dummy.KDS_ROLE])
+		user = frappe.get_doc("User", KDS_USER)
+		user.set(PIN_FIELD, "4826")
+		user.save(ignore_permissions=True)
+		frappe.db.commit()
+		return KDS_USER
+
+	def pull_cashiers(self, device_id, cursor=None):
+		records = {}
+		while True:
+			page = sync_api.pull_changes(device_id=device_id, entity="cashier", cursor=cursor, limit=1000)
+			records.update({record["name"]: record for record in page["records"]})
+			cursor = page["next_cursor"]
+			if not page["has_more"]:
+				return records, cursor
+
+	def test_a_role_scoped_to_other_device_types_never_opens_a_till(self):
+		user = self.kds_user_with_pin()
+		till_of_user = new_id()
+		frappe.get_doc(
+			{
+				"doctype": DEVICE,
+				"device_id": till_of_user,
+				"device_name": "Till of a kitchen user",
+				"device_short": f"X{uuid.uuid4().hex[:8]}",
+				"pos_profile": self.profile.name,
+				"user": user,
+				"enabled": 1,
+				"device_type": "till",
+			}
+		).insert(ignore_permissions=True)
+		frappe.db.commit()
+
+		with dummy.fake_hooks():
+			frappe.set_user(user)
+			# no device_type (every retail till) or "till": refused
+			for device_type in (None, "till"):
+				with self.assertRaises(frappe.PermissionError) as ctx:
+					device_api.register_device(
+						device_id=new_id(),
+						device_name="X",
+						pos_profile=self.profile.name,
+						device_type=device_type,
+					)
+				self.assertIn("for till devices", str(ctx.exception))
+			# an existing till of the user cannot be used either
+			for call in (
+				lambda: get_device_context(till_of_user),
+				lambda: device_api.get_bootstrap(device_id=till_of_user),
+				lambda: sync_api.pull_changes(device_id=till_of_user, entity="cashier"),
+				lambda: sync_api.push_batch(device_id=till_of_user, events=[]),
+			):
+				with self.assertRaises(frappe.PermissionError):
+					call()
+			# the device type the role is declared for works, also when registering it again
+			kds = new_id()
+			device_api.register_device(
+				device_id=kds, device_name="Pass", pos_profile=self.profile.name, device_type="kds"
+			)
+			again = device_api.register_device(
+				device_id=kds, device_name="Pass", pos_profile=self.profile.name
+			)
+			self.assertEqual(again["device_type"], "kds")
+			self.assertEqual(get_device_context(kds).device_type, "kds")
+			frappe.set_user("Administrator")
+
+			# the retail till's cashier pull: the kitchen user is a PIN holder, sent disabled
+			till_records, _cursor = self.pull_cashiers(self.device_id)
+			kds_records, _cursor = self.pull_cashiers(kds)
+			till_staff = staff_roles(self.profile, "till")
+			kds_staff = staff_roles(self.profile, "kds")
+		self.assertEqual(self.device["device_type"], "till")
+		self.assertEqual((till_records[user]["enabled"], till_records[user]["roles"]), (0, []))
+		self.assertIsNone(till_records[user]["pin_hash"])
+		self.assertNotIn(user, till_staff)
+		# the kitchen display's pull: enabled with its role
+		self.assertEqual((kds_records[user]["enabled"], kds_records[user]["roles"]), (1, [dummy.KDS_ROLE]))
+		self.assertTrue(verify_pin("4826", kds_records[user]["pin_hash"]))
+		self.assertEqual(kds_staff[user], [dummy.KDS_ROLE])
+		# Crenya POS User works on both
+		for records in (till_records, kds_records):
+			self.assertEqual(records[POS_ONLY_USER]["enabled"], 1)
+			self.assertEqual(records[POS_ONLY_USER]["roles"], ["Crenya POS User"])
+		self.assertEqual(till_staff[POS_ONLY_USER], ["Crenya POS User"])
+		self.assertEqual(kds_staff[POS_ONLY_USER], ["Crenya POS User"])
+
+	def test_cashiers_are_sent_again_when_the_device_type_changes(self):
+		user = self.kds_user_with_pin()
+		device_id = new_id()
+		with dummy.fake_hooks():
+			device_api.register_device(
+				device_id=device_id, device_name="Later KDS", pos_profile=self.profile.name
+			)
+			records, cursor = self.pull_cashiers(device_id)
+			self.assertEqual(records[user]["enabled"], 0)
+			records, cursor = self.pull_cashiers(device_id, cursor)
+			self.assertNotIn(user, records, "nothing changed: nothing sent")
+
+			device_api.register_device(
+				device_id=device_id, device_name="Later KDS", pos_profile=self.profile.name, device_type="kds"
+			)
+			records, cursor = self.pull_cashiers(device_id, cursor)
+			self.assertEqual((records[user]["enabled"], records[user]["roles"]), (1, [dummy.KDS_ROLE]))
+			self.assertIn(POS_ONLY_USER, records, "every cashier is sent again")
+			records, cursor = self.pull_cashiers(device_id, cursor)
+			self.assertNotIn(user, records)
 
 	# list_pos_profiles flags
 

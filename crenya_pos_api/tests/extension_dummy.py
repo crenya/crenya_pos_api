@@ -22,6 +22,9 @@ APP = "crenya_test_ext"
 TASK_AGGREGATE = "Test Crenya Task"
 ENTITY = "test_brand"
 DEVICE_ROLE = "_Test Crenya Device Role"
+# a role for kitchen displays only (device_type "kds"): never opens a retail till
+KDS_ROLE = "_Test Crenya Kitchen Role"
+KDS_TYPES = ["kds", "kds_v2"]
 TASK_RETENTION_DAYS = 30
 
 HOOKS = {
@@ -30,7 +33,7 @@ HOOKS = {
 	"crenya_pos_bootstrap": ["crenya_pos_api.tests.extension_dummy.extend_bootstrap"],
 	"crenya_pos_capabilities": ["crenya_pos_api.tests.extension_dummy.features"],
 	"crenya_pos_invoice_extenders": ["crenya_pos_api.tests.extension_dummy.extend_invoice"],
-	"crenya_pos_device_roles": [DEVICE_ROLE],
+	"crenya_pos_device_roles": [DEVICE_ROLE, {"role": KDS_ROLE, "device_types": KDS_TYPES}],
 	"crenya_pos_profile_flags": ["crenya_pos_api.tests.extension_dummy.profile_flags"],
 }
 # profiles the dummy app flags in list_pos_profiles (tests set it; empty = none)

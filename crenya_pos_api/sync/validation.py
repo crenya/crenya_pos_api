@@ -1,4 +1,5 @@
-"""Structural validation of push events and payloads (no database access).
+"""Structural validation of push events and payloads (no database access; the accepted
+aggregate types and operations come from crenya_pos_api.sync.registry).
 
 Everything here raises `SyncError(validation)` with a message naming the bad
 field, and returns normalized values (Decimals, ints) for the builders.
@@ -24,6 +25,7 @@ MAX_SHIFT_PAYMENT_ROWS = 50
 MAX_SHIFT_INVOICE_IDS = 100000
 MAX_NOTES_LENGTH = 2000
 MAX_PRICING_RULES_PER_LINE = 20
+MAX_LINE_NOTES_LENGTH = 500
 # Sales Invoice Payment reference_no (Data)
 MAX_REFERENCE_LENGTH = 140
 
@@ -98,12 +100,16 @@ def validate_envelope(event):
 	if not isinstance(event_id, str) or not _EVENT_ID_RE.match(event_id):
 		_fail("event_id is missing or has invalid characters")
 
+	# built-ins (AGGREGATE_TYPES, OPERATIONS) plus the crenya_pos_aggregates hook of other apps
+	from crenya_pos_api.sync.registry import aggregates
+
+	handlers = aggregates()
 	aggregate_type = event.get("aggregate_type")
-	if aggregate_type not in AGGREGATE_TYPES:
-		_fail(f"aggregate_type must be one of {', '.join(AGGREGATE_TYPES)}")
+	if not isinstance(aggregate_type, str) or aggregate_type not in handlers:
+		_fail(f"aggregate_type must be one of {', '.join(handlers)}")
 
 	operation = event.get("operation")
-	if operation not in OPERATIONS:
+	if operation not in handlers[aggregate_type].operations:
 		_fail(f"operation {operation!r} is not supported for {aggregate_type}")
 
 	local_id = _required_str(event, "local_id")
@@ -243,6 +249,12 @@ def _validate_item(row, index, is_return):
 		"is_free_item": _flag(row.get("is_free_item"), f"{label}.is_free_item"),
 		# optional: tills without batch support omit it; one batch per line (the till splits lines)
 		"batch_no": _optional_str(row, "batch_no", f"{label}.batch_no"),
+		# optional (protocol 2): free text for the line (kitchen notes, free modifiers) and the
+		# line it belongs to (a priced modifier under its dish); used by invoice extenders
+		"notes": _optional_str(row, "notes", f"{label}.notes", max_length=MAX_LINE_NOTES_LENGTH),
+		"parent_line_no": _int(
+			row.get("parent_line_no"), f"{label}.parent_line_no", minimum=1, allow_none=True
+		),
 	}
 
 
@@ -325,6 +337,37 @@ def _validate_loyalty(value, is_return):
 	return {"points": points, "amount": amount}
 
 
+def _validate_parent_lines(lines):
+	"""parent_line_no names another line of the invoice, and parents never loop."""
+	parents = {line["line_no"]: line["parent_line_no"] for line in lines}
+	for index, line in enumerate(lines):
+		parent = line["parent_line_no"]
+		if parent is None:
+			continue
+		if parent == line["line_no"]:
+			_fail(f"items[{index}].parent_line_no must not be the line itself")
+		if parent not in parents:
+			_fail(f"items[{index}].parent_line_no {parent} is not a line_no of this invoice")
+		seen = {line["line_no"]}
+		while parent is not None:
+			if parent in seen:
+				_fail(f"items[{index}].parent_line_no forms a loop")
+			seen.add(parent)
+			parent = parents.get(parent)
+
+
+def _validate_extensions(value):
+	"""Optional `extensions: {app_name: {...}}`: data of other apps' invoice extenders.
+
+	Core only checks that it is an object; each extender validates its own entry. It is part
+	of the hashed payload, so a retried event carries exactly the same extension data."""
+	if value is None:
+		return {}
+	if not isinstance(value, dict):
+		_fail("extensions must be an object")
+	return value
+
+
 def is_open_return(data):
 	"""A return that names no original invoice (a return without an invoice)."""
 	return bool(data["is_return"]) and not (data["return_against"] or data["return_against_local_id"])
@@ -353,6 +396,7 @@ def validate_invoice_payload(payload):
 	line_numbers = [line["line_no"] for line in lines]
 	if len(set(line_numbers)) != len(line_numbers):
 		_fail("items[].line_no must be unique")
+	_validate_parent_lines(lines)
 
 	return_against = _optional_str(payload, "return_against")
 	return_against_local_id = _optional_str(payload, "return_against_local_id")
@@ -387,6 +431,8 @@ def validate_invoice_payload(payload):
 		"client_totals": _validate_client_totals(payload.get("client_totals")),
 		# optional: tills without loyalty support omit the key
 		"loyalty": _validate_loyalty(payload.get("loyalty"), is_return),
+		# optional (protocol 2): passed as is to crenya_pos_invoice_extenders
+		"extensions": _validate_extensions(payload.get("extensions")),
 	}
 
 

@@ -45,12 +45,12 @@
    "search_index": 1
   },
   {
+   "description": "Customer, Sales Invoice, Crenya POS Shift, or an aggregate of another app (crenya_pos_aggregates hook)",
    "fieldname": "aggregate_type",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Aggregate Type",
-   "options": "Customer\nSales Invoice\nCrenya POS Shift",
    "read_only": 1
   },
   {
@@ -155,7 +155,7 @@
  "in_create": 1,
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-29 12:00:00.000000",
+ "modified": "2026-10-05 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya Sync Event",

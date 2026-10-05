@@ -21,7 +21,11 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 class SyncError(Exception):
-	"""A per-event business failure with a protocol error code."""
+	"""A per-event business failure with a protocol error code.
+
+	Codes: VALIDATION (bad payload, final), PERMISSION (final), DEPENDENCY_MISSING (something
+	the event needs has not synced yet, retried), TOTAL_MISMATCH (final), PAYLOAD_CONFLICT
+	(final), INTERNAL (retried). `retryable` defaults to `code in RETRYABLE_CODES`."""
 
 	def __init__(self, code, message, retryable=None):
 		super().__init__(message)
@@ -61,6 +65,15 @@ class InvalidRequestError(CrenyaAPIError):
 class NotFoundError(CrenyaAPIError):
 	code = VALIDATION
 	http_status_code = 404
+
+
+class ExtensionHookError(CrenyaAPIError):
+	"""A `crenya_pos_*` hook of an installed app is misconfigured or cannot be imported.
+
+	Retryable: the till keeps its data and retries once the server is fixed."""
+
+	code = INTERNAL
+	retryable = True
 
 
 class DevicePermissionError(frappe.PermissionError):

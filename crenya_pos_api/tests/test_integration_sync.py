@@ -226,13 +226,14 @@ class TestCrenyaSync(FrappeTestCase):
 
 	def test_capabilities(self):
 		caps = sync_api.get_sync_capabilities()
-		self.assertEqual(caps["protocol_version"], 1)
+		self.assertEqual(caps["protocol_version"], 2)
 		self.assertTrue(caps["features"]["sales"])
 		self.assertEqual(caps["user"], "Administrator")
 
 	def test_protocol_unsupported(self):
 		with self.assertRaises(errors.ProtocolUnsupportedError):
-			check_protocol_version(2)
+			check_protocol_version(3)
+		check_protocol_version(2)
 		check_protocol_version(1)
 
 	def test_register_is_idempotent_and_short_code_stable(self):
@@ -258,6 +259,34 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertTrue(data["payment_methods"][0]["default"])
 		zero = [t for t in data["item_tax_templates"] if t["name"] == fixtures.ZERO_TEMPLATE]
 		self.assertEqual(zero[0]["taxes"][0]["tax_rate"], "0")
+
+	def test_bootstrap_sends_rate_precision_with_property_setters(self):
+		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+		default = frappe.get_precision("Sales Invoice Item", "rate")
+		data = device_api.get_bootstrap(device_id=self.device_id)
+		self.assertEqual(data["settings"]["rate_precision"], int(default))
+		self.assertIs(type(data["settings"]["rate_precision"]), int)
+
+		changed = 5 if int(default) != 5 else 4
+		setter = make_property_setter(
+			"Sales Invoice Item",
+			"rate",
+			"precision",
+			str(changed),
+			"Select",
+			validate_fields_for_doctype=False,
+		)
+		try:
+			frappe.clear_cache(doctype="Sales Invoice Item")
+			data = device_api.get_bootstrap(device_id=self.device_id)
+			self.assertEqual(data["settings"]["rate_precision"], changed)
+		finally:
+			frappe.delete_doc("Property Setter", setter.name, force=True)
+			frappe.clear_cache(doctype="Sales Invoice Item")
+			frappe.db.commit()
+		data = device_api.get_bootstrap(device_id=self.device_id)
+		self.assertEqual(data["settings"]["rate_precision"], int(default))
 
 	def test_bootstrap_allow_negative_stock(self):
 		expected = bool(cint(frappe.db.get_single_value("Stock Settings", "allow_negative_stock")))

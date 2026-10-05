@@ -27,6 +27,24 @@ class TestCursor(unittest.TestCase):
 		self.assertEqual(data["n"], "A")
 		self.assertTrue(token.startswith("eyJ"))
 
+	def test_scope_round_trips_and_is_left_out_when_none(self):
+		cursor = Cursor(
+			entity="cashier",
+			modified="2026-09-29 14:03:15.000000",
+			name="a@x",
+			tomb_creation="2026-09-29 14:00:00.000000",
+			tomb_name="t1",
+			scope="abc",
+		)
+		token = encode_cursor(cursor)
+		self.assertEqual(json.loads(base64.urlsafe_b64decode(token))["s"], "abc")
+		self.assertEqual(decode_cursor(token, "cashier"), cursor)
+		plain = encode_cursor(Cursor(entity="item", modified="2026-09-29 14:03:15.000000", name="A"))
+		self.assertNotIn("s", json.loads(base64.urlsafe_b64decode(plain)))
+		self.assertIsNone(decode_cursor(plain, "item").scope)
+		with self.assertRaises(InvalidCursor):
+			decode_cursor(_raw({"m": "2026-09-29 14:03:15", "n": "X", "s": 5}), "item")
+
 	def test_empty_token_means_start(self):
 		self.assertIsNone(decode_cursor(None, "item"))
 		self.assertIsNone(decode_cursor("", "item"))

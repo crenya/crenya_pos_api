@@ -114,6 +114,15 @@ CUSTOM_FIELDS = {
 			"translatable": 0,
 		},
 	],
+	"Item Group": [
+		{
+			"fieldname": "crenya_item_group_name_ar",
+			"fieldtype": "Data",
+			"label": "Item Group Name (Arabic)",
+			"insert_after": "item_group_name",
+			"translatable": 0,
+		},
+	],
 	"POS Profile": [
 		{
 			"fieldname": "crenya_allow_return_without_invoice",

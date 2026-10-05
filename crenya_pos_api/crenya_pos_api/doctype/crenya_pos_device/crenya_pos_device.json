@@ -16,6 +16,7 @@
   "details_section",
   "app_version",
   "platform",
+  "device_type",
   "update_channel",
   "column_break_details",
   "registered_on",
@@ -96,6 +97,14 @@
    "read_only": 1
   },
   {
+   "default": "till",
+   "description": "Kind of device, sent by the device when it registers (till unless it says otherwise, e.g. kds)",
+   "fieldname": "device_type",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Device Type"
+  },
+  {
    "default": "stable",
    "description": "Release channel this till installs updates from (beta also receives stable releases)",
    "fieldname": "update_channel",
@@ -123,7 +132,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-29 18:00:00.000000",
+ "modified": "2026-10-05 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya POS Device",

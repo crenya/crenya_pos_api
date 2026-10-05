@@ -18,9 +18,10 @@ def register_device(
 	app_version: str | None = None,
 	platform: str | None = None,
 	protocol_version: int | str | None = None,
+	device_type: str | None = None,
 ):
 	check_protocol_version(protocol_version)
-	return device_service.register(device_id, device_name, pos_profile, app_version, platform)
+	return device_service.register(device_id, device_name, pos_profile, app_version, platform, device_type)
 
 
 @frappe.whitelist(methods=["POST"])

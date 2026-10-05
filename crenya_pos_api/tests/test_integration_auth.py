@@ -76,3 +76,19 @@ class TestCrenyaSignIn(FrappeTestCase):
 	def test_user_without_pos_role_is_rejected(self):
 		with self.assertRaises(frappe.PermissionError):
 			sign_in(self.clerk, PASSWORD)
+
+	def test_a_role_scoped_to_other_device_types_may_sign_in(self):
+		# sign-in comes before any device: a kitchen-only role gets its keys; which device it may
+		# register and use is checked there (see test_integration_extension)
+		from crenya_pos_api.tests import extension_dummy as dummy
+
+		if not frappe.db.exists("Role", dummy.KDS_ROLE):
+			frappe.get_doc({"doctype": "Role", "role_name": dummy.KDS_ROLE, "desk_access": 0}).insert(
+				ignore_permissions=True
+			)
+		kitchen = ensure_user("_test_crenya_kitchen@example.com", [dummy.KDS_ROLE])
+		frappe.db.commit()
+		with self.assertRaises(frappe.PermissionError):
+			sign_in(kitchen, PASSWORD)
+		with dummy.fake_hooks():
+			self.assertEqual(sign_in(kitchen, PASSWORD)["user"], kitchen)

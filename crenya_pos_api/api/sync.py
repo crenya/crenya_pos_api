@@ -13,6 +13,7 @@ from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.events import process_batch
 from crenya_pos_api.sync.fawtara import COMPLIANCE_APP
 from crenya_pos_api.sync.pull import pull_changes as _pull_changes
+from crenya_pos_api.sync.registry import extend_features
 from crenya_pos_api.sync.validation import MAX_EVENTS_PER_BATCH
 from crenya_pos_api.utils.dates import utc_now_iso
 
@@ -31,7 +32,7 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 	from frappe.utils import get_system_timezone
 
 	installed = frappe.get_installed_apps()
-	return {
+	capabilities = {
 		"protocol_version": PROTOCOL_VERSION,
 		"app_version": crenya_pos_api.__version__,
 		"frappe_version": frappe.__version__,
@@ -54,8 +55,13 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"scale_rules": True,
 			"uom_entity": True,
 			"fawtara": COMPLIANCE_APP in installed,
+			# protocol 2: entities, aggregates and invoice data of other apps (crenya_pos_* hooks)
+			"extensions": True,
 		},
 	}
+	# other apps' crenya_pos_capabilities hooks add their own flags; core flags are kept
+	extend_features(capabilities["features"])
+	return capabilities
 
 
 @frappe.whitelist(methods=["POST"])

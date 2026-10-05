@@ -8,7 +8,7 @@ import frappe
 from frappe import _
 from frappe.rate_limiter import rate_limit
 
-from crenya_pos_api.sync.context import POS_USER_ROLE, check_protocol_version
+from crenya_pos_api.sync.context import POS_USER_ROLE, all_device_roles, check_protocol_version
 
 ALLOWED_ROLES = {POS_USER_ROLE, "System Manager"}
 
@@ -47,7 +47,9 @@ def sign_in(usr, pwd):
 			_("Two-factor authentication is enabled for {0}. Use a till user without 2FA.").format(user),
 			frappe.PermissionError,
 		)
-	if not ALLOWED_ROLES.intersection(frappe.get_roles(user)):
+	# plus the roles other apps allow on devices of any type (crenya_pos_device_roles); which
+	# device a role may use is checked when the device registers and on every device call
+	if not ALLOWED_ROLES.union(all_device_roles()).intersection(frappe.get_roles(user)):
 		frappe.throw(_("{0} does not have the {1} role").format(user, POS_USER_ROLE), frappe.PermissionError)
 
 	api_key, api_secret = _ensure_api_keys(user)

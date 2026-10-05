@@ -1,5 +1,6 @@
 """Device / POS Profile resolution and authorization shared by all API methods."""
 
+import re
 from dataclasses import dataclass
 
 import frappe
@@ -15,11 +16,17 @@ from crenya_pos_api.sync.errors import (
 )
 from crenya_pos_api.utils.decimal import as_decimal, smallest_unit_tolerance
 
-PROTOCOL_VERSION = 1
+# 2: extension hooks (other apps' entities / aggregates / operations), invoice `extensions`,
+# line `notes` / `parent_line_no`, `device_type`. Every addition is optional, so protocol 1
+# tills keep working unchanged.
+PROTOCOL_VERSION = 2
 DEVICE_DOCTYPE = "Crenya POS Device"
 EVENT_DOCTYPE = "Crenya Sync Event"
 POS_USER_ROLE = "Crenya POS User"
 SUPPORTED_CHARGE_TYPES = ("On Net Total",)
+DEFAULT_DEVICE_TYPE = "till"
+# device_type values: lower case letters, digits, _ and - (at most 40)
+DEVICE_TYPE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 
 # default totals tolerance: this many smallest units of the invoice currency
 TOTAL_TOLERANCE_UNITS = 10
@@ -28,12 +35,22 @@ DEFAULT_PULL_LAG_SECONDS = 5
 
 @dataclass
 class DeviceContext:
+	"""The registered, enabled device of the request, authorized for its user and POS Profile.
+
+	`device` is the Crenya POS Device row (name, device_id, device_short, device_name,
+	pos_profile, user, enabled, device_type); `profile` the cached POS Profile document."""
+
 	device: dict
 	profile: "frappe.model.document.Document"
 
 	@property
 	def device_id(self):
 		return self.device["name"]
+
+	@property
+	def device_type(self):
+		"""Kind of device ("till" unless it registered as something else, e.g. "kds")."""
+		return self.device.get("device_type") or DEFAULT_DEVICE_TYPE
 
 	@property
 	def company(self):
@@ -64,6 +81,51 @@ def check_protocol_version(protocol_version):
 def require_login():
 	if frappe.session.user in (None, "Guest"):
 		raise frappe.PermissionError("Login required")
+
+
+def device_roles(device_type=DEFAULT_DEVICE_TYPE):
+	"""Roles that may register and use a device of `device_type`: Crenya POS User plus the
+	`crenya_pos_device_roles` roles declared for every type or for this one."""
+	from crenya_pos_api.sync.registry import device_roles as registered_roles
+
+	return registered_roles(device_type)
+
+
+def all_device_roles():
+	"""Device roles of any device type (before a device is known: sign-in, profile list)."""
+	from crenya_pos_api.sync.registry import all_device_roles as registered_roles
+
+	return registered_roles()
+
+
+def has_device_role(user=None, device_type=None):
+	"""True when the user holds a role for `device_type`, or (None) for any device type."""
+	roles = set(frappe.get_roles(user or frappe.session.user))
+	wanted = all_device_roles() if device_type is None else device_roles(device_type)
+	return any(role in roles for role in wanted)
+
+
+def require_device_role(device_type=None):
+	"""Signed in is not enough for till data (customers, PIN hashes, terminal secrets): the user
+	must hold Crenya POS User, or a role another app allows with `crenya_pos_device_roles`.
+	With `device_type`, only the roles of that type count: a retail till (type "till") accepts
+	Crenya POS User and roles hooked for every type, never a role scoped to other device types."""
+	require_login()
+	user = frappe.session.user
+	if has_device_role(user, device_type):
+		return
+	roles = all_device_roles() if device_type is None else device_roles(device_type)
+	wanted = f"the {roles[0]} role" if len(roles) == 1 else f"one of the roles {', '.join(roles)}"
+	scope = f" for {device_type} devices" if device_type is not None else ""
+	raise_api_error(DevicePermissionError, f"User {user} does not have {wanted}{scope}")
+
+
+def device_fields():
+	"""Crenya POS Device columns of DeviceContext.device (device_type once the site is migrated)."""
+	fields = ["name", "device_id", "device_short", "device_name", "pos_profile", "user", "enabled"]
+	if frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type"):
+		fields.append("device_type")
+	return fields
 
 
 def is_system_manager(user=None):
@@ -115,22 +177,19 @@ def assert_supported_taxes(profile):
 
 def get_device_context(device_id, touch=True):
 	"""Load and authorize the device of the current request."""
-	require_login()
+	require_device_role()
 	if not device_id or not isinstance(device_id, str):
 		raise_api_error(DeviceNotRegisteredError, "device_id is required")
 
-	device = frappe.db.get_value(
-		DEVICE_DOCTYPE,
-		device_id,
-		["name", "device_id", "device_short", "device_name", "pos_profile", "user", "enabled"],
-		as_dict=True,
-	)
+	device = frappe.db.get_value(DEVICE_DOCTYPE, device_id, device_fields(), as_dict=True)
 	if not device or not cint(device.enabled):
 		raise_api_error(DeviceNotRegisteredError, f"Device {device_id} is not registered or is disabled")
 
 	user = frappe.session.user
 	if device.user != user and not is_system_manager(user):
 		raise_api_error(DevicePermissionError, f"Device {device_id} is registered to another user")
+	# roles scoped to other device types (e.g. restaurant staff) never open a retail till
+	require_device_role(device.get("device_type") or DEFAULT_DEVICE_TYPE)
 
 	profile = get_profile(device.pos_profile)
 	if not user_can_use_profile(profile, user):
@@ -178,3 +237,9 @@ def qty_precision():
 	"""Decimals ERPNext rounds Sales Invoice Item `qty` to: the field's precision (property
 	setters included), else System Settings float precision, as `frappe.get_precision` resolves it."""
 	return cint(frappe.get_precision("Sales Invoice Item", "qty"))
+
+
+def rate_precision(currency=None):
+	"""Decimals ERPNext rounds Sales Invoice Item `rate` to: the field's precision (property
+	setters included), else the currency precision, as `frappe.get_precision` resolves it."""
+	return cint(frappe.get_precision("Sales Invoice Item", "rate", currency=currency))

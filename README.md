@@ -57,6 +57,7 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
     (POS PIN, Password) and the hidden `crenya_pos_pin_hash` (see *Cashier PINs*)
   - Customer: `crenya_local_id` (unique)
   - Item: `crenya_item_name_ar` (Item Name (Arabic))
+  - Item Group: `crenya_item_group_name_ar` (Item Group Name (Arabic))
   - Company: `crenya_company_name_ar`, `crenya_cr_number` (CR Number), and a collapsible
     section **Crenya POS** (after the address) with the receipt wording `crenya_tax_name`,
     `crenya_tax_id_label`, `crenya_invoice_title`, `crenya_credit_note_title`,
@@ -365,8 +366,10 @@ precision, quantities and percentages plain decimal strings; `0` means no
 limit.
 
 Item group rules cover sub-groups: item records carry `brand`, and entity
-`item_group` sends the whole Item Group tree (`name, parent_item_group, lft,
-rgt, modified`). ERPNext renumbers `lft` / `rgt` of other groups without
+`item_group` sends the whole Item Group tree (`name, item_group_name_ar,
+parent_item_group, lft, rgt, modified`; `item_group_name_ar` is the Item
+Group's *Item Group Name (Arabic)*, `null` when empty, like the item's
+`item_name_ar`). ERPNext renumbers `lft` / `rgt` of other groups without
 changing their `modified` when groups are added or moved, so tills build the
 tree from `parent_item_group`.
 

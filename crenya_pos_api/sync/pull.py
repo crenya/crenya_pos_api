@@ -380,10 +380,17 @@ class ItemGroupSpec(EntitySpec):
 	doctype = "Item Group"
 	fields = ("name", "parent_item_group", "lft", "rgt")
 
+	def select(self, table):
+		columns = super().select(table)
+		if frappe.get_meta("Item Group").has_field("crenya_item_group_name_ar"):
+			columns.append(table.crenya_item_group_name_ar)
+		return columns
+
 	def build(self, rows, ctx):
 		return [
 			{
 				"name": row.name,
+				"item_group_name_ar": row.get("crenya_item_group_name_ar") or None,
 				"parent_item_group": row.parent_item_group or None,
 				"lft": cint(row.lft),
 				"rgt": cint(row.rgt),

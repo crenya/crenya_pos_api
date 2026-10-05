@@ -170,7 +170,9 @@ class TestCrenyaPromotions(FrappeTestCase):
 		self.assertEqual(promo["parent_item_group"], fixtures.ITEM_GROUP_ROOT)
 		self.assertIsInstance(promo["lft"], int)
 		self.assertTrue(root["lft"] < promo["lft"] < promo["rgt"] < root["rgt"])
-		self.assertEqual(set(promo), {"name", "parent_item_group", "lft", "rgt", "modified"})
+		self.assertEqual(
+			set(promo), {"name", "item_group_name_ar", "parent_item_group", "lft", "rgt", "modified"}
+		)
 		# every group is sent, also those outside the profile's item groups
 		self.assertIn(fixtures.ITEM_GROUP_OUTSIDE, groups)
 		tree_root = [g for g in groups.values() if not g["parent_item_group"]]
@@ -179,6 +181,24 @@ class TestCrenyaPromotions(FrappeTestCase):
 		items, _cursor, _page = self.pull_all("item", key="item_code")
 		self.assertEqual(items[fixtures.CHIPS]["brand"], fixtures.BRAND)
 		self.assertIsNone(items[fixtures.JUICE]["brand"])
+
+	def test_item_group_feed_arabic_name(self):
+		field = "crenya_item_group_name_ar"
+		self.assertTrue(frappe.get_meta("Item Group").has_field(field))
+		saved = frappe.db.get_value("Item Group", fixtures.ITEM_GROUP_PROMO, field)
+		try:
+			frappe.db.set_value("Item Group", fixtures.ITEM_GROUP_PROMO, field, "وجبات خفيفة")
+			frappe.db.commit()
+			groups, _cursor, _page = self.pull_all("item_group")
+			self.assertEqual(groups[fixtures.ITEM_GROUP_PROMO]["item_group_name_ar"], "وجبات خفيفة")
+
+			frappe.db.set_value("Item Group", fixtures.ITEM_GROUP_PROMO, field, "")
+			frappe.db.commit()
+			groups, _cursor, _page = self.pull_all("item_group")
+			self.assertIsNone(groups[fixtures.ITEM_GROUP_PROMO]["item_group_name_ar"])
+		finally:
+			frappe.db.set_value("Item Group", fixtures.ITEM_GROUP_PROMO, field, saved)
+			frappe.db.commit()
 
 	def test_pricing_rule_feed(self):
 		group_pct = self.make_rule(

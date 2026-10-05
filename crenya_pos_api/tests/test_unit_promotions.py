@@ -2,10 +2,13 @@
 
 import copy
 import unittest
-from datetime import date
+from datetime import date, datetime
+
+import frappe
 
 from crenya_pos_api.sync.errors import SyncError
 from crenya_pos_api.sync.promotions import rule_is_active, rule_is_expired, rule_qualifies
+from crenya_pos_api.sync.pull import ItemGroupSpec
 from crenya_pos_api.sync.validation import MAX_PRICING_RULES_PER_LINE, validate_invoice_payload
 from crenya_pos_api.tests.test_unit_validation import SALE, make_return
 
@@ -175,6 +178,40 @@ class TestRuleQualification(unittest.TestCase):
 		self.assertFalse(rule_is_active(rule(disable=1), COMPANY, TODAY, "OMR"))
 		self.assertFalse(rule_is_active(rule(valid_upto="2026-09-30"), COMPANY, TODAY, "OMR"))
 		self.assertFalse(rule_is_active(rule(coupon_code_based=1), COMPANY, TODAY, "OMR"))
+
+
+class TestItemGroupRecords(unittest.TestCase):
+	def group(self, name, arabic):
+		return frappe._dict(
+			name=name,
+			parent_item_group="All Item Groups",
+			lft=2,
+			rgt=3,
+			crenya_item_group_name_ar=arabic,
+			modified=datetime(2026, 10, 5, 9, 0, 0),
+		)
+
+	def test_records_carry_the_arabic_name(self):
+		record = ItemGroupSpec().build([self.group("Drinks", "مشروبات")], None)[0]
+		self.assertEqual(
+			record,
+			{
+				"name": "Drinks",
+				"item_group_name_ar": "مشروبات",
+				"parent_item_group": "All Item Groups",
+				"lft": 2,
+				"rgt": 3,
+				"modified": "2026-10-05 09:00:00.000000",
+			},
+		)
+
+	def test_empty_arabic_name_is_null(self):
+		rows = [self.group("A", ""), self.group("B", None)]
+		rows.append(
+			frappe._dict({k: v for k, v in self.group("C", None).items() if k != "crenya_item_group_name_ar"})
+		)
+		for record in ItemGroupSpec().build(rows, None):
+			self.assertIsNone(record["item_group_name_ar"], record["name"])
 
 
 if __name__ == "__main__":

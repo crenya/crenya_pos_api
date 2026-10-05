@@ -226,13 +226,14 @@ class TestCrenyaSync(FrappeTestCase):
 
 	def test_capabilities(self):
 		caps = sync_api.get_sync_capabilities()
-		self.assertEqual(caps["protocol_version"], 1)
+		self.assertEqual(caps["protocol_version"], 2)
 		self.assertTrue(caps["features"]["sales"])
 		self.assertEqual(caps["user"], "Administrator")
 
 	def test_protocol_unsupported(self):
 		with self.assertRaises(errors.ProtocolUnsupportedError):
-			check_protocol_version(2)
+			check_protocol_version(3)
+		check_protocol_version(2)
 		check_protocol_version(1)
 
 	def test_register_is_idempotent_and_short_code_stable(self):

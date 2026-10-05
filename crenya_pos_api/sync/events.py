@@ -8,21 +8,17 @@ or is rolled back to its savepoint and leaves only an `error` Sync Event (with
 import frappe
 from frappe.utils import cint, now
 
+from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.context import EVENT_DOCTYPE
-from crenya_pos_api.sync.customer import create_customer, customer_result_fields
-from crenya_pos_api.sync.errors import PAYLOAD_CONFLICT, SyncError, classify_exception, error_dict
-from crenya_pos_api.sync.hashing import payload_hash
-from crenya_pos_api.sync.invoice_builder import invoice_result_fields, submit_invoice
-from crenya_pos_api.sync.shift import create_shift, shift_result_fields
-from crenya_pos_api.sync.validation import (
-	AGGREGATE_CUSTOMER,
-	AGGREGATE_SALES_INVOICE,
-	AGGREGATE_SHIFT,
-	validate_customer_payload,
-	validate_envelope,
-	validate_invoice_payload,
-	validate_shift_payload,
+from crenya_pos_api.sync.errors import (
+	PAYLOAD_CONFLICT,
+	ExtensionHookError,
+	SyncError,
+	classify_exception,
+	error_dict,
 )
+from crenya_pos_api.sync.hashing import payload_hash
+from crenya_pos_api.sync.validation import validate_envelope
 
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -52,7 +48,7 @@ def error_result(event_id, error, doctype=None):
 	return result
 
 
-def document_result(event_id, status, doctype, name):
+def document_result(event_id, status, doctype, name, handler=None):
 	"""Result for an already persisted document (fresh values, not a cached copy)."""
 	result = empty_result(event_id, doctype)
 	result["status"] = status
@@ -61,23 +57,11 @@ def document_result(event_id, status, doctype, name):
 		return result
 
 	doc = frappe.get_doc(doctype, name)
-	result.update(_result_fields(doctype, doc))
+	# the handler that wrote documents of this DocType reports them
+	reporter = registry.handler_for_doctype(doctype) or handler
+	if reporter is not None:
+		result.update(reporter.result_fields(doc))
 	return result
-
-
-def _result_fields(doctype, doc):
-	if doctype == AGGREGATE_SALES_INVOICE:
-		return invoice_result_fields(doc)
-	if doctype == AGGREGATE_SHIFT:
-		return shift_result_fields(doc)
-	return customer_result_fields(doc)
-
-
-def _find_by_local_id(doctype, local_id):
-	if doctype == AGGREGATE_SHIFT:
-		# Crenya POS Shift is named after its local_id
-		return frappe.db.exists(AGGREGATE_SHIFT, local_id) or None
-	return frappe.db.get_value(doctype, {"crenya_local_id": local_id}, "name")
 
 
 def _load_event(event_id, for_update=False):
@@ -170,6 +154,7 @@ def _record_error(ctx, env, error):
 
 def _idempotent_result(ctx, env):
 	"""Return (result, existing_event). result is set when the event was already applied."""
+	handler = registry.handler(env["aggregate_type"])
 	existing = _load_event(env["event_id"], for_update=True)
 	if existing:
 		if existing.payload_hash != env["payload_hash"]:
@@ -177,16 +162,19 @@ def _idempotent_result(ctx, env):
 		if existing.device != ctx.device_id:
 			raise SyncError(PAYLOAD_CONFLICT, "event_id was already used by another device")
 		if existing.status == STATUS_OK:
-			doctype = existing.result_doctype or env["aggregate_type"]
-			return document_result(env["event_id"], STATUS_DUPLICATE, doctype, existing.result_name), existing
+			doctype = existing.result_doctype or handler.result_doctype
+			result = document_result(
+				env["event_id"], STATUS_DUPLICATE, doctype, existing.result_name, handler
+			)
+			return result, existing
 
-	doctype = env["aggregate_type"]
-	name = _find_by_local_id(doctype, env["local_id"])
+	name = handler.find_by_local_id(env["local_id"])
 	if name:
 		# the document exists but the till never saw the response
-		matched_by = "local_id" if doctype == AGGREGATE_SHIFT else "crenya_local_id"
-		_record_ok(ctx, env, existing, doctype, name, [f"Matched existing document by {matched_by}"])
-		return document_result(env["event_id"], STATUS_DUPLICATE, doctype, name), existing
+		doctype = handler.result_doctype
+		note = f"Matched existing document by {handler.local_id_field}"
+		_record_ok(ctx, env, existing, doctype, name, [note])
+		return document_result(env["event_id"], STATUS_DUPLICATE, doctype, name, handler), existing
 
 	return None, existing
 
@@ -196,21 +184,14 @@ def _apply(ctx, env):
 	if result:
 		return result
 
+	handler = registry.handler(env["aggregate_type"])
+	operation = env["operation"]
 	notes = []
-	if env["aggregate_type"] == AGGREGATE_CUSTOMER:
-		data = validate_customer_payload(env["payload"])
-		doc = create_customer(ctx, data)
-		fields = customer_result_fields(doc)
-	elif env["aggregate_type"] == AGGREGATE_SHIFT:
-		data = validate_shift_payload(env["payload"])
-		doc = create_shift(ctx, data, notes)
-		fields = shift_result_fields(doc)
-	else:
-		data = validate_invoice_payload(env["payload"])
-		doc = submit_invoice(ctx, data, notes)
-		fields = invoice_result_fields(doc)
+	data = handler.validate(operation, env["payload"])
+	doc = handler.apply(ctx, operation, data, notes)
+	fields = handler.result_fields(doc)
 
-	_record_ok(ctx, env, existing, env["aggregate_type"], doc.name, notes)
+	_record_ok(ctx, env, existing, doc.doctype, doc.name, notes)
 
 	result = empty_result(env["event_id"], env["aggregate_type"])
 	result.update(fields)
@@ -229,6 +210,14 @@ def _discard(savepoint):
 	frappe.db.rollback()
 
 
+def _forget_request_error():
+	"""A broken hook fails one event, not the request: drop the request-level error body."""
+	try:
+		frappe.local.response.pop("error", None)
+	except (AttributeError, RuntimeError):
+		pass
+
+
 def process_event(ctx, raw_event, index=0):
 	event_id = raw_event.get("event_id") if isinstance(raw_event, dict) else None
 	aggregate_type = raw_event.get("aggregate_type") if isinstance(raw_event, dict) else None
@@ -237,6 +226,11 @@ def process_event(ctx, raw_event, index=0):
 		env = validate_envelope(raw_event)
 	except SyncError as e:
 		return error_result(event_id if isinstance(event_id, str) else None, e.as_dict(), aggregate_type)
+	except ExtensionHookError as e:
+		# an app's crenya_pos_aggregates hook is broken: retryable once the server is fixed
+		_forget_request_error()
+		error = error_dict(e.code, str(e), e.retryable)
+		return error_result(event_id if isinstance(event_id, str) else None, error, aggregate_type)
 
 	if payload_hash(env["payload"]) != env["payload_hash"]:
 		return error_result(
@@ -255,6 +249,8 @@ def process_event(ctx, raw_event, index=0):
 		return result
 	except Exception as exc:
 		_discard(savepoint)
+		if isinstance(exc, ExtensionHookError):
+			_forget_request_error()
 
 		if isinstance(exc, frappe.UniqueValidationError | frappe.DuplicateEntryError):
 			# a concurrent request may have created the document first

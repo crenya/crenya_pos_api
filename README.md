@@ -15,11 +15,16 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
 #### What the app adds
 
 - DocType **Crenya POS Device**: one row per till (`device_id` UUID, stable
-  short code `D01`, `D02`, … used in offline numbers `OFF-D02-000123`).
+  short code `D01`, `D02`, … used in offline numbers `OFF-D02-000123`) and its
+  *Device Type* (`till` unless the device registers as something else, e.g.
+  `kds`).
 - DocType **Crenya Sync Event**: idempotency log of every pushed event
-  (read-only in desk). Successful events older than
-  `crenya_pos_event_retention_days` (default 120, never less than 90) are
-  purged by a daily job; failed events are kept.
+  (read-only in desk; *Aggregate Type* is free text, so other apps can add
+  types). Successful events older than their aggregate's retention are
+  purged by a daily job in batches of 1000: `crenya_pos_event_retention_days`
+  (default 120, never less than 90) for Customer, Sales Invoice, Crenya POS
+  Shift and types no installed app knows; an extension aggregate may set its
+  own `retention_days`. Failed events are kept.
 - DocType **Crenya POS Shift** (named after the till's shift `local_id`) with
   child table **Crenya POS Shift Payment** (mode of payment, expected,
   counted, difference): one row per cashier shift closed at a till, with
@@ -132,7 +137,10 @@ it. Use your own currency, precision, taxes and time zone.
    Event and Crenya POS Shift, are written with `ignore_permissions` after the
    user / device has been authorized). Add the user
    to the POS Profile's *Applicable for Users* table, or leave that table empty
-   to allow everyone.
+   to allow everyone. Every device call (profile list, registration,
+   bootstrap, pull, push, returns, loyalty, Fawtara status, updates) requires
+   the **Crenya POS User** role (or a role an installed app allows, see
+   *Extending crenya_pos_api*); being signed in is not enough.
 
 #### API summary
 
@@ -146,12 +154,12 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | method | purpose |
 |---|---|
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
-| `sync.get_sync_capabilities` | ping, versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording`, `payment_terminals`, `scale_rules`, `uom_entity` (GET or POST) |
+| `sync.get_sync_capabilities` | ping, `protocol_version` (2), versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording`, `payment_terminals`, `scale_rules`, `uom_entity`, `extensions`, plus flags of installed extension apps (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use |
-| `device.register_device` | idempotent device registration, assigns `D01`… |
-| `device.get_bootstrap` | profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till |
-| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch`, `uom` + tombstones |
-| `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit), one savepoint + commit per event |
+| `device.register_device` | idempotent device registration, assigns `D01`…; optional `device_type` (lower case letters, digits, `_`, `-`; default `till`, kept when a later registration omits it) |
+| `device.get_bootstrap` | device (incl. `device_type`), profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till, plus keys of installed extension apps |
+| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch`, `uom` (+ entities of installed extension apps) + tombstones |
+| `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit, + aggregates and operations of installed extension apps), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
 | `fawtara.get_status` | Fawtara status and ASP document id of up to 50 till invoices (`device_id`, `local_ids`; POST) |
 | `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty, `batch_no` / `expiry_date` per row, `taxes_and_charges` and `loyalty_amount` |
@@ -665,6 +673,176 @@ Tills verify the signature with the updater public key built into the app
 before installing and reject any file that does not match, so a replaced or
 corrupted installer is never installed. A release therefore only works with
 installers signed by the CI signing key of the till.
+
+#### Extending crenya_pos_api
+
+Another Frappe app (`required_apps = ["crenya_pos_api"]`) can add pull
+entities, push aggregates with their own operations, bootstrap keys,
+capability flags, invoice data and device roles, without changing this app.
+Everything is registered in the other app's `hooks.py` and read through
+`frappe.get_hooks()` once per request. Built-ins always come first and cannot
+be replaced. When two apps register the same entity or aggregate name, the
+app installed later wins.
+
+Import only from `crenya_pos_api.extension` (`EntitySpec`, `AggregateHandler`,
+`DeviceContext`, `SyncError` and the error codes, `ExtensionHookError`,
+`registry`, `PROTOCOL_VERSION`). Everything else is internal.
+
+| hook | shape | called |
+|---|---|---|
+| `crenya_pos_pull_entities` | `{"<entity>": "<dotted path of an EntitySpec subclass or instance>"}` | `sync.pull_changes(entity=...)`. Keyset paging, cursor and tombstones are handled by core. |
+| `crenya_pos_aggregates` | `{"<aggregate_type>": "<dotted path of an AggregateHandler subclass or instance>"}` | `sync.push_batch` for events of that `aggregate_type` |
+| `crenya_pos_bootstrap` | `["<dotted path of fn(ctx, doc) -> None>"]` | end of `device.get_bootstrap`. `doc` is the bootstrap dict; add your own top-level key. |
+| `crenya_pos_capabilities` | `["<dotted path of fn() -> dict>"]` | `sync.get_sync_capabilities`. The dict is merged into `features`; keys already there (core flags, or an earlier hook's) are kept. |
+| `crenya_pos_invoice_extenders` | `["<dotted path of fn(ctx, doc, data, notes) -> None>"]` | after the Sales Invoice is built (rows, taxes, payments, totals checked), before `insert` and `submit` |
+| `crenya_pos_device_roles` | `["<role name>"]` | these roles may sign in, register and use a device, besides **Crenya POS User** |
+
+`ctx` is the `DeviceContext` of the authorized device (`device_id`,
+`device_type`, `profile`, `company`, `currency`, and the `device` row).
+`notes` is a list of strings stored on the event's Crenya Sync Event. A hook
+path that cannot be imported, or an object of the wrong kind, raises
+`ExtensionHookError` naming the hook and the path. Its code is `internal` and
+it is retryable, so a pushed event fails with a retryable error and the till
+keeps it until the server is fixed.
+
+**AggregateHandler.** Core keeps the protocol: envelope checks, payload hash,
+idempotency on `event_id` (the same event twice gives one effect; the same
+`event_id` with another payload gives `payload_conflict`), one savepoint and
+commit per event, the Crenya Sync Event and the result shape. The handler
+supplies:
+
+| member | meaning |
+|---|---|
+| `operations` | tuple of the envelope `operation` values it accepts (default `("submit",)`). Anything else is a `validation` error. Lower case letters, digits and `_`. |
+| `doctype` | DocType of the documents it returns (default: the aggregate type) |
+| `retention_days` | days its successful Sync Events are kept (default `None` = the site setting) |
+| `validate(operation, payload) -> dict` | structural checks of the raw payload. Raise `SyncError(VALIDATION, "...")` naming the field. |
+| `apply(ctx, operation, data, notes) -> Document` | write the change and return the document |
+| `find_by_local_id(local_id) -> str \| None` | idempotency fallback for an event whose document exists although the till never saw the answer. It runs for every operation, so return `None` (the default) for aggregates changed by several operations. |
+| `result_fields(doc) -> dict` | `doctype`, `name`, `docstatus`, `modified`, `totals`, `fawtara_status` of the result (the default fills them from the document, with `totals` and `fawtara_status` empty) |
+
+Raise `SyncError` with `DEPENDENCY_MISSING` (retried by the till) or
+`VALIDATION` (final) to fail one event. Nothing the handler wrote is kept
+then.
+
+**Invoice payload additions (protocol 2, all optional).**
+- `extensions: {"<app>": {...}}`: carried in the hashed payload, so a retried
+  event has exactly the same data. Core only checks that it is an object.
+  Extenders read `data["extensions"].get("<app>")` and validate their own
+  entry.
+- Line `notes`: a string, at most 500 characters.
+- Line `parent_line_no`: the `line_no` of another line, for example a priced
+  modifier under its dish. Loops are rejected.
+
+Core validates `notes` and `parent_line_no` and passes them to extenders in
+`data["items"]`; it does not write them to the invoice itself. Each Sales
+Invoice Item row has `row.flags.crenya_line_no`, the payload line it came
+from.
+
+**Devices.** `register_device` accepts `device_type` (default `till`). It is
+on `DeviceContext.device_type` and in the bootstrap `device` block, so an app
+can send different data to, for example, a kitchen display.
+`get_sync_capabilities` reports `protocol_version: 2` and
+`features.extensions: true`. Protocol 1 tills keep working unchanged.
+
+Worked example: an app `my_restaurant` with dining tables (pull), orders that
+are created, then get items added and are closed (push), table data on the
+settlement invoice, and a device role for an outlet service user.
+
+```python
+# my_restaurant/hooks.py
+required_apps = ["crenya_pos_api"]
+
+crenya_pos_pull_entities = {"restaurant_table": "my_restaurant.sync.TableSpec"}
+crenya_pos_aggregates = {"Restaurant Order": "my_restaurant.sync.OrderAggregate"}
+crenya_pos_bootstrap = ["my_restaurant.sync.extend_bootstrap"]
+crenya_pos_capabilities = ["my_restaurant.sync.features"]
+crenya_pos_invoice_extenders = ["my_restaurant.sync.extend_invoice"]
+crenya_pos_device_roles = ["Restaurant Device"]
+```
+
+```python
+# my_restaurant/sync.py
+import frappe
+
+from crenya_pos_api.extension import (
+	DEPENDENCY_MISSING,
+	VALIDATION,
+	AggregateHandler,
+	EntitySpec,
+	SyncError,
+)
+
+
+class TableSpec(EntitySpec):
+	doctype = "Restaurant Table"
+	fields = ("name", "table_name", "seats", "pos_profile")
+
+	def filters(self, table, ctx):
+		return [table.pos_profile == ctx.profile.name]
+
+
+class OrderAggregate(AggregateHandler):
+	doctype = "Restaurant Order"
+	operations = ("create", "add_items", "close")
+	retention_days = 30
+
+	def validate(self, operation, payload):
+		table = payload.get("table")
+		if operation == "create" and not isinstance(table, str):
+			raise SyncError(VALIDATION, "table is required")
+		return {"local_id": payload["local_id"], "table": table, "items": payload.get("items") or []}
+
+	def apply(self, ctx, operation, data, notes):
+		if operation == "create":
+			order = frappe.get_doc(
+				{"doctype": "Restaurant Order", "local_id": data["local_id"],
+				 "table": data["table"], "device": ctx.device_id}
+			)
+			order.insert(ignore_permissions=True)
+			return order
+		name = frappe.db.get_value("Restaurant Order", {"local_id": data["local_id"]})
+		if not name:
+			raise SyncError(DEPENDENCY_MISSING, "the order has not synced yet")
+		order = frappe.get_doc("Restaurant Order", name)
+		if operation == "add_items":
+			for item in data["items"]:
+				order.append("items", item)
+		else:
+			order.status = "Closed"
+		order.save(ignore_permissions=True)
+		return order
+
+
+def extend_bootstrap(ctx, doc):
+	doc["my_restaurant"] = {"kitchen_display": ctx.device_type == "kds"}
+
+
+def features():
+	return {"restaurant_orders": True}
+
+
+def extend_invoice(ctx, doc, data, notes):
+	ext = data["extensions"].get("my_restaurant")
+	if not ext:
+		return
+	doc.remarks = f"Table {ext['table']}"
+	lines = {line["line_no"]: line for line in data["items"]}
+	for row in doc.items:
+		line = lines[row.flags.crenya_line_no]
+		if line["notes"]:
+			row.description = f"{row.item_name} ({line['notes']})"
+	notes.append(f"table {ext['table']}")
+```
+
+A till then pushes, for example,
+`{"aggregate_type": "Restaurant Order", "operation": "add_items", "local_id": "<order uuid>", ...}`
+and settles the bill with a normal Sales Invoice event whose payload has
+`"extensions": {"my_restaurant": {"table": "T4"}}`.
+
+To test an extension without installing it as an app, answer the hooks from a
+patched `frappe.get_hooks` (and call `registry.clear_cache()` around it), as
+`crenya_pos_api/tests/extension_dummy.py` does for this app's own tests.
 
 #### Tests
 

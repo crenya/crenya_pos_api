@@ -6,6 +6,7 @@ import frappe
 from frappe.utils import cint, get_system_timezone, now
 
 from crenya_pos_api.sync.context import (
+	DEFAULT_DEVICE_TYPE,
 	DEVICE_DOCTYPE,
 	assert_supported_taxes,
 	get_profile,
@@ -14,7 +15,7 @@ from crenya_pos_api.sync.context import (
 	is_system_manager,
 	money_precision,
 	qty_precision,
-	require_login,
+	require_device_role,
 	user_can_use_profile,
 )
 from crenya_pos_api.sync.errors import (
@@ -31,6 +32,7 @@ from crenya_pos_api.sync.locale_data import (
 )
 from crenya_pos_api.sync.loyalty import loyalty_enabled
 from crenya_pos_api.sync.open_returns import allows_return_without_invoice
+from crenya_pos_api.sync.registry import extend_bootstrap
 from crenya_pos_api.sync.scale_rules import scale_barcode_rules
 from crenya_pos_api.sync.tax_wording import bootstrap_company_wording, company_wording_fields
 from crenya_pos_api.sync.taxes import get_tax_templates
@@ -40,6 +42,7 @@ from crenya_pos_api.utils.decimal import format_money, format_number
 
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,139}$")
 _SHORT_RE = re.compile(r"^D(\d+)$")
+_DEVICE_TYPE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 
 
 def offline_prefix(device_short):
@@ -47,7 +50,7 @@ def offline_prefix(device_short):
 
 
 def list_profiles():
-	require_login()
+	require_device_role()
 	user = frappe.session.user
 	profiles = frappe.get_all(
 		"POS Profile",
@@ -94,10 +97,27 @@ def _clean(value, max_length=140):
 	return value[:max_length] or None
 
 
-def register(device_id, device_name=None, pos_profile=None, app_version=None, platform=None):
-	require_login()
+def _device_type(value):
+	"""Optional kind of device (till, kds, waiter, ...): lower case letters, digits, _ and -."""
+	if value is None or (isinstance(value, str) and not value.strip()):
+		return None
+	if not isinstance(value, str) or not _DEVICE_TYPE_RE.match(value.strip()):
+		raise_api_error(
+			InvalidRequestError,
+			"device_type must be lower case letters, digits, _ or - (at most 40), e.g. till",
+		)
+	return value.strip()
+
+
+def register(
+	device_id, device_name=None, pos_profile=None, app_version=None, platform=None, device_type=None
+):
+	require_device_role()
 	if not isinstance(device_id, str) or not _DEVICE_ID_RE.match(device_id):
 		raise_api_error(InvalidRequestError, "device_id must be the till's UUID")
+	device_type = _device_type(device_type)
+	# a site whose last deploy skipped `bench migrate` has no device_type column yet
+	has_device_type = frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type")
 
 	profile = get_profile(pos_profile)
 	user = frappe.session.user
@@ -113,6 +133,9 @@ def register(device_id, device_name=None, pos_profile=None, app_version=None, pl
 		"platform": _clean(platform),
 		"last_seen": now(),
 	}
+	if has_device_type and device_type:
+		# re-registering without a device_type keeps the stored one
+		values["device_type"] = device_type
 
 	if frappe.db.exists(DEVICE_DOCTYPE, device_id):
 		device = frappe.get_doc(DEVICE_DOCTYPE, device_id, for_update=True)
@@ -134,13 +157,15 @@ def register(device_id, device_name=None, pos_profile=None, app_version=None, pl
 						"registered_on": values["last_seen"],
 					}
 				)
+				if has_device_type and not device_type:
+					device.device_type = DEFAULT_DEVICE_TYPE
 				device.insert(ignore_permissions=True)
 				break
 			except (frappe.UniqueValidationError, frappe.DuplicateEntryError):
 				# another till took the same short code (or registered this id) concurrently
 				frappe.db.rollback()
 				if frappe.db.exists(DEVICE_DOCTYPE, device_id):
-					return register(device_id, device_name, pos_profile, app_version, platform)
+					return register(device_id, device_name, pos_profile, app_version, platform, device_type)
 				device = None
 		if device is None:
 			raise_api_error(InvalidRequestError, "Could not allocate a device code, retry")
@@ -150,6 +175,7 @@ def register(device_id, device_name=None, pos_profile=None, app_version=None, pl
 		"device_short": device.device_short,
 		"pos_profile": device.pos_profile,
 		"offline_prefix": offline_prefix(device.device_short),
+		"device_type": device.get("device_type") or DEFAULT_DEVICE_TYPE,
 	}
 
 
@@ -295,11 +321,12 @@ def bootstrap(ctx):
 	taxes = _taxes(profile)
 	smallest_fraction = frappe.get_cached_value("Currency", currency, "smallest_currency_fraction_value")
 
-	return {
+	doc = {
 		"device": {
 			"device_id": ctx.device_id,
 			"device_short": ctx.device["device_short"],
 			"pos_profile": profile.name,
+			"device_type": ctx.device_type,
 		},
 		"profile": {
 			"name": profile.name,
@@ -344,3 +371,5 @@ def bootstrap(ctx):
 		"item_tax_templates": _item_tax_templates(profile.company),
 		"server_time": utc_now_iso(),
 	}
+	# other apps' crenya_pos_bootstrap hooks: fn(ctx, doc), adding their own keys
+	return extend_bootstrap(ctx, doc)

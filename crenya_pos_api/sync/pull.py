@@ -55,6 +55,17 @@ def _keyset_condition(table, cursor):
 
 
 class EntitySpec:
+	"""One pull entity: which DocType rows a device receives, and how they are serialized.
+
+	Register a subclass with the `crenya_pos_pull_entities` hook. `pull_changes` pages the
+	DocType by (modified, name) (keyset, never OFFSET), adds tombstones from Deleted Document,
+	and calls the methods below for one page at a time:
+
+	- `select(table)`: the pypika columns to read (default: `fields`); `modified` is added.
+	- `filters(table, ctx)`: extra pypika conditions for the device (`ctx` is DeviceContext).
+	- `build(rows, ctx)`: the records sent to the device (default: the rows as they are).
+	"""
+
 	doctype = None
 	fields = ()
 	# entities whose records also change with stock movements (see BatchSpec)
@@ -549,6 +560,7 @@ def build_uom_records(rows):
 	]
 
 
+# built-in entities; crenya_pos_api.sync.registry.entities() adds those of other apps
 ENTITIES = {
 	"item": ItemSpec(),
 	"item_price": ItemPriceSpec(),
@@ -662,11 +674,13 @@ def normalize_limit(limit):
 
 
 def pull_changes(ctx, entity, cursor_token=None, limit=None):
-	spec = ENTITIES.get(entity)
+	# built-in ENTITIES first, then other apps' crenya_pos_pull_entities
+	from crenya_pos_api.sync.registry import entities
+
+	known = entities()
+	spec = known.get(entity) if isinstance(entity, str) else None
 	if not spec:
-		raise_api_error(
-			InvalidRequestError, f"Unknown entity {entity!r}; expected one of {', '.join(ENTITIES)}"
-		)
+		raise_api_error(InvalidRequestError, f"Unknown entity {entity!r}; expected one of {', '.join(known)}")
 	limit = normalize_limit(limit)
 
 	try:

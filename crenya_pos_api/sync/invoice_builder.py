@@ -22,6 +22,7 @@ from crenya_pos_api.sync.context import (
 from crenya_pos_api.sync.errors import DEPENDENCY_MISSING, TOTAL_MISMATCH, VALIDATION, SyncError
 from crenya_pos_api.sync.loyalty import apply_redemption, customer_program
 from crenya_pos_api.sync.open_returns import assert_allowed, set_valuation_incoming_rates
+from crenya_pos_api.sync.registry import extend_invoice
 from crenya_pos_api.sync.taxes import allowed_template_names, resolve_invoice_template
 from crenya_pos_api.sync.validation import is_open_return
 from crenya_pos_api.utils.dates import format_db_datetime
@@ -43,6 +44,9 @@ LOYALTY_RETURN_MESSAGE = "Return this invoice from ERPNext: it was partly paid w
 
 # Till lines keep the names of the promotions applied to them in the row flags until submit.
 PRICING_RULES_FLAG = "crenya_pricing_rules"
+# Every item row knows the till line it came from (a return line may give several batch rows),
+# so invoice extenders can find the rows of a payload line.
+LINE_NO_FLAG = "crenya_line_no"
 
 
 def resolve_customer(ctx, data):
@@ -248,6 +252,7 @@ def _append_items(doc, ctx, lines, return_rows, batch_plan):
 
 		for values in rows:
 			child = doc.append("items", values)
+			child.flags[LINE_NO_FLAG] = line["line_no"]
 			if line.get("pricing_rules"):
 				child.flags[PRICING_RULES_FLAG] = json.dumps(line["pricing_rules"])
 
@@ -468,6 +473,8 @@ def build_invoice(ctx, data, notes):
 
 def submit_invoice(ctx, data, notes):
 	doc = build_invoice(ctx, data, notes)
+	# other apps' crenya_pos_invoice_extenders: fn(ctx, doc, data, notes), before the insert
+	extend_invoice(ctx, doc, data, notes)
 	doc.insert()
 	# validate() recomputed everything; the till total must still hold before posting
 	check_grand_total(doc, data)

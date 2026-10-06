@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 import frappe
+from frappe.query_builder.functions import Lower
 from frappe.utils import cint, flt, now
 
 from crenya_pos_api.sync.errors import (
@@ -175,13 +176,66 @@ def assert_supported_taxes(profile):
 		)
 
 
+class AmbiguousDeviceError(Exception):
+	"""Several stored device ids differ from the one sent only in case (none matches exactly)."""
+
+	def __init__(self, device_id, names):
+		super().__init__(device_id)
+		self.device_id = device_id
+		self.names = names
+
+
+def pick_device_name(device_id, names):
+	"""The stored device id `device_id` means, from `names` (the stored ids equal to it ignoring case).
+
+	Device ids are UUIDs, so ids that differ only in case name the same device: the exact
+	spelling wins, else the only stored id equal to it ignoring case. None when there is none.
+	Raises AmbiguousDeviceError when several stored ids differ from it only in case."""
+	names = [name for name in names if isinstance(name, str) and name.lower() == device_id.lower()]
+	if device_id in names:
+		return device_id
+	if len(names) > 1:
+		raise AmbiguousDeviceError(device_id, sorted(names))
+	return names[0] if names else None
+
+
+def find_device_name(device_id):
+	"""Stored name of the Crenya POS Device `device_id` names, ignoring case; None when none.
+
+	Every device lookup goes through this. MariaDB's default collation already compares names
+	without case; this makes the rule explicit on every database and returns the stored
+	spelling, so callers never act on a second spelling of an existing device."""
+	if not device_id or not isinstance(device_id, str):
+		return None
+	device = frappe.qb.DocType(DEVICE_DOCTYPE)
+	# the primary key first (on MariaDB it already ignores case); LOWER() only when it misses
+	names = frappe.qb.from_(device).select(device.name).where(device.name == device_id).run(pluck=True)
+	if not names:
+		names = (
+			frappe.qb.from_(device)
+			.select(device.name)
+			.where(Lower(device.name) == device_id.lower())
+			.limit(10)
+			.run(pluck=True)
+		)
+	try:
+		return pick_device_name(device_id, names)
+	except AmbiguousDeviceError as error:
+		raise_api_error(
+			DeviceNotRegisteredError,
+			f"Device {device_id} matches several devices whose ids differ only in case "
+			f"({', '.join(error.names)}); send the id exactly as it was registered",
+		)
+
+
 def get_device_context(device_id, touch=True):
-	"""Load and authorize the device of the current request."""
+	"""Load and authorize the device of the current request (its id compared ignoring case)."""
 	require_device_role()
 	if not device_id or not isinstance(device_id, str):
 		raise_api_error(DeviceNotRegisteredError, "device_id is required")
 
-	device = frappe.db.get_value(DEVICE_DOCTYPE, device_id, device_fields(), as_dict=True)
+	name = find_device_name(device_id)
+	device = name and frappe.db.get_value(DEVICE_DOCTYPE, name, device_fields(), as_dict=True)
 	if not device or not cint(device.enabled):
 		raise_api_error(DeviceNotRegisteredError, f"Device {device_id} is not registered or is disabled")
 

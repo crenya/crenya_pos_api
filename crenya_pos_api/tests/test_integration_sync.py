@@ -319,6 +319,113 @@ class TestCrenyaSync(FrappeTestCase):
 		with self.assertRaises(errors.DeviceNotRegisteredError):
 			get_device_context(new_id())
 
+	# device ids compared ignoring case (0.8.1)
+
+	def _cashier(self):
+		email = "crenya.cashier.test@example.com"
+		if not frappe.db.exists("User", email):
+			frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": email,
+					"first_name": "Crenya Cashier",
+					"send_welcome_email": 0,
+					"roles": [{"role": "Crenya POS User"}],
+				}
+			).insert(ignore_permissions=True)
+		return email
+
+	def _stored(self, name):
+		return frappe.db.get_value(
+			"Crenya POS Device",
+			name,
+			["name", "user", "pos_profile", "device_name", "device_type", "device_short"],
+			as_dict=True,
+		)
+
+	def test_device_lookup_ignores_case(self):
+		ctx = get_device_context(self.device_id.upper())
+		self.assertEqual(ctx.device_id, self.device_id)
+		data = device_api.get_bootstrap(device_id=self.device_id.upper())
+		self.assertEqual(data["device"]["device_id"], self.device_id)
+
+	def test_case_variant_of_another_users_device_is_refused(self):
+		device_id = new_id()
+		device_api.register_device(device_id=device_id, device_name="Counter", pos_profile=self.profile.name)
+		before = self._stored(device_id)
+		frappe.set_user(self._cashier())
+		try:
+			with self.assertRaises(frappe.PermissionError) as raised:
+				device_api.register_device(
+					device_id=device_id.upper(),
+					device_name="Evil",
+					pos_profile=self.profile.name,
+					device_type="till",
+				)
+			self.assertIn("another user", str(raised.exception))
+		finally:
+			frappe.set_user("Administrator")
+		self.assertEqual(self._stored(device_id), before)
+		self.assertEqual(frappe.db.count("Crenya POS Device", {"device_name": "Evil"}), 0)
+
+	def test_case_variant_for_another_profile_is_refused(self):
+		other = fixtures.setup_terminal_fixtures()
+		device_id = new_id()
+		device_api.register_device(device_id=device_id, device_name="Counter", pos_profile=self.profile.name)
+		before = self._stored(device_id)
+		with self.assertRaises(frappe.PermissionError) as raised:
+			device_api.register_device(
+				device_id=device_id.upper(), device_name="Evil", pos_profile=other.name
+			)
+		self.assertIn("another POS Profile", str(raised.exception))
+		self.assertEqual(self._stored(device_id), before)
+
+	def test_case_variant_never_changes_the_device_type(self):
+		device_id = new_id()
+		device_api.register_device(device_id=device_id, device_name="Counter", pos_profile=self.profile.name)
+		before = self._stored(device_id)
+		with self.assertRaises(frappe.PermissionError) as raised:
+			device_api.register_device(
+				device_id=device_id.upper(),
+				device_name="Evil",
+				pos_profile=self.profile.name,
+				device_type="kds",
+			)
+		self.assertIn("as a till device", str(raised.exception))
+		self.assertEqual(self._stored(device_id), before)
+
+	def test_case_variant_of_the_same_device_finds_it_unchanged(self):
+		device_id = new_id()
+		first = device_api.register_device(
+			device_id=device_id, device_name="Counter", pos_profile=self.profile.name
+		)
+		before = self._stored(device_id)
+		again = device_api.register_device(
+			device_id=device_id.upper(), device_name="Renamed", pos_profile=self.profile.name
+		)
+		# the stored spelling comes back, so a caller comparing ids sees it is not its own
+		self.assertEqual(again["device_id"], device_id)
+		self.assertEqual(again["device_short"], first["device_short"])
+		self.assertEqual(self._stored(device_id), before)
+		self.assertEqual(frappe.db.count("Crenya POS Device", {"name": ["like", device_id]}), 1)
+
+	def test_exact_id_registers_again_as_before(self):
+		# retail tills (0.7.3) send their id exactly as registered: renaming and another user
+		# taking the till over keep working
+		device_id = new_id()
+		device_api.register_device(device_id=device_id, device_name="Counter", pos_profile=self.profile.name)
+		frappe.set_user(self._cashier())
+		try:
+			again = device_api.register_device(
+				device_id=device_id, device_name="Counter 2", pos_profile=self.profile.name
+			)
+		finally:
+			frappe.set_user("Administrator")
+		self.assertEqual(again["device_id"], device_id)
+		stored = self._stored(device_id)
+		self.assertEqual(stored.device_name, "Counter 2")
+		self.assertEqual(stored.user, "crenya.cashier.test@example.com")
+
 	# push: sales
 
 	def test_sale_submit(self):

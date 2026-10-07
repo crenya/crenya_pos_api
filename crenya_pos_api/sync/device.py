@@ -10,6 +10,7 @@ from crenya_pos_api.sync.context import (
 	DEVICE_DOCTYPE,
 	DEVICE_TYPE_RE,
 	assert_supported_taxes,
+	find_device_name,
 	get_profile,
 	get_update_stock,
 	is_rounded_total_disabled,
@@ -112,6 +113,43 @@ def _device_type(value):
 	return value.strip()
 
 
+def case_variant_refusal(stored, user, pos_profile, device_type=None):
+	"""Why a registration is refused whose id differs only in case from the stored device.
+
+	Ids that differ only in case are the same device (`stored`: its name, user, pos_profile,
+	device_type and enabled), so such a registration may only find that device again: never
+	for another user or POS Profile, never as another device type. Returns the message, or
+	None when it is the same device; it then gets the stored record back and changes nothing."""
+	name = stored.get("name")
+	if stored.get("user") != user:
+		return (
+			f"Device {name} is already registered to another user; a device id that differs "
+			"only in case is the same device"
+		)
+	if stored.get("pos_profile") != pos_profile:
+		return (
+			f"Device {name} is already registered to another POS Profile; a device id that "
+			"differs only in case is the same device"
+		)
+	stored_type = stored.get("device_type") or DEFAULT_DEVICE_TYPE
+	if device_type and device_type != stored_type:
+		return (
+			f"Device {name} is already registered as a {stored_type} device; a device id that "
+			"differs only in case is the same device"
+		)
+	return None
+
+
+def _registration(device):
+	return {
+		"device_id": device.name,
+		"device_short": device.device_short,
+		"pos_profile": device.pos_profile,
+		"offline_prefix": offline_prefix(device.device_short),
+		"device_type": device.get("device_type") or DEFAULT_DEVICE_TYPE,
+	}
+
+
 def register(
 	device_id, device_name=None, pos_profile=None, app_version=None, platform=None, device_type=None
 ):
@@ -121,12 +159,14 @@ def register(
 	device_type = _device_type(device_type)
 	# a site whose last deploy skipped `bench migrate` has no device_type column yet
 	has_device_type = frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type")
+	# the stored device this id names, compared ignoring case (ids are UUIDs)
+	stored_name = find_device_name(device_id)
 
 	# the type the device will have: the one sent, else the stored one, else "till"; a role
 	# scoped to other device types (e.g. restaurant staff) cannot register a retail till
 	stored_type = None
-	if has_device_type and frappe.db.exists(DEVICE_DOCTYPE, device_id):
-		stored_type = frappe.db.get_value(DEVICE_DOCTYPE, device_id, "device_type")
+	if has_device_type and stored_name:
+		stored_type = frappe.db.get_value(DEVICE_DOCTYPE, stored_name, "device_type")
 	require_device_role((device_type if has_device_type else None) or stored_type or DEFAULT_DEVICE_TYPE)
 
 	profile = get_profile(pos_profile)
@@ -147,10 +187,19 @@ def register(
 		# re-registering without a device_type keeps the stored one
 		values["device_type"] = device_type
 
-	if frappe.db.exists(DEVICE_DOCTYPE, device_id):
-		device = frappe.get_doc(DEVICE_DOCTYPE, device_id, for_update=True)
+	if stored_name:
+		device = frappe.get_doc(DEVICE_DOCTYPE, stored_name, for_update=True)
 		if not cint(device.enabled):
-			raise_api_error(DeviceNotRegisteredError, f"Device {device_id} is disabled")
+			raise_api_error(DeviceNotRegisteredError, f"Device {stored_name} is disabled")
+		if stored_name != device_id:
+			# another spelling of a registered device: it may find that device again, never
+			# take it over, rename it or change its type
+			refusal = case_variant_refusal(
+				device.as_dict(), user, profile.name, device_type if has_device_type else None
+			)
+			if refusal:
+				raise_api_error(DevicePermissionError, refusal)
+			return _registration(device)
 		device.update(values)
 		device.save(ignore_permissions=True)
 	else:
@@ -174,19 +223,13 @@ def register(
 			except (frappe.UniqueValidationError, frappe.DuplicateEntryError):
 				# another till took the same short code (or registered this id) concurrently
 				frappe.db.rollback()
-				if frappe.db.exists(DEVICE_DOCTYPE, device_id):
+				if find_device_name(device_id):
 					return register(device_id, device_name, pos_profile, app_version, platform, device_type)
 				device = None
 		if device is None:
 			raise_api_error(InvalidRequestError, "Could not allocate a device code, retry")
 
-	return {
-		"device_id": device.name,
-		"device_short": device.device_short,
-		"pos_profile": device.pos_profile,
-		"offline_prefix": offline_prefix(device.device_short),
-		"device_type": device.get("device_type") or DEFAULT_DEVICE_TYPE,
-	}
+	return _registration(device)
 
 
 def _company_address_lines(profile, company):

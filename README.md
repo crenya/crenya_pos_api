@@ -17,7 +17,7 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
 - DocType **Crenya POS Device**: one row per till (`device_id` UUID, stable
   short code `D01`, `D02`, … used in offline numbers `OFF-D02-000123`) and its
   *Device Type* (`till` unless the device registers as something else, e.g.
-  `kds`).
+  `kds`). Device ids are compared ignoring case (see *Device ids* below).
 - DocType **Crenya Sync Event**: idempotency log of every pushed event
   (read-only in desk; *Aggregate Type* is free text, so other apps can add
   types). Successful events older than their aggregate's retention are
@@ -157,7 +157,7 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
 | `sync.get_sync_capabilities` | ping, `protocol_version` (2), versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording`, `payment_terminals`, `scale_rules`, `uom_entity`, `extensions`, plus flags of installed extension apps (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use: `{name, company, warehouse, currency}`, plus flags of installed extension apps (`crenya_pos_profile_flags`) |
-| `device.register_device` | idempotent device registration, assigns `D01`…; optional `device_type` (lower case letters, digits, `_`, `-`; default `till`, kept when a later registration omits it) |
+| `device.register_device` | idempotent device registration, assigns `D01`…; `device_id` compared ignoring case (see *Device ids*); optional `device_type` (lower case letters, digits, `_`, `-`; default `till`, kept when a later registration omits it) |
 | `device.get_bootstrap` | device (incl. `device_type`), profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, `settings.rate_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till, plus keys of installed extension apps |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch`, `uom` (+ entities of installed extension apps) + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit, + aggregates and operations of installed extension apps), one savepoint + commit per event |
@@ -168,6 +168,24 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
 | `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
+
+#### Device ids
+
+A device id is the device's UUID. Ids that differ only in case are the same
+device: `register_device` and every call that takes a `device_id` find the
+stored device whatever the case of the id sent, and always answer with the
+stored spelling (`device_id` in the registration and the bootstrap).
+
+A registration whose id differs only in case from a registered device may only
+find that device again. It is refused (`permission`) when it comes from another
+user, for another POS Profile, or with another `device_type`, and otherwise
+gets the stored record back with nothing changed: it never renames the device,
+moves it to another user or profile, or changes its type. A device that sends
+its id exactly as it registered it (every Crenya POS till does) re-registers as
+before, including a rename or another user taking the till over.
+
+So an outlet hub that registers devices for others cannot be tricked into
+rewriting a live till's record (or its own) with an upper-cased copy of its id.
 
 #### Shifts
 

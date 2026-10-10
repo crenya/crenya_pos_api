@@ -7,6 +7,7 @@ Denominations are labelled _Test Crenya … and removed again after each test.
 
 import uuid
 from decimal import Decimal
+from unittest import mock
 
 import frappe
 from frappe.geo.country_info import get_all as get_all_country_info
@@ -225,3 +226,36 @@ class TestCrenyaLocale(FrappeTestCase):
 		self.assertEqual(data["site_timezone"], get_system_timezone())
 		self.assertTrue(data["site_timezone"])
 		self.assertEqual(sync_api.get_sync_capabilities()["site_timezone"], data["site_timezone"])
+
+	def _date_format(self, setting, default=None):
+		"""System Settings answering `setting` and the site defaults `default` for date_format;
+		every other setting and default stays the site's."""
+		get_settings, get_default = frappe.get_system_settings, frappe.db.get_default
+
+		def system_settings(key):
+			return setting if key == "date_format" else get_settings(key)
+
+		def site_default(key, *args, **kwargs):
+			return default if key == "date_format" else get_default(key, *args, **kwargs)
+
+		return (
+			mock.patch("frappe.get_system_settings", system_settings),
+			mock.patch.object(frappe.db, "get_default", site_default),
+		)
+
+	def test_site_date_format(self):
+		data = self.bootstrap()
+		self.assertEqual(data["date_format"], frappe.get_system_settings("date_format"))
+		self.assertTrue(data["date_format"])
+		settings, defaults = self._date_format("dd.mm.yyyy")
+		with settings, defaults:
+			self.assertEqual(self.bootstrap()["date_format"], "dd.mm.yyyy")
+		# not in System Settings: the site default, else null
+		settings, defaults = self._date_format(None, "mm/dd/yyyy")
+		with settings, defaults:
+			self.assertEqual(self.bootstrap()["date_format"], "mm/dd/yyyy")
+		settings, defaults = self._date_format(None)
+		with settings, defaults:
+			data = self.bootstrap()
+			self.assertIn("date_format", data)
+			self.assertIsNone(data["date_format"])

@@ -33,6 +33,7 @@ from crenya_pos_api.sync.locale_data import (
 	company_phone_country_code,
 	currency_info,
 	phone_country_codes,
+	system_date_format,
 )
 from crenya_pos_api.sync.loyalty import loyalty_enabled
 from crenya_pos_api.sync.open_returns import allows_return_without_invoice
@@ -442,6 +443,8 @@ def bootstrap(ctx):
 		"phone_country_codes": phone_country_codes(company.get("country") or None),
 		"cash_denominations": cash_denominations(currency),
 		"site_timezone": get_system_timezone(),
+		# ERPNext's date format (System Settings), e.g. for "Renew by {date}"; null when unset
+		"date_format": system_date_format(),
 		"payment_methods": _payment_methods(profile),
 		# secrets included: get_device_context has authorized this registered device
 		"payment_terminals": payment_terminals(profile),

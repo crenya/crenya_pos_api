@@ -18,6 +18,8 @@ def erpnext_before_tests():
 	the same steps are done here. On v15 the ERPNext function itself is called, unchanged.
 	"""
 	if frappe_major() < 16:
+		if frappe.db.a_row_exists("Company"):
+			return
 		from erpnext.setup.utils import before_tests
 
 		return before_tests()

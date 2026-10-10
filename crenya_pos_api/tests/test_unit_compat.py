@@ -25,12 +25,12 @@ class TestErpnextBeforeTests(unittest.TestCase):
 	def test_v16_runs_the_wizard_when_no_company(self):
 		with (
 			mock.patch.object(compat, "frappe_major", return_value=16),
-			mock.patch.object(compat.frappe, "clear_cache"),
-			mock.patch.object(compat.frappe, "db") as db,
+			mock.patch.object(compat, "frappe") as fake_frappe,
 			mock.patch("frappe.desk.page.setup_wizard.setup_wizard.setup_complete") as wizard,
 			mock.patch("erpnext.setup.utils._enable_all_roles_for_admin") as roles,
 			mock.patch("erpnext.setup.utils.set_defaults_for_tests") as defaults,
 		):
+			db = fake_frappe.db
 			db.a_row_exists.return_value = False
 			compat.erpnext_before_tests()
 		wizard.assert_called_once()
@@ -42,12 +42,12 @@ class TestErpnextBeforeTests(unittest.TestCase):
 	def test_v16_skips_the_wizard_when_a_company_exists(self):
 		with (
 			mock.patch.object(compat, "frappe_major", return_value=16),
-			mock.patch.object(compat.frappe, "clear_cache"),
-			mock.patch.object(compat.frappe, "db") as db,
+			mock.patch.object(compat, "frappe") as fake_frappe,
 			mock.patch("frappe.desk.page.setup_wizard.setup_wizard.setup_complete") as wizard,
 			mock.patch("erpnext.setup.utils._enable_all_roles_for_admin"),
 			mock.patch("erpnext.setup.utils.set_defaults_for_tests"),
 		):
+			db = fake_frappe.db
 			db.a_row_exists.return_value = True
 			compat.erpnext_before_tests()
 		wizard.assert_not_called()

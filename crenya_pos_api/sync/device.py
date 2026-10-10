@@ -21,6 +21,7 @@ from crenya_pos_api.sync.context import (
 	require_device_role,
 	user_can_use_profile,
 )
+from crenya_pos_api.sync.entitlement import get_entitlement, registration_refusal
 from crenya_pos_api.sync.errors import (
 	DeviceNotRegisteredError,
 	DevicePermissionError,
@@ -150,6 +151,20 @@ def _registration(device):
 	}
 
 
+def _check_plan(device_id, device_type, pos_profile):
+	"""Refuse a NEW terminal past the plan's caps or with its add-on off (no hook: no caps)."""
+	entitlement = get_entitlement()
+	if entitlement is None:
+		return
+	fields = ["name", "pos_profile", "enabled"]
+	if frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type"):
+		fields.append("device_type")
+	devices = frappe.get_all(DEVICE_DOCTYPE, fields=fields)
+	refusal = registration_refusal(entitlement, device_id, device_type, pos_profile, devices)
+	if refusal:
+		raise_api_error(DevicePermissionError, refusal)
+
+
 def register(
 	device_id, device_name=None, pos_profile=None, app_version=None, platform=None, device_type=None
 ):
@@ -174,6 +189,7 @@ def register(
 	if not user_can_use_profile(profile, user):
 		raise_api_error(DevicePermissionError, f"User {user} may not use POS Profile {profile.name}")
 	assert_supported_taxes(profile)
+	_check_plan(device_id, (device_type if has_device_type else None) or stored_type, profile.name)
 
 	values = {
 		"device_name": _clean(device_name) or device_id,
@@ -425,6 +441,8 @@ def bootstrap(ctx):
 		"taxes": taxes,
 		"item_tax_templates": _item_tax_templates(profile.company),
 		"server_time": utc_now_iso(),
+		# the plan's caps and licence state (null: no restriction); also beside `message`
+		"entitlement": get_entitlement(),
 	}
 	# other apps' crenya_pos_bootstrap hooks: fn(ctx, doc), adding their own keys
 	return extend_bootstrap(ctx, doc)

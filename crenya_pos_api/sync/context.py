@@ -252,6 +252,10 @@ def get_device_context(device_id, touch=True):
 	if touch:
 		frappe.db.set_value(DEVICE_DOCTYPE, device.name, "last_seen", now(), update_modified=False)
 
+	# every reply to a device carries the workspace's entitlement beside `message`
+	from crenya_pos_api.sync.entitlement import attach_to_reply, get_entitlement
+
+	attach_to_reply(get_entitlement())
 	return DeviceContext(device=device, profile=profile)
 
 

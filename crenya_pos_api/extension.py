@@ -31,12 +31,16 @@ between releases. Register the extensions in your app's `hooks.py`:
         # (core keys win; profiles the function leaves out get nothing)
         crenya_pos_profile_flags = ["my_app.sync.profiles.flags"]
 
+        # fn() -> {status, paid_until, max_outlets, max_terminals, addons}: the plan's caps on
+        # new terminals and the licence state sent to every device (the last app's wins)
+        crenya_pos_entitlement = "my_app.licence.entitlement"
+
 Names:
         EntitySpec: base class of a pull entity (keyset paging, tombstones and cursors are core's).
         AggregateHandler: base class of a push aggregate (envelope, hashing, idempotency on
                 event_id, savepoint and commit per event and the Sync Event record are core's).
         DeviceContext: the authorized device of the request (`device_id`, `device_type`,
-                `profile`, `company`, `currency`, `device` row).
+                `profile`, `company`, `currency`, `device` row, `entitlement`).
         SyncError: raise it (with one of the codes below) to fail one pushed event.
         staff_roles(profile, device_type): {user: [roles of that device type]} of the enabled
                 staff of a POS Profile, the same people and roles the `cashier` pull sends

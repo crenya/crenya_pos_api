@@ -157,8 +157,8 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
 | `sync.get_sync_capabilities` | ping, `protocol_version` (2), versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording`, `payment_terminals`, `scale_rules`, `uom_entity`, `extensions`, plus flags of installed extension apps (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use: `{name, company, warehouse, currency}`, plus flags of installed extension apps (`crenya_pos_profile_flags`) |
-| `device.register_device` | idempotent device registration, assigns `D01`…; `device_id` compared ignoring case (see *Device ids*); optional `device_type` (lower case letters, digits, `_`, `-`; default `till`, kept when a later registration omits it) |
-| `device.get_bootstrap` | device (incl. `device_type`), profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, `settings.rate_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone` for the till, plus keys of installed extension apps |
+| `device.register_device` | idempotent device registration, assigns `D01`…; `device_id` compared ignoring case (see *Device ids*); optional `device_type` (lower case letters, digits, `_`, `-`; default `till`, kept when a later registration omits it); a NEW `till` / `restaurant_pos` is refused (`permission`) past the plan's caps or with its add-on off (see *Plan caps*) |
+| `device.get_bootstrap` | device (incl. `device_type`), profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, `settings.rate_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone`, `date_format` (System Settings, else the site default, else `null`) for the till, plus keys of installed extension apps, and `entitlement` (see *Plan caps*) |
 | `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch`, `uom` (+ entities of installed extension apps) + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit, + aggregates and operations of installed extension apps), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
@@ -186,6 +186,43 @@ before, including a rename or another user taking the till over.
 
 So an outlet hub that registers devices for others cannot be tricked into
 rewriting a live till's record (or its own) with an upper-cased copy of its id.
+
+#### Plan caps (entitlement)
+
+A workspace app (erptrue_app) answers the `crenya_pos_entitlement` hook with
+the plan's caps and licence state:
+
+```json
+{"status": "Active", "paid_until": "2026-12-31", "max_outlets": 2, "max_terminals": 5,
+ "addons": {"restaurant": 1, "pos": 0}}
+```
+
+`status` is `""`, `Active`, `Trial`, `Grace` or `Suspended`; `paid_until` is
+`YYYY-MM-DD` or `null`; a cap of `0` is unlimited. Without the hook there is no
+restriction and `entitlement` is `null`. A hook that fails or answers another
+shape is logged (once per 10 minutes) and treated as no hook: it never blocks.
+
+- **Terminals** are enabled devices of type `till` (add-on `pos`) or
+  `restaurant_pos` (add-on `restaurant`). `kds`, `waiter` and other types are
+  never counted and never refused. **Outlets** are the distinct POS Profiles of
+  the enabled terminals.
+- Only a NEW device id registering as a terminal is checked: its add-on must be
+  on (`New POS (Tauri) is not switched on for this workspace.` /
+  `New Restaurant (Tauri) is not switched on for this workspace.`), the
+  terminals must be below `max_terminals` (`This plan allows {n} tills. Ask the
+  owner to upgrade.`) and, on a POS Profile not counted yet, the outlets below
+  `max_outlets` (`This plan allows {n} outlets. Ask the owner to upgrade.`).
+  The refusal is a `permission` error.
+- A terminal already registered (any case of its id) re-registers at its POS
+  Profile at any cap; moving to a profile no other terminal uses needs a free
+  outlet slot. A registered `kds` / `waiter` re-registering as a terminal is
+  checked like a new one. The check is repeated when a concurrent registration
+  forces a retry. Disabling a device frees its slot. Nothing here stops a sale.
+- Every reply to a device call (`get_bootstrap`, `pull_changes`, `push_batch`,
+  returns, loyalty, Fawtara) carries `entitlement` beside `message`;
+  `get_bootstrap` also has it inside `message`. The hook is read once per
+  call (`DeviceContext.entitlement`). Tills that do not know the key
+  ignore it.
 
 #### Shifts
 
@@ -737,6 +774,7 @@ staff of a POS Profile for a device of that type: the same people and roles the
 | `crenya_pos_invoice_extenders` | `["<dotted path of fn(ctx, doc, data, notes) -> None>"]` | after the Sales Invoice is built (rows, taxes, payments, totals checked), before `insert` and `submit` |
 | `crenya_pos_device_roles` | `["<role name>", {"role": "<role name>", "device_types": ["<device_type>", ...]}]` | roles that may sign in, register and use a device, besides **Crenya POS User**. A plain role name opens every device type. A `{role, device_types}` entry opens only those device types. Holders are pulled as cashiers on those devices, and their cashier records list these roles in `roles`. See *Device roles and device types* below. |
 | `crenya_pos_profile_flags` | `["<dotted path of fn(names) -> {profile name: {flag: value}}>"]` | `device.list_pos_profiles`. Called once with the names of the listed profiles; the flags are added to each row. Keys already there (core keys, or an earlier hook's) are kept, and a profile the function leaves out gets nothing. Without the hook the rows are unchanged. |
+| `crenya_pos_entitlement` | `"<dotted path of fn() -> dict>"` | `register_device` and every device call; the last app's wins. See *Plan caps*. Must never raise; a failure is logged and means no caps. |
 
 **Device roles and device types.** A retail till registers without a
 `device_type`, so it is stored as `till` (the Crenya POS Device field default).

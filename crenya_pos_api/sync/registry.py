@@ -9,6 +9,7 @@ Other Frappe apps plug into the till protocol from their `hooks.py`:
         crenya_pos_invoice_extenders = ["<dotted path of fn(ctx, doc, data, notes)>"]
         crenya_pos_device_roles = ["<role>", {"role": "<role>", "device_types": ["<device_type>", ...]}]
         crenya_pos_profile_flags = ["<dotted path of fn(names) -> {profile name: {flag: value}}>"]
+        crenya_pos_entitlement = "<dotted path of fn() -> dict>"       # the plan's caps, last app wins
 
 Built-ins always come first and cannot be replaced; hook entries follow in app install
 order. When two apps register the same entity or aggregate name the later app wins (as
@@ -34,6 +35,7 @@ CAPABILITY_HOOK = "crenya_pos_capabilities"
 INVOICE_EXTENDER_HOOK = "crenya_pos_invoice_extenders"
 DEVICE_ROLE_HOOK = "crenya_pos_device_roles"
 PROFILE_FLAG_HOOK = "crenya_pos_profile_flags"
+ENTITLEMENT_HOOK = "crenya_pos_entitlement"
 
 _CACHE_ATTR = "crenya_pos_registry"
 _ENTITY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -133,6 +135,12 @@ def _instance(obj, base, hook, key, path):
 	if isinstance(obj, base):
 		return obj
 	_fail(f"{hook}[{key!r}]: {path} is not an {base.__name__} subclass or instance")
+
+
+def entitlement_hook_path():
+	"""Dotted path of the `crenya_pos_entitlement` hook (the last app's), or None. Loaded and
+	called by sync.entitlement, which never fails a request over it."""
+	return _last_path(_hook(ENTITLEMENT_HOOK, None)) or None
 
 
 # pull entities

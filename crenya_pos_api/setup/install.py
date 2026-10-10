@@ -326,7 +326,7 @@ def after_migrate():
 def before_tests():
 	"""Complete the ERPNext setup wizard on a fresh test site (no-op when a company exists)."""
 	if not frappe.db.a_row_exists("Company"):
-		from erpnext.setup.utils import before_tests as erpnext_before_tests
+		from crenya_pos_api.compat import erpnext_before_tests
 
 		erpnext_before_tests()
 	make_role()

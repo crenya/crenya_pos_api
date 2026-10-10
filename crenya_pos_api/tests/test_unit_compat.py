@@ -16,11 +16,23 @@ class TestErpnextBeforeTests(unittest.TestCase):
 		with (
 			mock.patch.object(compat, "frappe_major", return_value=15),
 			mock.patch("erpnext.setup.utils.before_tests", create=True) as erp,
-			mock.patch.object(compat.frappe, "clear_cache") as clear_cache,
+			mock.patch.object(compat, "frappe") as fake_frappe,
 		):
+			clear_cache = fake_frappe.clear_cache
+			fake_frappe.db.a_row_exists.return_value = False
 			compat.erpnext_before_tests()
 		erp.assert_called_once_with()
 		clear_cache.assert_not_called()
+
+	def test_v15_skips_the_erpnext_function_when_a_company_exists(self):
+		with (
+			mock.patch.object(compat, "frappe_major", return_value=15),
+			mock.patch.object(compat, "frappe") as fake_frappe,
+			mock.patch("erpnext.setup.utils.before_tests", create=True) as erp,
+		):
+			fake_frappe.db.a_row_exists.return_value = True
+			compat.erpnext_before_tests()
+		erp.assert_not_called()
 
 	def test_v16_runs_the_wizard_when_no_company(self):
 		with (

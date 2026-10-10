@@ -213,11 +213,15 @@ shape is logged (once per 10 minutes) and treated as no hook: it never blocks.
   owner to upgrade.`) and, on a POS Profile not counted yet, the outlets below
   `max_outlets` (`This plan allows {n} outlets. Ask the owner to upgrade.`).
   The refusal is a `permission` error.
-- A device already registered (any case of its id) re-registers at any cap, and
-  disabling a device frees its slot. Nothing here stops a sale.
+- A terminal already registered (any case of its id) re-registers at its POS
+  Profile at any cap; moving to a profile no other terminal uses needs a free
+  outlet slot. A registered `kds` / `waiter` re-registering as a terminal is
+  checked like a new one. The check is repeated when a concurrent registration
+  forces a retry. Disabling a device frees its slot. Nothing here stops a sale.
 - Every reply to a device call (`get_bootstrap`, `pull_changes`, `push_batch`,
   returns, loyalty, Fawtara) carries `entitlement` beside `message`;
-  `get_bootstrap` also has it inside `message`. Tills that do not know the key
+  `get_bootstrap` also has it inside `message`. The hook is read once per
+  call (`DeviceContext.entitlement`). Tills that do not know the key
   ignore it.
 
 #### Shifts

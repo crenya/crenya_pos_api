@@ -151,16 +151,19 @@ def _registration(device):
 	}
 
 
-def _check_plan(device_id, device_type, pos_profile):
-	"""Refuse a NEW terminal past the plan's caps or with its add-on off (no hook: no caps)."""
-	entitlement = get_entitlement()
-	if entitlement is None:
-		return
+def _device_rows():
 	fields = ["name", "pos_profile", "enabled"]
 	if frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type"):
 		fields.append("device_type")
-	devices = frappe.get_all(DEVICE_DOCTYPE, fields=fields)
-	refusal = registration_refusal(entitlement, device_id, device_type, pos_profile, devices)
+	return frappe.get_all(DEVICE_DOCTYPE, fields=fields)
+
+
+def _check_plan(device_id, device_type, pos_profile):
+	"""Refuse a terminal the plan does not allow (see registration_refusal; no hook: no caps)."""
+	entitlement = get_entitlement()
+	if entitlement is None:
+		return
+	refusal = registration_refusal(entitlement, device_id, device_type, pos_profile, _device_rows())
 	if refusal:
 		raise_api_error(DevicePermissionError, refusal)
 
@@ -189,7 +192,8 @@ def register(
 	if not user_can_use_profile(profile, user):
 		raise_api_error(DevicePermissionError, f"User {user} may not use POS Profile {profile.name}")
 	assert_supported_taxes(profile)
-	_check_plan(device_id, (device_type if has_device_type else None) or stored_type, profile.name)
+	# the type the device will have, checked against the plan
+	plan_type = (device_type if has_device_type else None) or stored_type
 
 	values = {
 		"device_name": _clean(device_name) or device_id,
@@ -216,11 +220,14 @@ def register(
 			if refusal:
 				raise_api_error(DevicePermissionError, refusal)
 			return _registration(device)
+		_check_plan(device_id, plan_type, profile.name)
 		device.update(values)
 		device.save(ignore_permissions=True)
 	else:
 		device = None
 		for _attempt in range(3):
+			# checked on every attempt: a till registered concurrently may have taken the last slot
+			_check_plan(device_id, plan_type, profile.name)
 			try:
 				device = frappe.new_doc(DEVICE_DOCTYPE)
 				device.update(values)
@@ -442,7 +449,7 @@ def bootstrap(ctx):
 		"item_tax_templates": _item_tax_templates(profile.company),
 		"server_time": utc_now_iso(),
 		# the plan's caps and licence state (null: no restriction); also beside `message`
-		"entitlement": get_entitlement(),
+		"entitlement": ctx.entitlement,
 	}
 	# other apps' crenya_pos_bootstrap hooks: fn(ctx, doc), adding their own keys
 	return extend_bootstrap(ctx, doc)

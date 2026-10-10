@@ -40,7 +40,7 @@ Names:
         AggregateHandler: base class of a push aggregate (envelope, hashing, idempotency on
                 event_id, savepoint and commit per event and the Sync Event record are core's).
         DeviceContext: the authorized device of the request (`device_id`, `device_type`,
-                `profile`, `company`, `currency`, `device` row).
+                `profile`, `company`, `currency`, `device` row, `entitlement`).
         SyncError: raise it (with one of the codes below) to fail one pushed event.
         staff_roles(profile, device_type): {user: [roles of that device type]} of the enabled
                 staff of a POS Profile, the same people and roles the `cashier` pull sends

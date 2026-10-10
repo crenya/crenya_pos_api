@@ -12,8 +12,8 @@ Another app (erptrue_app on Crenya workspaces) answers the `crenya_pos_entitleme
 
 No hook means no restriction (get_entitlement() is None). A hook that cannot be loaded,
 raises or answers another shape is logged and treated as no hook: it never blocks a till.
-Caps only refuse a NEW device id; devices already registered are never cut off, and
-selling never depends on any of this.
+Caps only refuse a NEW terminal (or a registered one moving to an outlet past the cap);
+devices already registered are never cut off, and selling never depends on any of this.
 """
 
 import frappe
@@ -34,13 +34,17 @@ _ERROR_LOG_WINDOW_SECONDS = 600
 
 
 def _log_hook_error(path):
+	"""Record a broken hook once per window; never raises (a device call must go on)."""
 	try:
 		if frappe.cache.get_value(_ERROR_KEY):
 			return
 		frappe.cache.set_value(_ERROR_KEY, 1, expires_in_sec=_ERROR_LOG_WINDOW_SECONDS)
 	except Exception:
 		pass
-	frappe.log_error(title=f"{ENTITLEMENT_HOOK}: {path} failed; tills are unrestricted")
+	try:
+		frappe.log_error(title=f"{ENTITLEMENT_HOOK}: {path} failed; tills are unrestricted")
+	except Exception:
+		pass
 
 
 def _normalise(value):
@@ -74,36 +78,48 @@ def get_entitlement():
 		return None
 
 
+def _is_terminal(row):
+	return (row.get("device_type") or DEFAULT_DEVICE_TYPE) in TERMINAL_ADDONS
+
+
 def registration_refusal(entitlement, device_id, device_type, pos_profile, devices):
 	"""Why registering `device_id` as a `device_type` on `pos_profile` is refused, or None.
 
 	`devices`: every Crenya POS Device row (`name`, `device_type`, `pos_profile`, `enabled`).
-	A device id already registered (compared ignoring case) is never refused: it is not a new
-	terminal. Only enabled terminals count; outlets are their distinct POS Profiles."""
+	Only enabled terminals count; outlets are their distinct POS Profiles.
+
+	- A NEW terminal (no row for the id, compared ignoring case) needs its add-on on, a free
+	  terminal slot and, on a POS Profile not counted yet, a free outlet slot.
+	- A registered terminal re-registers at its current profile whatever the caps; moving to
+	  a profile no other terminal uses needs a free outlet slot.
+	- A registered non-terminal (kds, waiter, ...) becoming a terminal is checked as a new one.
+	- A disabled device is left to register(), which refuses it."""
 	addon = TERMINAL_ADDONS.get(device_type or DEFAULT_DEVICE_TYPE)
 	if entitlement is None or addon is None:
 		return None
 	wanted = device_id.casefold()
-	if any(str(row.get("name") or "").casefold() == wanted for row in devices):
+	own = next((row for row in devices if str(row.get("name") or "").casefold() == wanted), None)
+	if own is not None and not cint(own.get("enabled")):
 		return None
+
+	terminals = [row for row in devices if row is not own and cint(row.get("enabled")) and _is_terminal(row)]
+	outlets = {row.get("pos_profile") for row in terminals}
+	max_outlets = entitlement["max_outlets"]
+	outlet_refusal = (
+		f"This plan allows {max_outlets} outlets. Ask the owner to upgrade."
+		if max_outlets and pos_profile not in outlets and len(outlets) >= max_outlets
+		else None
+	)
+
+	if own is not None and _is_terminal(own):
+		return outlet_refusal if pos_profile != own.get("pos_profile") else None
 
 	if not cint(entitlement["addons"].get(addon)):
 		return f"{ADDON_LABELS[addon]} is not switched on for this workspace."
-
-	terminals = [
-		row
-		for row in devices
-		if cint(row.get("enabled")) and (row.get("device_type") or DEFAULT_DEVICE_TYPE) in TERMINAL_ADDONS
-	]
 	max_terminals = entitlement["max_terminals"]
 	if max_terminals and len(terminals) >= max_terminals:
 		return f"This plan allows {max_terminals} tills. Ask the owner to upgrade."
-
-	outlets = {row.get("pos_profile") for row in terminals}
-	max_outlets = entitlement["max_outlets"]
-	if max_outlets and pos_profile not in outlets and len(outlets) >= max_outlets:
-		return f"This plan allows {max_outlets} outlets. Ask the owner to upgrade."
-	return None
+	return outlet_refusal
 
 
 def attach_to_reply(entitlement):

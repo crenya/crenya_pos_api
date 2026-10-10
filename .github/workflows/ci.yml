@@ -8,7 +8,7 @@ on:
   pull_request:
 
 concurrency:
-  group: develop-crenya_pos_api-${{ github.event.number }}
+  group: develop-crenya_pos_api-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -16,7 +16,17 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-    name: Server
+      matrix:
+        include:
+          - frappe: version-15
+            python: '3.10'
+            node: 18
+            mariadb: '10.6'
+          - frappe: version-16
+            python: '3.14'
+            node: 24
+            mariadb: '11.8'
+    name: Server (${{ matrix.frappe }})
 
     services:
       redis-cache:
@@ -28,7 +38,7 @@ jobs:
         ports:
           - 11000:6379
       mariadb:
-        image: mariadb:10.6
+        image: mariadb:${{ matrix.mariadb }}
         env:
           MYSQL_ROOT_PASSWORD: root
         ports:
@@ -47,12 +57,12 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: ${{ matrix.python }}
 
       - name: Setup Node
         uses: actions/setup-node@v3
         with:
-          node-version: 18
+          node-version: ${{ matrix.node }}
           check-latest: true
 
       - name: Cache pip
@@ -84,14 +94,14 @@ jobs:
       - name: Setup
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --frappe-branch version-15 --python "$(which python)" ~/frappe-bench
+          bench init --skip-redis-config-generation --skip-assets --frappe-branch ${{ matrix.frappe }} --python "$(which python)" ~/frappe-bench
           mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
           mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
 
       - name: Install
         working-directory: /home/runner/frappe-bench
         run: |
-          bench get-app --branch version-15 erpnext
+          bench get-app --branch ${{ matrix.frappe }} erpnext
           bench get-app crenya_pos_api $GITHUB_WORKSPACE
           bench setup requirements --dev
           bench new-site --db-root-password root --admin-password admin test_site

@@ -22,10 +22,9 @@ def erpnext_before_tests():
 
 		return before_tests()
 
+	from erpnext.setup.utils import _enable_all_roles_for_admin, set_defaults_for_tests
 	from frappe.desk.page.setup_wizard.setup_wizard import setup_complete
 	from frappe.utils import now_datetime
-
-	from erpnext.setup.utils import _enable_all_roles_for_admin, set_defaults_for_tests
 
 	frappe.clear_cache()
 	if not frappe.db.a_row_exists("Company"):

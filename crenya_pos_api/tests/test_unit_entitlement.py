@@ -20,7 +20,11 @@ from crenya_pos_api.sync import device as device_module
 from crenya_pos_api.sync import entitlement as entitlement_module
 from crenya_pos_api.sync import errors
 from crenya_pos_api.sync.context import DEVICE_DOCTYPE
-from crenya_pos_api.sync.entitlement import get_entitlement, registration_refusal
+from crenya_pos_api.sync.entitlement import (
+	device_enable_refusal,
+	get_entitlement,
+	registration_refusal,
+)
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.extension_dummy import fake_hooks
 
@@ -254,6 +258,75 @@ class TestRegistrationRefusal(unittest.TestCase):
 			)
 
 
+class TestDeviceEnableRefusal(unittest.TestCase):
+	"""Enabling a disabled device again is checked as a new terminal of its type and profile."""
+
+	def enable(self, entitlement, devices, device_id):
+		with (
+			mock.patch.object(entitlement_module, "get_entitlement", return_value=entitlement),
+			mock.patch.object(entitlement_module, "device_rows", return_value=devices) as rows,
+		):
+			answer = device_enable_refusal(device_id)
+		if entitlement is not None:
+			# a locking read: the latest committed rows, held until the caller commits
+			rows.assert_called_once_with(for_update=True)
+		return answer
+
+	def test_enable_past_cap_refused(self):
+		off = device(enabled=0)
+		devices = [off, device(), device(RESTAURANT)]
+		self.assertEqual(
+			self.enable(plan(max_terminals=2), devices, off["name"]),
+			"This plan allows 2 tills. Ask the owner to upgrade.",
+		)
+		# its outlet is counted by no other terminal: it needs an outlet slot
+		away = device(pos_profile="Outlet B", enabled=0)
+		self.assertEqual(
+			self.enable(plan(max_outlets=1), [away, device()], away["name"]),
+			"This plan allows 1 outlets. Ask the owner to upgrade.",
+		)
+		# its add-on switched off since it was disabled
+		restaurant = device(RESTAURANT, enabled=0)
+		self.assertEqual(
+			self.enable(plan(restaurant=0), [restaurant], restaurant["name"]),
+			"New Restaurant (Tauri) is not switched on for this workspace.",
+		)
+		# ids differing only in case are the same device
+		self.assertIsNotNone(self.enable(plan(max_terminals=2), devices, off["name"].upper()))
+
+	def test_enable_within_cap_ok(self):
+		off = device(enabled=0)
+		devices = [off, device(), device(enabled=0)]
+		self.assertIsNone(self.enable(plan(max_terminals=2), devices, off["name"]))
+		# 0 = unlimited; an outlet other terminals use is no new outlet
+		self.assertIsNone(self.enable(plan(max_outlets=1), devices, off["name"]))
+		# an enabled device is not counted twice against its own slot
+		on = device()
+		self.assertIsNone(self.enable(plan(max_terminals=2), [on, device()], on["name"]))
+		# a device stored before device types existed is a till
+		legacy = device(None, enabled=0)
+		self.assertIsNone(self.enable(plan(max_terminals=2), [legacy, device()], legacy["name"]))
+		self.assertIsNotNone(self.enable(plan(max_terminals=1), [legacy, device()], legacy["name"]))
+		# an unknown id has nothing to enable
+		self.assertIsNone(self.enable(plan(max_terminals=1), [device()], new_id()))
+
+	def test_enable_kds_never_capped(self):
+		full = plan(max_terminals=1, max_outlets=1, restaurant=0, pos=0)
+		for device_type in ("kds", "waiter"):
+			with self.subTest(device_type=device_type):
+				off = device(device_type, "Outlet Z", enabled=0)
+				self.assertIsNone(self.enable(full, [off, device()], off["name"]))
+
+	def test_no_hook_no_refusal(self):
+		off = device(enabled=0)
+		with mock.patch.object(entitlement_module, "device_rows") as rows:
+			with fake_hooks({}, site_ready=True):
+				self.assertIsNone(device_enable_refusal(off["name"]))
+			# no caps: the device rows are not even read (no locks taken)
+			rows.assert_not_called()
+		self.assertIsNone(self.enable(None, [off, device()], off["name"]))
+
+
 class TestEntitlementOnSite(FrappeTestCase):
 	"""register_device, get_bootstrap and the sync replies against a real site."""
 
@@ -327,11 +400,11 @@ class TestEntitlementOnSite(FrappeTestCase):
 	def test_concurrent_registration_rechecks_the_cap(self):
 		"""Two new tills racing for the last slot: the loser's retry sees the winner and is refused."""
 		set_plan(max_terminals=self.terminals() + 1)
-		rows = device_module._device_rows()
+		rows = entitlement_module.device_rows()
 		winner = {"name": new_id(), "pos_profile": self.profile.name, "enabled": 1, "device_type": TILL}
 		with (
 			self.hook(),
-			mock.patch.object(device_module, "_device_rows", side_effect=[rows, [*rows, winner]]),
+			mock.patch.object(device_module, "device_rows", side_effect=[rows, [*rows, winner]]),
 			mock.patch(
 				"frappe.model.document.Document.insert", side_effect=frappe.DuplicateEntryError
 			) as insert,
@@ -349,3 +422,25 @@ class TestEntitlementOnSite(FrappeTestCase):
 		):
 			fresh = device_api.register_device(device_id=new_id(), pos_profile=self.profile.name)
 			self.assertTrue(fresh["device_short"])
+
+	def test_enable_on_site_reads_the_latest_rows(self):
+		"""The real locking read on this database: a disabled till is refused at the cap, allowed below it."""
+		device_id = new_id()
+		device_api.register_device(device_id=device_id, pos_profile=self.profile.name)
+		frappe.db.set_value(DEVICE_DOCTYPE, device_id, "enabled", 0)
+		try:
+			with self.hook():
+				set_plan(max_terminals=self.terminals())
+				self.assertEqual(
+					device_enable_refusal(device_id),
+					f"This plan allows {self.terminals()} tills. Ask the owner to upgrade.",
+				)
+				set_plan(max_terminals=self.terminals() + 1)
+				self.assertIsNone(device_enable_refusal(device_id.upper()))
+				kds = new_id()
+				device_api.register_device(device_id=kds, pos_profile=self.profile.name, device_type="kds")
+				frappe.db.set_value(DEVICE_DOCTYPE, kds, "enabled", 0)
+				set_plan(max_terminals=self.terminals(), pos=0)
+				self.assertIsNone(device_enable_refusal(kds))
+		finally:
+			frappe.db.rollback()

@@ -43,6 +43,8 @@ class DeviceContext:
 
 	device: dict
 	profile: "frappe.model.document.Document"
+	# the workspace's plan (sync.entitlement), None when unrestricted
+	entitlement: dict | None = None
 
 	@property
 	def device_id(self):
@@ -252,7 +254,12 @@ def get_device_context(device_id, touch=True):
 	if touch:
 		frappe.db.set_value(DEVICE_DOCTYPE, device.name, "last_seen", now(), update_modified=False)
 
-	return DeviceContext(device=device, profile=profile)
+	# every reply to a device carries the workspace's entitlement beside `message`
+	from crenya_pos_api.sync.entitlement import attach_to_reply, get_entitlement
+
+	entitlement = get_entitlement()
+	attach_to_reply(entitlement)
+	return DeviceContext(device=device, profile=profile, entitlement=entitlement)
 
 
 def get_total_tolerance(precision):

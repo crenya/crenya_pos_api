@@ -75,6 +75,11 @@ def system_number_format():
 	return frappe.get_system_settings("number_format") or frappe.db.get_default("number_format")
 
 
+def system_date_format():
+	"""The site's date format (e.g. "dd-mm-yyyy") for dates the till shows; None when unset."""
+	return frappe.get_system_settings("date_format") or frappe.db.get_default("date_format") or None
+
+
 def currency_info(currency, precision):
 	row = frappe.get_cached_value("Currency", currency, CURRENCY_FIELDS, as_dict=True) if currency else None
 	return currency_view(currency, row, precision, system_number_format())

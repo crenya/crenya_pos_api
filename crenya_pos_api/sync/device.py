@@ -21,6 +21,7 @@ from crenya_pos_api.sync.context import (
 	require_device_role,
 	user_can_use_profile,
 )
+from crenya_pos_api.sync.entitlement import get_entitlement, registration_refusal
 from crenya_pos_api.sync.errors import (
 	DeviceNotRegisteredError,
 	DevicePermissionError,
@@ -32,6 +33,7 @@ from crenya_pos_api.sync.locale_data import (
 	company_phone_country_code,
 	currency_info,
 	phone_country_codes,
+	system_date_format,
 )
 from crenya_pos_api.sync.loyalty import loyalty_enabled
 from crenya_pos_api.sync.open_returns import allows_return_without_invoice
@@ -150,6 +152,23 @@ def _registration(device):
 	}
 
 
+def _device_rows():
+	fields = ["name", "pos_profile", "enabled"]
+	if frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type"):
+		fields.append("device_type")
+	return frappe.get_all(DEVICE_DOCTYPE, fields=fields)
+
+
+def _check_plan(device_id, device_type, pos_profile):
+	"""Refuse a terminal the plan does not allow (see registration_refusal; no hook: no caps)."""
+	entitlement = get_entitlement()
+	if entitlement is None:
+		return
+	refusal = registration_refusal(entitlement, device_id, device_type, pos_profile, _device_rows())
+	if refusal:
+		raise_api_error(DevicePermissionError, refusal)
+
+
 def register(
 	device_id, device_name=None, pos_profile=None, app_version=None, platform=None, device_type=None
 ):
@@ -174,6 +193,8 @@ def register(
 	if not user_can_use_profile(profile, user):
 		raise_api_error(DevicePermissionError, f"User {user} may not use POS Profile {profile.name}")
 	assert_supported_taxes(profile)
+	# the type the device will have, checked against the plan
+	plan_type = (device_type if has_device_type else None) or stored_type
 
 	values = {
 		"device_name": _clean(device_name) or device_id,
@@ -200,11 +221,14 @@ def register(
 			if refusal:
 				raise_api_error(DevicePermissionError, refusal)
 			return _registration(device)
+		_check_plan(device_id, plan_type, profile.name)
 		device.update(values)
 		device.save(ignore_permissions=True)
 	else:
 		device = None
 		for _attempt in range(3):
+			# checked on every attempt: a till registered concurrently may have taken the last slot
+			_check_plan(device_id, plan_type, profile.name)
 			try:
 				device = frappe.new_doc(DEVICE_DOCTYPE)
 				device.update(values)
@@ -419,12 +443,16 @@ def bootstrap(ctx):
 		"phone_country_codes": phone_country_codes(company.get("country") or None),
 		"cash_denominations": cash_denominations(currency),
 		"site_timezone": get_system_timezone(),
+		# ERPNext's date format (System Settings), e.g. for "Renew by {date}"; null when unset
+		"date_format": system_date_format(),
 		"payment_methods": _payment_methods(profile),
 		# secrets included: get_device_context has authorized this registered device
 		"payment_terminals": payment_terminals(profile),
 		"taxes": taxes,
 		"item_tax_templates": _item_tax_templates(profile.company),
 		"server_time": utc_now_iso(),
+		# the plan's caps and licence state (null: no restriction); also beside `message`
+		"entitlement": ctx.entitlement,
 	}
 	# other apps' crenya_pos_bootstrap hooks: fn(ctx, doc), adding their own keys
 	return extend_bootstrap(ctx, doc)

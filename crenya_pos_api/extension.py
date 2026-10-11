@@ -45,6 +45,10 @@ Names:
         staff_roles(profile, device_type): {user: [roles of that device type]} of the enabled
                 staff of a POS Profile, the same people and roles the `cashier` pull sends
                 enabled to a device of that type.
+        device_enable_refusal(device_id): why enabling a disabled Crenya POS Device again is
+                refused by the plan's caps (it is checked as a new terminal of its type and POS
+                Profile), or None (no hook, a kds / waiter, or within the caps). It locks the
+                device rows until your commit: call it first, then set `enabled` and commit.
         registry: the merged view (`entities()`, `aggregates()`, `handler(aggregate_type)`,
                 `device_roles()`, ...).
         PROTOCOL_VERSION: protocol spoken by this server (2 = extension hooks).
@@ -54,6 +58,7 @@ from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.aggregates import AggregateHandler
 from crenya_pos_api.sync.cashier import staff_roles
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, PROTOCOL_VERSION, DeviceContext
+from crenya_pos_api.sync.entitlement import device_enable_refusal
 from crenya_pos_api.sync.errors import (
 	DEPENDENCY_MISSING,
 	INTERNAL,
@@ -82,6 +87,7 @@ __all__ = [
 	"EntitySpec",
 	"ExtensionHookError",
 	"SyncError",
+	"device_enable_refusal",
 	"registry",
 	"staff_roles",
 ]

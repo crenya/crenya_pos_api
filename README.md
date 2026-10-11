@@ -218,6 +218,17 @@ shape is logged (once per 10 minutes) and treated as no hook: it never blocks.
   outlet slot. A registered `kds` / `waiter` re-registering as a terminal is
   checked like a new one. The check is repeated when a concurrent registration
   forces a retry. Disabling a device frees its slot. Nothing here stops a sale.
+- **Enabling a disabled device again** is checked like a new terminal of its
+  stored type and POS Profile, with the same messages: an app that offers a
+  Reactivate action calls `extension.device_enable_refusal(device_id)` and
+  shows the answer, or sets `enabled = 1` when it is `None` (no hook, a `kds` /
+  `waiter`, or within the caps). It reads the device rows with a locking read
+  (`SELECT … FOR UPDATE`) held until the caller commits, so two devices enabled
+  at once cannot both take the last slot: call it before locking the device
+  row, then save and commit.
+  One race remains: an enable at the same moment as a new registration can
+  end one over the cap (registration reads plainly); follow-up: a `GET_LOCK`
+  around check-and-write.
 - Every reply to a device call (`get_bootstrap`, `pull_changes`, `push_batch`,
   returns, loyalty, Fawtara) carries `entitlement` beside `message`;
   `get_bootstrap` also has it inside `message`. The hook is read once per
@@ -760,10 +771,13 @@ app installed later wins.
 
 Import only from `crenya_pos_api.extension` (`EntitySpec`, `AggregateHandler`,
 `DeviceContext`, `SyncError` and the error codes, `ExtensionHookError`,
-`registry`, `staff_roles`, `PROTOCOL_VERSION`). Everything else is internal.
+`registry`, `staff_roles`, `device_enable_refusal`, `PROTOCOL_VERSION`).
+Everything else is internal.
 `staff_roles(profile, device_type)` returns `{user: [roles]}` of the enabled
 staff of a POS Profile for a device of that type: the same people and roles the
 `cashier` pull sends with `enabled: 1` to such a device.
+`device_enable_refusal(device_id)` is the plan-cap check for enabling a
+disabled device again (see *Plan caps*).
 
 | hook | shape | called |
 |---|---|---|

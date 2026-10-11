@@ -1,5 +1,5 @@
-"""What the workspace's plan allows: caps on NEW device registrations, and the licence state
-sent to every device.
+"""What the workspace's plan allows: caps on NEW device registrations and on enabling a
+disabled device again, and the licence state sent to every device.
 
 Another app (erptrue_app on Crenya workspaces) answers the `crenya_pos_entitlement` hook:
 
@@ -12,14 +12,15 @@ Another app (erptrue_app on Crenya workspaces) answers the `crenya_pos_entitleme
 
 No hook means no restriction (get_entitlement() is None). A hook that cannot be loaded,
 raises or answers another shape is logged and treated as no hook: it never blocks a till.
-Caps only refuse a NEW terminal (or a registered one moving to an outlet past the cap);
-devices already registered are never cut off, and selling never depends on any of this.
+Caps only refuse a NEW terminal (or a registered one moving to an outlet past the cap, or a
+disabled one enabled again past the cap); devices already enabled are never cut off, and
+selling never depends on any of this.
 """
 
 import frappe
 from frappe.utils import cint
 
-from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE
+from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, DEVICE_DOCTYPE
 from crenya_pos_api.sync.registry import ENTITLEMENT_HOOK, entitlement_hook_path
 
 # device types that are terminals (counted by the caps) and the add-on each one needs;
@@ -78,6 +79,24 @@ def get_entitlement():
 		return None
 
 
+def device_rows(for_update=False):
+	"""Every Crenya POS Device row the caps read: `name`, `pos_profile`, `enabled` and, once the
+	column exists, `device_type`.
+
+	`for_update`: a locking read. Under MariaDB's REPEATABLE READ a plain read sees the
+	transaction's snapshot, which may predate a device enabled by a request we waited for; a
+	locking read sees the latest committed rows and holds them until the caller commits, so a
+	concurrent caller doing the same waits and then counts this one."""
+	device = frappe.qb.DocType(DEVICE_DOCTYPE)
+	columns = [device.name, device.pos_profile, device.enabled]
+	if frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type"):
+		columns.append(device.device_type)
+	query = frappe.qb.from_(device).select(*columns)
+	if for_update:
+		query = query.for_update()
+	return query.run(as_dict=True)
+
+
 def _is_terminal(row):
 	return (row.get("device_type") or DEFAULT_DEVICE_TYPE) in TERMINAL_ADDONS
 
@@ -120,6 +139,31 @@ def registration_refusal(entitlement, device_id, device_type, pos_profile, devic
 	if max_terminals and len(terminals) >= max_terminals:
 		return f"This plan allows {max_terminals} tills. Ask the owner to upgrade."
 	return outlet_refusal
+
+
+def device_enable_refusal(device_id):
+	"""Why enabling the device `device_id` (any case) again is refused, or None.
+
+	It is checked as a NEW terminal of its stored type and POS Profile (registration_refusal
+	with its own row left out): its add-on must be on, a terminal slot free and, on a POS
+	Profile no other enabled terminal uses, an outlet slot free. None without an entitlement
+	(no hook: no caps), for a non-terminal type (kds, waiter, ...) and for an unknown id.
+
+	The device rows are read with a locking read and stay locked until the caller commits, so
+	two devices enabled at once cannot both take the last slot. Call it before locking the
+	device's own row, then set `enabled` and commit."""
+	entitlement = get_entitlement()
+	if entitlement is None:
+		return None
+	devices = device_rows(for_update=True)
+	wanted = str(device_id or "").casefold()
+	own = next((row for row in devices if str(row.get("name") or "").casefold() == wanted), None)
+	if own is None:
+		return None
+	others = [row for row in devices if row is not own]
+	return registration_refusal(
+		entitlement, own["name"], own.get("device_type"), own.get("pos_profile"), others
+	)
 
 
 def attach_to_reply(entitlement):

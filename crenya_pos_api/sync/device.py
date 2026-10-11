@@ -21,7 +21,7 @@ from crenya_pos_api.sync.context import (
 	require_device_role,
 	user_can_use_profile,
 )
-from crenya_pos_api.sync.entitlement import get_entitlement, registration_refusal
+from crenya_pos_api.sync.entitlement import device_rows, get_entitlement, registration_refusal
 from crenya_pos_api.sync.errors import (
 	DeviceNotRegisteredError,
 	DevicePermissionError,
@@ -152,19 +152,12 @@ def _registration(device):
 	}
 
 
-def _device_rows():
-	fields = ["name", "pos_profile", "enabled"]
-	if frappe.get_meta(DEVICE_DOCTYPE).has_field("device_type"):
-		fields.append("device_type")
-	return frappe.get_all(DEVICE_DOCTYPE, fields=fields)
-
-
 def _check_plan(device_id, device_type, pos_profile):
 	"""Refuse a terminal the plan does not allow (see registration_refusal; no hook: no caps)."""
 	entitlement = get_entitlement()
 	if entitlement is None:
 		return
-	refusal = registration_refusal(entitlement, device_id, device_type, pos_profile, _device_rows())
+	refusal = registration_refusal(entitlement, device_id, device_type, pos_profile, device_rows())
 	if refusal:
 		raise_api_error(DevicePermissionError, refusal)
 

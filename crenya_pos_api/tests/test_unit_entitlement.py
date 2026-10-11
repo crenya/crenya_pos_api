@@ -423,7 +423,7 @@ class TestEntitlementOnSite(FrappeTestCase):
 			fresh = device_api.register_device(device_id=new_id(), pos_profile=self.profile.name)
 			self.assertTrue(fresh["device_short"])
 
-	def test_enable_on_site_reads_the_latest_rows(self):
+	def test_enable_on_a_real_site(self):
 		"""The real locking read on this database: a disabled till is refused at the cap, allowed below it."""
 		device_id = new_id()
 		device_api.register_device(device_id=device_id, pos_profile=self.profile.name)

@@ -226,6 +226,9 @@ shape is logged (once per 10 minutes) and treated as no hook: it never blocks.
   (`SELECT … FOR UPDATE`) held until the caller commits, so two devices enabled
   at once cannot both take the last slot: call it before locking the device
   row, then save and commit.
+  One race remains: an enable at the same moment as a new registration can
+  end one over the cap (registration reads plainly); follow-up: a `GET_LOCK`
+  around check-and-write.
 - Every reply to a device call (`get_bootstrap`, `pull_changes`, `push_batch`,
   returns, loyalty, Fawtara) carries `entitlement` beside `message`;
   `get_bootstrap` also has it inside `message`. The hook is read once per

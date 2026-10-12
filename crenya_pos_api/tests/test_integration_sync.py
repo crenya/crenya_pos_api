@@ -428,6 +428,42 @@ class TestCrenyaSync(FrappeTestCase):
 
 	# push: sales
 
+	def test_a_till_of_a_device_role_only_user_posts_its_sale(self):
+		"""A till signed in by a user whose only role is a device role (no Accounts User, no
+		Sales User) still posts its sales: the push is authorised by the device, not by desk
+		roles. Before 0.9.3 ERPNext refused it ("User don't have permissions to select/read this
+		account"), and a restaurant cashier's till kept every bill unsynced."""
+		cashier = self._cashier()
+		self.assertEqual(
+			set(frappe.get_roles(cashier)) & {"Accounts User", "Sales User", "System Manager"}, set()
+		)
+		device_id = new_id()
+		frappe.set_user(cashier)
+		try:
+			device = device_api.register_device(
+				device_id=device_id, device_name="Cashier till", pos_profile=self.profile.name
+			)
+			payload = self.sale_payload(
+				offline_number=f"OFF-{device['device_short']}-{uuid.uuid4().hex[:6]}", cashier=cashier
+			)
+			[result] = sync_api.push_batch(device_id=device_id, events=[self.event(payload)])
+		finally:
+			frappe.set_user("Administrator")
+		self.assertOk(result)
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		self.assertEqual((doc.docstatus, doc.crenya_device, doc.owner), (1, device_id, cashier))
+		# the push reads are read-only, and the user still cannot post an invoice outside a push
+		# read-only push rights: select on Account (ERPNext's party account check), read on Item
+		self.assertTrue(frappe.has_permission("Account", "select", user=cashier))
+		self.assertTrue(frappe.has_permission("Item", "read", user=cashier))
+		for doctype, ptype in (
+			("Account", "write"),
+			("Item", "write"),
+			("Sales Invoice", "create"),
+			("Sales Invoice", "submit"),
+		):
+			self.assertFalse(frappe.has_permission(doctype, ptype, user=cashier), (doctype, ptype))
+
 	def test_sale_submit(self):
 		payload = self.sale_payload(lines=[(fixtures.MILK, "2", "0.600"), (fixtures.BREAD, "1", "0.500")])
 		result = self.assertOk(self.push_one(self.event(payload)))
@@ -727,6 +763,28 @@ class TestCrenyaSync(FrappeTestCase):
 			device_id=self.device_id, invoice=sale["offline_number"]
 		)
 		self.assertEqual(by_offline_number["name"], sold["name"])
+
+	def test_a_return_against_another_outlets_sale_is_refused(self):
+		"""A till refunds its own outlet's sales only (security review of 0.9.3: the push posts for
+		the device, so a till must not refund another outlet's invoice of the same company)."""
+		other = fixtures.setup_terminal_fixtures()
+		other_device = new_id()
+		short = device_api.register_device(
+			device_id=other_device, device_name="Other", pos_profile=other.name
+		)["device_short"]
+		sale = self.sale_payload(
+			lines=[(fixtures.MILK, "1", "0.600")],
+			pos_profile=other.name,
+			offline_number=f"OFF-{short}-{uuid.uuid4().hex[:6]}",
+		)
+		[sold] = sync_api.push_batch(device_id=other_device, events=[self.event(sale)])
+		self.assertOk(sold)
+
+		ret = self.return_payload(sale, [(fixtures.MILK, "-1", "0.600", 1)], return_against=sold["name"])
+		ret["pos_profile"] = self.profile.name
+		result = self.assertError(self.push_one(self.event(ret)), "validation", False)
+		self.assertIn("another POS Profile", result["error"]["message"])
+		self.assertFalse(self.invoices_with_local_id(ret["local_id"]))
 
 	def test_return_against_row_name(self):
 		sale = self.sale_payload(lines=[(fixtures.MILK, "1", "0.600"), (fixtures.MILK, "2", "0.600")])

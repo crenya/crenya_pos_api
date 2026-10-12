@@ -1,8 +1,11 @@
 """Build, check and submit a Sales Invoice (sale or return) from a till payload.
 
-The invoice goes through the normal ERPNext controller (insert + submit, no
-ignore_permissions); the till's numbers are only trusted after the server has
-recomputed them.
+The invoice goes through the normal ERPNext controller (insert + submit, every ERPNext
+validation); the till's numbers are only trusted after the server has recomputed them. It is
+posted for the device (0.9.3): the push already checked that the device is registered to the
+session user, who holds a device role for its type, at an outlet they work at, so the user needs
+no desk role (Accounts User, Sales User) for the invoice. ERPNext checks that ignore the
+document's flags need read rights instead (setup/install.py PUSH_READS).
 """
 
 import json
@@ -32,6 +35,7 @@ ORIGINAL_FIELDS = [
 	"name",
 	"customer",
 	"company",
+	"pos_profile",
 	"docstatus",
 	"is_return",
 	"update_stock",
@@ -102,6 +106,9 @@ def resolve_return_against(ctx, data):
 		raise SyncError(VALIDATION, f"{original.name} is itself a return")
 	if original.company != ctx.company:
 		raise SyncError(VALIDATION, f"Original invoice {original.name} belongs to another company")
+	# a till refunds its own outlet's sales only: the push posts for the device (0.9.3)
+	if original.pos_profile != ctx.profile.name:
+		raise SyncError(VALIDATION, f"Original invoice {original.name} was sold at another POS Profile")
 	assert_returnable_at_till(original.loyalty_amount, money_precision())
 	return original
 
@@ -404,6 +411,8 @@ def build_invoice(ctx, data, notes):
 			customer = original.customer
 
 	doc = frappe.new_doc("Sales Invoice")
+	# posted for the authorised device (module docstring): from set_missing_values to submit
+	doc.flags.ignore_permissions = True
 	doc.update(
 		{
 			"company": ctx.company,

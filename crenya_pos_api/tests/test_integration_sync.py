@@ -454,8 +454,10 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertEqual((doc.docstatus, doc.crenya_device, doc.owner), (1, device_id, cashier))
 		# the push reads are read-only, and the user still cannot post an invoice outside a push
 		self.assertTrue(frappe.has_permission("Account", "select", user=cashier))
+		self.assertTrue(frappe.has_permission("Item", "read", user=cashier))
 		for doctype, ptype in (
 			("Account", "write"),
+			("Item", "write"),
 			("Sales Invoice", "create"),
 			("Sales Invoice", "submit"),
 		):

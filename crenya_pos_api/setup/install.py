@@ -15,10 +15,12 @@ POS_USER_ROLE = "Crenya POS User"
 # Read rights a device's user needs for ERPNext to accept a pushed sale (0.9.3). The push posts
 # for the authorised device (sync/invoice_builder.py, ignore_permissions), but a few ERPNext
 # checks test the session user's rights whatever the document's flags say:
-# `erpnext.accounts.party.get_party_account` checks the party account (Sales Invoice debit_to).
-# {DocType: right}, granted read-only to every device role (Crenya POS User and the roles other
-# apps hook in `crenya_pos_device_roles`); never a write right.
-PUSH_READS = {"Account": "select"}
+# `erpnext.accounts.party.get_party_account` checks the party account (Sales Invoice debit_to)
+# and `erpnext.stock.get_item_details.get_item_details` each line's Item (the tills pull every
+# item of their outlet already). Found by recording every check a device-role-only user's push
+# fails (2026-10-12, v15 and v16). {DocType: right}, granted read-only to every device role
+# (Crenya POS User and the roles other apps hook in `crenya_pos_device_roles`); never a write.
+PUSH_READS = {"Account": "select", "Item": "read"}
 
 CUSTOM_FIELDS = {
 	"Sales Invoice": [

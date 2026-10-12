@@ -139,7 +139,7 @@ it. Use your own currency, precision, taxes and time zone.
    validation runs; only the permission checks are skipped). A few ERPNext
    checks look at the user's rights whatever the document says, so every
    device role gets read-only `PUSH_READS` rights (`setup/install.py`: select
-   on Account). The app's own records, Crenya POS Device, Crenya Sync Event and
+   on Account, read on Item). The app's own records, Crenya POS Device, Crenya Sync Event and
    Crenya POS Shift, are written with `ignore_permissions` after the same
    authorization. Add the user
    to the POS Profile's *Applicable for Users* table, or leave that table empty

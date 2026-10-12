@@ -13,14 +13,13 @@ from crenya_pos_api.sync.tax_wording import (
 POS_USER_ROLE = "Crenya POS User"
 
 # Read rights a device's user needs for ERPNext to accept a pushed sale (0.9.3). The push posts
-# for the authorised device (sync/invoice_builder.py, ignore_permissions), but a few ERPNext
-# checks test the session user's rights whatever the document's flags say:
-# `erpnext.accounts.party.get_party_account` checks the party account (Sales Invoice debit_to)
-# and `erpnext.stock.get_item_details.get_item_details` each line's Item (the tills pull every
-# item of their outlet already). Found by recording every check a device-role-only user's push
-# fails (2026-10-12, v15 and v16). {DocType: right}, granted read-only to every device role
-# (Crenya POS User and the roles other apps hook in `crenya_pos_device_roles`); never a write.
-PUSH_READS = {"Account": "select", "Item": "read"}
+# for the authorised device (sync/invoice_builder.py, ignore_permissions), but ERPNext's
+# `erpnext.stock.get_item_details.get_item_details` checks each line's Item against the session
+# user whatever the document's flags say (found by recording every check a device-role-only
+# user's push fails, 2026-10-12, v15 and v16; the party account check is avoided by setting
+# debit_to first). {DocType: right}, read-only, never a write; granted to the roles of devices
+# that post sales only (`ensure_push_reads`).
+PUSH_READS = {"Item": "read"}
 
 CUSTOM_FIELDS = {
 	"Sales Invoice": [
@@ -313,17 +312,20 @@ def make_custom_fields():
 	create_custom_fields(CUSTOM_FIELDS, ignore_validate=True, update=True)
 
 
-def ensure_push_reads():
-	"""Give every device role that exists the PUSH_READS rights (a Custom DocPerm rule, level 0),
-	once: a rule that exists (an administrator may have changed it) is left as it is. Apps that
-	hook device roles call it after making their roles. Returns {DocType: [roles given]}."""
+def ensure_push_reads(roles=None):
+	"""Give `roles` (default: the roles of this app's retail till, `device_roles(DEFAULT_DEVICE_TYPE)`:
+	Crenya POS User and the roles hooked for every device type) the PUSH_READS rights, as a Custom
+	DocPerm rule (level 0), once: a rule that exists (an administrator may have changed it) is left
+	as it is. An app whose own device types post sales calls it with the roles of those devices
+	(never with roles of devices that take no payment). Returns {DocType: [roles given]}."""
 	from frappe.permissions import add_permission
 
-	from crenya_pos_api.sync.context import all_device_roles
+	from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, device_roles
 
+	roles = device_roles(DEFAULT_DEVICE_TYPE) if roles is None else tuple(roles)
 	given = {}
 	for doctype, right in PUSH_READS.items():
-		for role in all_device_roles():
+		for role in roles:
 			rule = {"parent": doctype, "role": role, "permlevel": 0, "if_owner": 0}
 			if not frappe.db.exists("Role", role) or frappe.db.exists("Custom DocPerm", rule):
 				continue

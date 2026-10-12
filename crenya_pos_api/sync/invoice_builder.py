@@ -5,7 +5,8 @@ validation); the till's numbers are only trusted after the server has recomputed
 posted for the device (0.9.3): the push already checked that the device is registered to the
 session user, who holds a device role for its type, at an outlet they work at, so the user needs
 no desk role (Accounts User, Sales User) for the invoice. ERPNext checks that ignore the
-document's flags need read rights instead (setup/install.py PUSH_READS).
+document's flags are avoided (debit_to is set first) or need read rights (setup/install.py
+PUSH_READS).
 """
 
 import json
@@ -35,6 +36,7 @@ ORIGINAL_FIELDS = [
 	"name",
 	"customer",
 	"company",
+	"pos_profile",
 	"docstatus",
 	"is_return",
 	"update_stock",
@@ -105,6 +107,9 @@ def resolve_return_against(ctx, data):
 		raise SyncError(VALIDATION, f"{original.name} is itself a return")
 	if original.company != ctx.company:
 		raise SyncError(VALIDATION, f"Original invoice {original.name} belongs to another company")
+	# a till refunds its own outlet's sales only: the push posts for the device (0.9.3)
+	if original.pos_profile != ctx.profile.name:
+		raise SyncError(VALIDATION, f"Original invoice {original.name} was sold at another POS Profile")
 	assert_returnable_at_till(original.loyalty_amount, money_precision())
 	return original
 
@@ -365,6 +370,31 @@ def reconcile_payments(doc, default_mode, notes):
 			doc.remove(row)
 
 
+def receivable_account(customer, company):
+	"""The Sales Invoice debit_to ERPNext's `get_party_account` would pick (the customer's Party
+	Account, its group's, the company's default receivable; the account of the customer's
+	existing ledger currency first). Set before `set_missing_values`, so ERPNext never checks the
+	device user's Account rights (the push posts for the device)."""
+	from erpnext.accounts.party import get_party_gle_account, get_party_gle_currency
+
+	account = frappe.db.get_value(
+		"Party Account", {"parenttype": "Customer", "parent": customer, "company": company}, "account"
+	)
+	if not account:
+		group = frappe.get_cached_value("Customer", customer, "customer_group")
+		account = frappe.db.get_value(
+			"Party Account", {"parenttype": "Customer Group", "parent": group, "company": company}, "account"
+		)
+	default = frappe.get_cached_value("Company", company, "default_receivable_account")
+	account = account or default
+	gle_currency = get_party_gle_currency("Customer", customer, company)
+	if gle_currency and (
+		not account or frappe.get_cached_value("Account", account, "account_currency") != gle_currency
+	):
+		account = get_party_gle_account("Customer", customer, company)
+	return account or default
+
+
 def build_invoice(ctx, data, notes):
 	"""Create the unsaved Sales Invoice with server-computed totals."""
 	profile = ctx.profile
@@ -444,6 +474,7 @@ def build_invoice(ctx, data, notes):
 		require_line_batches(data["items"])
 	_append_items(doc, ctx, data["items"], return_rows, batch_plan)
 
+	doc.debit_to = receivable_account(customer, ctx.company)
 	doc.set_missing_values(for_validate=True)
 	# POS Profile values must not re-enable pricing rules: the till's rate is final
 	doc.ignore_pricing_rule = 1

@@ -453,10 +453,14 @@ class TestCrenyaSync(FrappeTestCase):
 		doc = frappe.get_doc("Sales Invoice", result["name"])
 		self.assertEqual((doc.docstatus, doc.crenya_device, doc.owner), (1, device_id, cashier))
 		# the push reads are read-only, and the user still cannot post an invoice outside a push
-		self.assertTrue(frappe.has_permission("Account", "select", user=cashier))
+		# no Account right at all: debit_to is set before ERPNext would check it
+		self.assertFalse(frappe.has_permission("Account", "select", user=cashier))
 		self.assertTrue(frappe.has_permission("Item", "read", user=cashier))
+		self.assertEqual(
+			doc.debit_to, frappe.get_cached_value("Company", fixtures.COMPANY, "default_receivable_account")
+		)
 		for doctype, ptype in (
-			("Account", "write"),
+			("Account", "read"),
 			("Item", "write"),
 			("Sales Invoice", "create"),
 			("Sales Invoice", "submit"),
@@ -762,6 +766,28 @@ class TestCrenyaSync(FrappeTestCase):
 			device_id=self.device_id, invoice=sale["offline_number"]
 		)
 		self.assertEqual(by_offline_number["name"], sold["name"])
+
+	def test_a_return_against_another_outlets_sale_is_refused(self):
+		"""A till refunds its own outlet's sales only (security review of 0.9.3: the push posts for
+		the device, so a till must not refund another outlet's invoice of the same company)."""
+		other = fixtures.setup_terminal_fixtures()
+		other_device = new_id()
+		short = device_api.register_device(
+			device_id=other_device, device_name="Other", pos_profile=other.name
+		)["device_short"]
+		sale = self.sale_payload(
+			lines=[(fixtures.MILK, "1", "0.600")],
+			pos_profile=other.name,
+			offline_number=f"OFF-{short}-{uuid.uuid4().hex[:6]}",
+		)
+		[sold] = sync_api.push_batch(device_id=other_device, events=[self.event(sale)])
+		self.assertOk(sold)
+
+		ret = self.return_payload(sale, [(fixtures.MILK, "-1", "0.600", 1)], return_against=sold["name"])
+		ret["pos_profile"] = self.profile.name
+		result = self.assertError(self.push_one(self.event(ret)), "validation", False)
+		self.assertIn("another POS Profile", result["error"]["message"])
+		self.assertFalse(self.invoices_with_local_id(ret["local_id"]))
 
 	def test_return_against_row_name(self):
 		sale = self.sale_payload(lines=[(fixtures.MILK, "1", "0.600"), (fixtures.MILK, "2", "0.600")])

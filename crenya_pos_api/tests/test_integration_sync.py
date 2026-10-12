@@ -428,6 +428,31 @@ class TestCrenyaSync(FrappeTestCase):
 
 	# push: sales
 
+	def test_a_till_of_a_device_role_only_user_posts_its_sale(self):
+		"""A till signed in by a user whose only role is a device role (no Accounts User, no
+		Sales User) still posts its sales: the push is authorised by the device, not by desk
+		roles. Before 0.9.3 ERPNext refused it ("User don't have permissions to select/read this
+		account"), and a restaurant cashier's till kept every bill unsynced."""
+		cashier = self._cashier()
+		self.assertEqual(
+			set(frappe.get_roles(cashier)) & {"Accounts User", "Sales User", "System Manager"}, set()
+		)
+		device_id = new_id()
+		frappe.set_user(cashier)
+		try:
+			device = device_api.register_device(
+				device_id=device_id, device_name="Cashier till", pos_profile=self.profile.name
+			)
+			payload = self.sale_payload(
+				offline_number=f"OFF-{device['device_short']}-{uuid.uuid4().hex[:6]}", cashier=cashier
+			)
+			[result] = sync_api.push_batch(device_id=device_id, events=[self.event(payload)])
+		finally:
+			frappe.set_user("Administrator")
+		self.assertOk(result)
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		self.assertEqual((doc.docstatus, doc.crenya_device, doc.owner), (1, device_id, cashier))
+
 	def test_sale_submit(self):
 		payload = self.sale_payload(lines=[(fixtures.MILK, "2", "0.600"), (fixtures.BREAD, "1", "0.500")])
 		result = self.assertOk(self.push_one(self.event(payload)))

@@ -9,7 +9,8 @@
   "mode_of_payment",
   "expected",
   "counted",
-  "difference"
+  "difference",
+  "paid_out"
  ],
  "fields": [
   {
@@ -41,6 +42,13 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Difference",
+   "read_only": 1
+  },
+  {
+   "description": "Cash paid out of the drawer (expenses); already taken off Expected",
+   "fieldname": "paid_out",
+   "fieldtype": "Currency",
+   "label": "Paid Out",
    "read_only": 1
   }
  ],

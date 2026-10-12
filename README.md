@@ -27,7 +27,7 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   own `retention_days`. Failed events are kept.
 - DocType **Crenya POS Shift** (named after the till's shift `local_id`) with
   child table **Crenya POS Shift Payment** (mode of payment, expected,
-  counted, difference): one row per cashier shift closed at a till, with
+  counted, difference, paid out): one row per cashier shift closed at a till, with
   opening float, sales / returns counts and totals, net and tax totals, notes,
   and `invoice_count_on_server` (Sales Invoices carrying the shift's ID when
   the shift was pushed). `opened_at` / `closed_at` arrive as UTC and are stored
@@ -250,7 +250,13 @@ shape is logged (once per 10 minutes) and treated as no hook: it never blocks.
 When a cashier closes a shift the till queues one `push_batch` event with
 `aggregate_type = "Crenya POS Shift"` and `operation = "submit"`. The server
 creates the **Crenya POS Shift** (with its payments table) and records how
-many Sales Invoices with `crenya_shift_id = local_id` it already has. The
+many Sales Invoices with `crenya_shift_id = local_id` it already has.
+Since 0.10.0 the payload may also carry `expense_count` (integer >= 0, the
+expenses recorded for the shift, cancelled ones included) and, on each cash
+row of `payments`, `paid_out` (decimal >= 0, the cash paid out of the drawer).
+Both are stored read-only (`Crenya POS Shift.expense_count`, `Crenya POS Shift
+Payment.paid_out`); a missing key counts as 0, and `expected` is stored as the
+till sent it (already net of paid out), never recomputed. The
 event is idempotent on `event_id` and on the shift `local_id`, like Customer
 events, and depends on nothing: invoices of the shift may be pushed before or
 after it. Each Sales Invoice payload may carry `shift_local_id` (string or

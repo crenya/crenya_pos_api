@@ -690,6 +690,29 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertEqual((recorded.status, recorded.aggregate_type), ("ok", SHIFT))
 		self.assertEqual((recorded.result_doctype, recorded.result_name), (SHIFT, doc.name))
 
+	def test_shift_without_paid_out_still_accepted(self):
+		result = self.assertOk(self.push_one(self.event(self.shift_payload(), SHIFT)))
+		doc = frappe.get_doc(SHIFT, result["name"])
+		self.assertEqual(doc.expense_count, 0)
+		self.assertEqual(doc.payments[0].paid_out, 0)
+
+	def test_paid_out_and_count_stored(self):
+		shift = self.shift_payload(expense_count=4)
+		shift["payments"][0]["paid_out"] = "7.350"
+		result = self.assertOk(self.push_one(self.event(shift, SHIFT)))
+		doc = frappe.get_doc(SHIFT, result["name"])
+		self.assertEqual(doc.expense_count, 4)
+		self.assertAlmostEqual(doc.payments[0].paid_out, 7.35, places=3)
+		# the till's expected is already net of paid out: stored as sent
+		self.assertAlmostEqual(doc.payments[0].expected, 22.4, places=3)
+		self.assertAlmostEqual(doc.payments[0].difference, -0.1, places=3)
+
+	def test_negative_paid_out_refused(self):
+		shift = self.shift_payload()
+		shift["payments"][0]["paid_out"] = "-1.000"
+		self.assertError(self.push_one(self.event(shift, SHIFT)), "validation", False)
+		self.assertFalse(frappe.db.exists(SHIFT, shift["local_id"]))
+
 	def test_shift_before_its_invoices(self):
 		shift = self.shift_payload()
 		result = self.assertOk(self.push_one(self.event(shift, SHIFT)))

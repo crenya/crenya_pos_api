@@ -16,7 +16,7 @@ from crenya_pos_api.utils.dates import format_db_datetime, to_site_naive
 
 SHIFT_DOCTYPE = "Crenya POS Shift"
 SHIFT_MONEY_FIELDS = ("opening_float", "sales_total", "returns_total", "net_total", "tax_total")
-PAYMENT_MONEY_FIELDS = ("expected", "counted", "difference")
+PAYMENT_MONEY_FIELDS = ("expected", "counted", "difference", "paid_out")
 
 
 def _money(value, precision):
@@ -74,6 +74,7 @@ def create_shift(ctx, data, notes):
 			"sales_count": data["sales_count"],
 			"returns_count": data["returns_count"],
 			"invoice_count_on_server": invoice_count,
+			"expense_count": data.get("expense_count", 0),
 			"notes": data.get("notes"),
 		}
 	)

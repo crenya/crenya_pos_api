@@ -452,6 +452,14 @@ class TestCrenyaSync(FrappeTestCase):
 		self.assertOk(result)
 		doc = frappe.get_doc("Sales Invoice", result["name"])
 		self.assertEqual((doc.docstatus, doc.crenya_device, doc.owner), (1, device_id, cashier))
+		# the push reads are read-only, and the user still cannot post an invoice outside a push
+		self.assertTrue(frappe.has_permission("Account", "select", user=cashier))
+		for doctype, ptype in (
+			("Account", "write"),
+			("Sales Invoice", "create"),
+			("Sales Invoice", "submit"),
+		):
+			self.assertFalse(frappe.has_permission(doctype, ptype, user=cashier), (doctype, ptype))
 
 	def test_sale_submit(self):
 		payload = self.sale_payload(lines=[(fixtures.MILK, "2", "0.600"), (fixtures.BREAD, "1", "0.500")])

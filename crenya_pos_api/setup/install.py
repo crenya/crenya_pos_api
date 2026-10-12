@@ -12,6 +12,14 @@ from crenya_pos_api.sync.tax_wording import (
 
 POS_USER_ROLE = "Crenya POS User"
 
+# Read rights a device's user needs for ERPNext to accept a pushed sale (0.9.3). The push posts
+# for the authorised device (sync/invoice_builder.py, ignore_permissions), but a few ERPNext
+# checks test the session user's rights whatever the document's flags say:
+# `erpnext.accounts.party.get_party_account` checks the party account (Sales Invoice debit_to).
+# {DocType: right}, granted read-only to every device role (Crenya POS User and the roles other
+# apps hook in `crenya_pos_device_roles`); never a write right.
+PUSH_READS = {"Account": "select"}
+
 CUSTOM_FIELDS = {
 	"Sales Invoice": [
 		{
@@ -303,12 +311,35 @@ def make_custom_fields():
 	create_custom_fields(CUSTOM_FIELDS, ignore_validate=True, update=True)
 
 
+def ensure_push_reads():
+	"""Give every device role that exists the PUSH_READS rights (a Custom DocPerm rule, level 0),
+	once: a rule that exists (an administrator may have changed it) is left as it is. Apps that
+	hook device roles call it after making their roles. Returns {DocType: [roles given]}."""
+	from frappe.permissions import add_permission
+
+	from crenya_pos_api.sync.context import all_device_roles
+
+	given = {}
+	for doctype, right in PUSH_READS.items():
+		for role in all_device_roles():
+			rule = {"parent": doctype, "role": role, "permlevel": 0, "if_owner": 0}
+			if not frappe.db.exists("Role", role) or frappe.db.exists("Custom DocPerm", rule):
+				continue
+			add_permission(doctype, role, 0, ptype=right)
+			given.setdefault(doctype, []).append(role)
+		frappe.clear_cache(doctype=doctype)
+	return given
+
+
 def ensure_setup():
-	"""Role and custom fields (idempotent); returns what the app ensures, per doctype."""
+	"""Role, custom fields and the device roles' push reads (idempotent); returns what the app
+	ensures."""
 	make_role()
 	make_custom_fields()
+	ensure_push_reads()
 	return {
 		"role": POS_USER_ROLE,
+		"push_reads": PUSH_READS,
 		"custom_fields": {
 			doctype: [field["fieldname"] for field in fields] for doctype, fields in CUSTOM_FIELDS.items()
 		},

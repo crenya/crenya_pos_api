@@ -1,8 +1,11 @@
 """Build, check and submit a Sales Invoice (sale or return) from a till payload.
 
-The invoice goes through the normal ERPNext controller (insert + submit, no
-ignore_permissions); the till's numbers are only trusted after the server has
-recomputed them.
+The invoice goes through the normal ERPNext controller (insert + submit, every ERPNext
+validation); the till's numbers are only trusted after the server has recomputed them. It is
+posted for the device (0.9.3): the push already checked that the device is registered to the
+session user, who holds a device role for its type, at an outlet they work at, so the user needs
+no desk role (Accounts User, Sales User) for the invoice. ERPNext checks that ignore the
+document's flags need read rights instead (setup/install.py PUSH_READS).
 """
 
 import json
@@ -404,6 +407,8 @@ def build_invoice(ctx, data, notes):
 			customer = original.customer
 
 	doc = frappe.new_doc("Sales Invoice")
+	# posted for the authorised device (module docstring): from set_missing_values to submit
+	doc.flags.ignore_permissions = True
 	doc.update(
 		{
 			"company": ctx.company,

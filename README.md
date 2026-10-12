@@ -132,11 +132,16 @@ it. Use your own currency, precision, taxes and time zone.
 8. **Users**: cashiers sign in on the till with their normal ERPNext
    username + password (2FA must be off for till users). On first sign-in the
    app creates the user's API key pair and hands it to the till; regenerating
-   the keys in ERPNext signs every till of that user out. Roles: **Crenya POS User**, **Sales User** (create customers) and
-   **Accounts User** (create and submit Sales Invoices — ERPNext permissions
-   are enforced; only the app's own records, Crenya POS Device, Crenya Sync
-   Event and Crenya POS Shift, are written with `ignore_permissions` after the
-   user / device has been authorized). Add the user
+   the keys in ERPNext signs every till of that user out. Roles: **Crenya POS User** and **Sales User** (create customers). Since
+   0.9.3 a till's sales need no desk role: the push checks that the device is
+   registered to the user, who holds a device role for its type, at an outlet
+   they may use, and then posts the Sales Invoice for the device (every ERPNext
+   validation runs; only the permission checks are skipped). A few ERPNext
+   checks look at the user's rights whatever the document says, so every
+   device role gets read-only `PUSH_READS` rights (`setup/install.py`: select
+   on Account). The app's own records, Crenya POS Device, Crenya Sync Event and
+   Crenya POS Shift, are written with `ignore_permissions` after the same
+   authorization. Add the user
    to the POS Profile's *Applicable for Users* table, or leave that table empty
    to allow everyone. Every device call (profile list, registration,
    bootstrap, pull, push, returns, loyalty, Fawtara status, updates) requires

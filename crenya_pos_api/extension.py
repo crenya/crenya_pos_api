@@ -49,6 +49,8 @@ Names:
                 refused by the plan's caps (it is checked as a new terminal of its type and POS
                 Profile), or None (no hook, a kds / waiter, or within the caps). It locks the
                 device rows until your commit: call it first, then set `enabled` and commit.
+        mode_of_payment_account(mode, company): the company's account of a Mode of Payment, or
+                None when it has none (the lookup the Sales Invoice payments use).
         registry: the merged view (`entities()`, `aggregates()`, `handler(aggregate_type)`,
                 `device_roles()`, ...).
         PROTOCOL_VERSION: protocol spoken by this server (2 = extension hooks).
@@ -70,6 +72,7 @@ from crenya_pos_api.sync.errors import (
 	ExtensionHookError,
 	SyncError,
 )
+from crenya_pos_api.sync.invoice_builder import mode_of_payment_account
 from crenya_pos_api.sync.pull import EntitySpec
 
 __all__ = [
@@ -88,6 +91,7 @@ __all__ = [
 	"ExtensionHookError",
 	"SyncError",
 	"device_enable_refusal",
+	"mode_of_payment_account",
 	"registry",
 	"staff_roles",
 ]

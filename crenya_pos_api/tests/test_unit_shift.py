@@ -81,6 +81,7 @@ class TestShiftPayload(unittest.TestCase):
 				"expected": Decimal("512.300"),
 				"counted": Decimal("511.800"),
 				"difference": Decimal("-0.500"),
+				"paid_out": Decimal(0),
 			},
 		)
 		self.assertEqual(data["invoice_local_ids"], ["inv-1", "inv-2"])
@@ -97,6 +98,40 @@ class TestShiftPayload(unittest.TestCase):
 		data = validate_shift_payload(mutate(lambda p: p.update(payments=None, sales_count="4")))
 		self.assertEqual(data["payments"], [])
 		self.assertEqual(data["sales_count"], 4)
+
+	def test_shift_without_paid_out_still_accepted(self):
+		data = validate_shift_payload(copy.deepcopy(SHIFT))
+		self.assertEqual(data["expense_count"], 0)
+		for row in data["payments"]:
+			self.assertEqual(row["paid_out"], Decimal(0))
+
+	def test_paid_out_and_count_parsed(self):
+		def add(p):
+			p["expense_count"] = 3
+			p["payments"][0]["paid_out"] = "7.350"
+
+		data = validate_shift_payload(mutate(add))
+		self.assertEqual(data["expense_count"], 3)
+		self.assertEqual(data["payments"][0]["paid_out"], Decimal("7.350"))
+		self.assertEqual(data["payments"][1]["paid_out"], Decimal(0))
+
+	def test_expected_not_recomputed(self):
+		# the till's expected is already net of paid out; the server stores it as sent
+		def add(p):
+			p["payments"][0]["paid_out"] = "7.350"
+
+		data = validate_shift_payload(mutate(add))
+		self.assertEqual(data["payments"][0]["expected"], Decimal("512.300"))
+		self.assertEqual(data["payments"][0]["difference"], Decimal("-0.500"))
+
+	def test_negative_paid_out_refused(self):
+		def neg(p):
+			p["payments"][0]["paid_out"] = "-0.001"
+
+		self.assertInvalid(mutate(neg), "paid_out")
+		self.assertInvalid(mutate(lambda p: p["payments"][0].update(paid_out=1.5)), "paid_out")
+		self.assertInvalid(mutate(lambda p: p.update(expense_count=-1)), "expense_count")
+		self.assertInvalid(mutate(lambda p: p.update(expense_count="many")), "expense_count")
 
 	def test_difference_defaults_to_counted_minus_expected(self):
 		payload = mutate(lambda p: p["payments"][0].pop("difference"))

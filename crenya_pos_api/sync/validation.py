@@ -7,6 +7,7 @@ field, and returns normalized values (Decimals, ints) for the builders.
 
 import re
 from datetime import date, time
+from decimal import Decimal
 
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
 from crenya_pos_api.utils.dates import parse_iso_utc
@@ -468,8 +469,20 @@ def _validate_shift_payments(payments):
 		difference = _decimal(row.get("difference"), f"{label}.difference", allow_none=True)
 		if difference is None:
 			difference = counted - expected
+		# optional: tills before 0.10.0 send no paid_out; cash rows of newer tills do
+		paid_out = _decimal(row.get("paid_out", 0), f"{label}.paid_out", allow_none=True)
+		if paid_out is None:
+			paid_out = Decimal(0)
+		if paid_out < 0:
+			_fail(f"{label}.paid_out must not be negative")
 		rows.append(
-			{"mode_of_payment": mode, "expected": expected, "counted": counted, "difference": difference}
+			{
+				"mode_of_payment": mode,
+				"expected": expected,
+				"counted": counted,
+				"difference": difference,
+				"paid_out": paid_out,
+			}
 		)
 	return rows
 
@@ -524,6 +537,9 @@ def validate_shift_payload(payload):
 		"net_total": _decimal(payload.get("net_total"), "net_total"),
 		"tax_total": _decimal(payload.get("tax_total"), "tax_total"),
 		"payments": _validate_shift_payments(payload.get("payments")),
+		# optional: tills before 0.10.0 send no expense_count
+		"expense_count": _int(payload.get("expense_count", 0), "expense_count", minimum=0, allow_none=True)
+		or 0,
 		"invoice_local_ids": _validate_invoice_local_ids(payload.get("invoice_local_ids")),
 		"notes": _optional_str(payload, "notes", max_length=MAX_NOTES_LENGTH),
 	}

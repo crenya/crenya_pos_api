@@ -322,11 +322,16 @@ def _absorb_row(doc, default_mode):
 	return None
 
 
+def mode_of_payment_account(mode, company):
+	"""The company's account of a Mode of Payment, or None when it has none."""
+	from erpnext.accounts.doctype.sales_invoice.sales_invoice import get_bank_cash_account
+
+	return get_bank_cash_account(mode, company).get("account")
+
+
 def _ensure_account(doc, row):
 	if not row.account:
-		from erpnext.accounts.doctype.sales_invoice.sales_invoice import get_bank_cash_account
-
-		row.account = get_bank_cash_account(row.mode_of_payment, doc.company).get("account")
+		row.account = mode_of_payment_account(row.mode_of_payment, doc.company)
 
 
 def reconcile_payments(doc, default_mode, notes):

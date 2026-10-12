@@ -20,6 +20,7 @@
   "sales_count",
   "returns_count",
   "invoice_count_on_server",
+  "expense_count",
   "column_break_totals",
   "sales_total",
   "returns_total",
@@ -128,6 +129,13 @@
    "fieldname": "invoice_count_on_server",
    "fieldtype": "Int",
    "label": "Invoices on Server",
+   "read_only": 1
+  },
+  {
+   "description": "Expenses recorded at the till for this shift, cancelled ones included",
+   "fieldname": "expense_count",
+   "fieldtype": "Int",
+   "label": "Expenses",
    "read_only": 1
   },
   {

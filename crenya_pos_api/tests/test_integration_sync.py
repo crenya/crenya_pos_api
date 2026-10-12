@@ -453,14 +453,11 @@ class TestCrenyaSync(FrappeTestCase):
 		doc = frappe.get_doc("Sales Invoice", result["name"])
 		self.assertEqual((doc.docstatus, doc.crenya_device, doc.owner), (1, device_id, cashier))
 		# the push reads are read-only, and the user still cannot post an invoice outside a push
-		# no Account right at all: debit_to is set before ERPNext would check it
-		self.assertFalse(frappe.has_permission("Account", "select", user=cashier))
+		# read-only push rights: select on Account (ERPNext's party account check), read on Item
+		self.assertTrue(frappe.has_permission("Account", "select", user=cashier))
 		self.assertTrue(frappe.has_permission("Item", "read", user=cashier))
-		self.assertEqual(
-			doc.debit_to, frappe.get_cached_value("Company", fixtures.COMPANY, "default_receivable_account")
-		)
 		for doctype, ptype in (
-			("Account", "read"),
+			("Account", "write"),
 			("Item", "write"),
 			("Sales Invoice", "create"),
 			("Sales Invoice", "submit"),

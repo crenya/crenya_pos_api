@@ -136,12 +136,11 @@ it. Use your own currency, precision, taxes and time zone.
    0.9.3 a till's sales need no desk role: the push checks that the device is
    registered to the user, who holds a device role for its type, at an outlet
    they may use, and then posts the Sales Invoice for the device (every ERPNext
-   validation runs; only the permission checks are skipped; the invoice's
-   receivable account is set first, so no Account right is needed). A return
-   is accepted only against a sale of the same POS Profile. One ERPNext check
-   looks at the user's rights whatever the document says, so the roles of
+   validation runs; only the permission checks are skipped). A return
+   is accepted only against a sale of the same POS Profile. Two ERPNext checks
+   look at the user's rights whatever the document says, so the roles of
    devices that post sales get read-only `PUSH_READS` rights
-   (`setup/install.py`: read on Item; this app grants its retail till's roles,
+   (`setup/install.py`: select on Account, read on Item; this app grants its retail till's roles,
    an app with its own selling device types grants those). **Accepted
    exposure:** Item read lets such a user read every Item through the REST API,
    including fields a till does not need, such as `valuation_rate` and

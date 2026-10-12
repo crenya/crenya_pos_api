@@ -13,13 +13,16 @@ from crenya_pos_api.sync.tax_wording import (
 POS_USER_ROLE = "Crenya POS User"
 
 # Read rights a device's user needs for ERPNext to accept a pushed sale (0.9.3). The push posts
-# for the authorised device (sync/invoice_builder.py, ignore_permissions), but ERPNext's
-# `erpnext.stock.get_item_details.get_item_details` checks each line's Item against the session
-# user whatever the document's flags say (found by recording every check a device-role-only
-# user's push fails, 2026-10-12, v15 and v16; the party account check is avoided by setting
-# debit_to first). {DocType: right}, read-only, never a write; granted to the roles of devices
-# that post sales only (`ensure_push_reads`).
-PUSH_READS = {"Item": "read"}
+# for the authorised device (sync/invoice_builder.py, ignore_permissions), but two ERPNext checks
+# test the session user's rights whatever the document's flags say (found by recording every
+# check a device-role-only user's push fails, 2026-10-12, v15 and v16):
+# - `erpnext.accounts.party.get_party_account` checks the party account. It runs from
+#   `_get_party_details` -> `set_account_and_due_date` on every Sales Invoice, even when debit_to
+#   is already set, so setting debit_to first does not avoid it;
+# - `erpnext.stock.get_item_details.get_item_details` checks each line's Item.
+# {DocType: right}, read-only, never a write; granted to the roles of devices that post sales only
+# (`ensure_push_reads`).
+PUSH_READS = {"Account": "select", "Item": "read"}
 
 CUSTOM_FIELDS = {
 	"Sales Invoice": [

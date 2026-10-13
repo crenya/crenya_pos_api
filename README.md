@@ -446,7 +446,8 @@ hide a denomination; tills pick up changes on their next bootstrap.
 
 #### Loyalty points
 
-Uses ERPNext's own **Loyalty Program**. Setup: create a Loyalty Program for
+Uses ERPNext's own **Loyalty Program**. Setup (on app.crenya.com: Shops → Loyalty,
+`web_admin.save_loyalty_program`): create a Loyalty Program for
 the company (collection rules, *Conversion Factor* = currency value of one
 point, *Expense Account* and *Cost Center* for redemptions, *From Date* not in
 the future) and set it as the Customer's *Loyalty Program* (or tick *Auto Opt
@@ -944,6 +945,8 @@ by <user>" on the record.
 | `staff_get(user)`, `staff_save(user, privilege, pin, outlets)`, `staff_clear_pin(user)` | a user's shop till privilege (`cashier`: Crenya POS User; `manager`: also Crenya POS Manager), 6-digit PIN and shops; System Manager only, never Administrator or Guest, never System Manager given; the answer lists the `privileges` offered |
 | `day_closes(from_date, to_date, outlet)`, `day_close(shift)` | the shop's shifts (Z reports): sections `sales`, `payments` (per mode: expected, counted, difference), `returns`, `store_controls`, `paid_out`; every row has `kind` money or count, money as strings at the currency's decimals |
 | `refused_sales(outlet)`, `retry_sale(name)` | what the shop's tills pushed and ERPNext refused (newest 200), with a hint in English and Arabic; Retry asks the till to send it again |
+| `promotions(outlet)`, `save_promotion(outlet, promotion)`, `set_promotion_enabled(outlet, name, enabled, modified)` | the shop's promotions: Pricing Rules of its company for its price list (or for every price list, a System Manager's), only the shapes a till evaluates (item code / group / brand; % or amount off, a rate, or buy X get Y, optionally repeating; min / max qty, dates, priority); coupons refused |
+| `loyalty_programs(outlet)`, `save_loyalty_program(outlet, program)` | ERPNext Loyalty Programs of the shop's company with their tiers; created and changed here, never deleted or renamed (end one with its To Date) |
 
 The settings form is ERPNext's own POS Profile fields (read from its meta: price list,
 customer, discount and rate changes, warehouse, taxes, cost center, rounding, write-off and the

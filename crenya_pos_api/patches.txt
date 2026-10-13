@@ -6,3 +6,4 @@
 # Patches added in this section will be executed after doctypes are migrated
 crenya_pos_api.patches.v0_8.sync_event_aggregate_type_data
 crenya_pos_api.patches.v0_11.store_controls
+crenya_pos_api.patches.v0_11.manager_desk_access

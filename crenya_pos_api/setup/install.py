@@ -344,12 +344,18 @@ CUSTOM_FIELDS = {
 }
 
 
+# the till roles and their desk access: a cashier never signs in to the desk; the store controls'
+# approver manages shops on app.crenya.com, which signs in System Users only (as Restaurant
+# Manager). Desk access gives no permission by itself: the role has no DocPerm of its own.
+ROLE_DESK_ACCESS = {POS_USER_ROLE: 0, APPROVER_ROLE: 1}
+
+
 def make_role():
-	"""The till roles (no desk access): Crenya POS User, and the store controls' approver."""
-	for role in (POS_USER_ROLE, APPROVER_ROLE):
+	"""The till roles: Crenya POS User and the store controls' approver (ROLE_DESK_ACCESS)."""
+	for role, desk_access in ROLE_DESK_ACCESS.items():
 		if frappe.db.exists("Role", role):
 			continue
-		frappe.get_doc({"doctype": "Role", "role_name": role, "desk_access": 0}).insert(
+		frappe.get_doc({"doctype": "Role", "role_name": role, "desk_access": desk_access}).insert(
 			ignore_permissions=True
 		)
 

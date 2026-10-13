@@ -394,14 +394,14 @@ class TestCrenyaSync(SyncCase):
 		self.assertFalse(self.invoices_with_local_id(bad["local_id"]))
 		self.assertEqual(frappe.db.get_value(EVENT, bad["event_id"], "status"), "error")
 
-	def _deadlocking(self, times):
-		"""`events._apply` that hits a deadlock `times` times, then applies the event."""
+	def _deadlocking(self, times, error=None):
+		"""`events._apply` that raises `error` (a deadlock) `times` times, then applies the event."""
 		real, calls = events._apply, []
 
 		def apply(ctx, env):
 			calls.append(env["event_id"])
 			if len(calls) <= times:
-				raise frappe.QueryDeadlockError("(1213, 'Deadlock found when trying to get lock')")
+				raise error or frappe.QueryDeadlockError("(1213, 'Deadlock found when trying to get lock')")
 			return real(ctx, env)
 
 		return patch.object(events, "_apply", apply), calls
@@ -422,12 +422,34 @@ class TestCrenyaSync(SyncCase):
 
 	def test_a_lasting_deadlock_is_left_to_the_till(self):
 		event = self.event(self.sale_payload())
-		deadlock, calls = self._deadlocking(events.TRANSIENT_ATTEMPTS)
+		deadlock, calls = self._deadlocking(events.DEADLOCK_ATTEMPTS)
 		with deadlock:
 			result = self.push_one(event)
-		self.assertEqual(len(calls), events.TRANSIENT_ATTEMPTS)
+		self.assertEqual(len(calls), events.DEADLOCK_ATTEMPTS)
 		self.assertEqual(result["status"], "error")
 		self.assertEqual(result["error"]["code"], "internal")
+		self.assertTrue(result["error"]["retryable"])
+		self.assertFalse(self.invoices_with_local_id(event["local_id"]))
+
+	def test_a_lock_wait_timeout_goes_straight_back_to_the_till(self):
+		"""It has already waited 50 s: trying again here would run past the till's timeout."""
+		event = self.event(self.sale_payload())
+		timeout = frappe.QueryTimeoutError("(1205, 'Lock wait timeout exceeded')")
+		lock_wait, calls = self._deadlocking(1, timeout)
+		with lock_wait:
+			result = self.push_one(event)
+		self.assertEqual(len(calls), 1)
+		self.assertEqual(result["status"], "error")
+		self.assertEqual(result["error"]["code"], "internal")
+		self.assertTrue(result["error"]["retryable"])
+
+	def test_deadlock_retries_stop_at_the_time_budget(self):
+		event = self.event(self.sale_payload())
+		deadlock, calls = self._deadlocking(1)
+		with deadlock, patch.object(events, "DEADLOCK_BUDGET_SECONDS", 0):
+			result = self.push_one(event)
+		self.assertEqual(len(calls), 1)
+		self.assertEqual(result["status"], "error")
 		self.assertTrue(result["error"]["retryable"])
 		self.assertFalse(self.invoices_with_local_id(event["local_id"]))
 

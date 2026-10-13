@@ -2,8 +2,8 @@
 
 Each event either commits its document together with an `ok` Crenya Sync Event,
 or is rolled back to its savepoint and leaves only an `error` Sync Event (with
-`attempts` incremented) so that retries stay possible. A deadlock or lock wait is
-tried again at once (TRANSIENT_ATTEMPTS) before it becomes such an error.
+`attempts` incremented) so that retries stay possible. A deadlock is tried again at
+once (DEADLOCK_ATTEMPTS, within DEADLOCK_BUDGET_SECONDS) before it becomes such an error.
 """
 
 import random
@@ -20,7 +20,6 @@ from crenya_pos_api.sync.errors import (
 	SyncError,
 	classify_exception,
 	error_dict,
-	is_transient_db_error,
 )
 from crenya_pos_api.sync.hashing import payload_hash
 from crenya_pos_api.sync.validation import validate_envelope
@@ -34,9 +33,12 @@ MAX_NOTE_LENGTH = 2000
 # Tills selling the same items at once make ERPNext's stock posting deadlock now and then (load
 # test 2026-10: 4 tills, 2,000 sales). A deadlocked event is applied again here, after a short
 # random pause, before it goes back to the till as a retryable error: the till would wait out
-# its retry backoff (up to 15 minutes) for what takes a second here.
-TRANSIENT_ATTEMPTS = 3
-TRANSIENT_PAUSE_SECONDS = (0.05, 0.25)
+# its retry backoff (up to 15 minutes) for what takes a second here. Only deadlocks: a lock wait
+# timeout has already waited 50 s and goes straight back to the till. The budget keeps a batch of
+# 20 events well under the till's 110 s timeout and gunicorn's 120 s.
+DEADLOCK_ATTEMPTS = 3
+DEADLOCK_PAUSE_SECONDS = (0.05, 0.25)
+DEADLOCK_BUDGET_SECONDS = 20
 
 
 def empty_result(event_id, doctype=None):
@@ -250,7 +252,8 @@ def process_event(ctx, raw_event, index=0):
 			env["aggregate_type"],
 		)
 
-	for attempt in range(1, TRANSIENT_ATTEMPTS + 1):
+	started = time.monotonic()
+	for attempt in range(1, DEADLOCK_ATTEMPTS + 1):
 		savepoint = f"crenya_sync_event_{index}"
 		frappe.db.savepoint(savepoint)
 		try:
@@ -261,8 +264,13 @@ def process_event(ctx, raw_event, index=0):
 			return result
 		except Exception as exc:
 			_discard(savepoint)
-			if attempt < TRANSIENT_ATTEMPTS and is_transient_db_error(exc):
-				time.sleep(random.uniform(*TRANSIENT_PAUSE_SECONDS) * attempt)
+			pause = random.uniform(*DEADLOCK_PAUSE_SECONDS) * attempt
+			if (
+				attempt < DEADLOCK_ATTEMPTS
+				and isinstance(exc, frappe.QueryDeadlockError)
+				and time.monotonic() - started + pause < DEADLOCK_BUDGET_SECONDS
+			):
+				time.sleep(pause)
 				continue
 			return _failed(ctx, env, exc)
 		finally:

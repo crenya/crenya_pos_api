@@ -6,7 +6,9 @@ re-exported here so `crenya_pos_api.api.web_admin.<name>` resolves. Who manages 
 """
 
 from crenya_pos_api.api.web_admin.day_close import day_close, day_closes
+from crenya_pos_api.api.web_admin.loyalty import loyalty_programs, save_loyalty_program
 from crenya_pos_api.api.web_admin.outlets import devices, downloads, outlets, set_device_enabled
+from crenya_pos_api.api.web_admin.promotions import promotions, save_promotion, set_promotion_enabled
 from crenya_pos_api.api.web_admin.refused import refused_sales, retry_sale
 from crenya_pos_api.api.web_admin.settings import (
 	company_wording,
@@ -29,17 +31,22 @@ __all__ = [
 	"denominations",
 	"devices",
 	"downloads",
+	"loyalty_programs",
 	"outlet_settings",
 	"outlets",
+	"promotions",
 	"refused_sales",
 	"retry_sale",
 	"save_company_wording",
 	"save_denominations",
+	"save_loyalty_program",
 	"save_outlet_settings",
+	"save_promotion",
 	"save_scale_rules",
 	"save_terminal",
 	"scale_rules",
 	"set_device_enabled",
+	"set_promotion_enabled",
 	"staff_clear_pin",
 	"staff_get",
 	"staff_save",

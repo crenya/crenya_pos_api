@@ -20,6 +20,7 @@
   "attempts",
   "received_at",
   "processed_at",
+  "retry_requested_at",
   "error_section",
   "error_code",
   "error_message",
@@ -128,6 +129,14 @@
    "read_only": 1
   },
   {
+   "description": "Set from app.crenya.com (Refused sales → Retry): the till sends the event again at its next sync, through the sync_retry pull entity.",
+   "fieldname": "retry_requested_at",
+   "fieldtype": "Datetime",
+   "label": "Retry Requested At",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
    "fieldname": "error_section",
    "fieldtype": "Section Break",
    "label": "Error"
@@ -155,7 +164,7 @@
  "in_create": 1,
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-05 12:00:00.000000",
+ "modified": "2026-10-13 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya Sync Event",

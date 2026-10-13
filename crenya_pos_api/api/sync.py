@@ -54,6 +54,8 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"payment_terminals": True,
 			"scale_rules": True,
 			"uom_entity": True,
+			# app.crenya.com's Refused sales → Retry: the `sync_retry` pull entity (0.11.0)
+			"sync_retry": True,
 			"fawtara": COMPLIANCE_APP in installed,
 			# protocol 2: entities, aggregates and invoice data of other apps (crenya_pos_* hooks)
 			"extensions": True,

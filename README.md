@@ -942,11 +942,20 @@ by <user>" on the record.
 | `terminals(outlet)`, `save_terminal(outlet, terminal)` | payment terminals; the security token is write-only |
 | `company_wording(outlet)`, `save_company_wording(outlet, values, modified)` | the company's receipt wording (System Manager writes) |
 | `staff_get(user)`, `staff_save(user, privilege, pin, outlets)`, `staff_clear_pin(user)` | a user's shop till privilege (`cashier`: Crenya POS User; `manager`: also Crenya POS Manager), 6-digit PIN and shops; System Manager only, never Administrator or Guest, never System Manager given; the answer lists the `privileges` offered |
+| `day_closes(from_date, to_date, outlet)`, `day_close(shift)` | the shop's shifts (Z reports): sections `sales`, `payments` (per mode: expected, counted, difference), `returns`, `store_controls`, `paid_out`; every row has `kind` money or count, money as strings at the currency's decimals |
+| `refused_sales(outlet)`, `retry_sale(name)` | what the shop's tills pushed and ERPNext refused (newest 200), with a hint in English and Arabic; Retry asks the till to send it again |
 
 The settings form is ERPNext's own POS Profile fields (read from its meta: price list,
 customer, discount and rate changes, warehouse, taxes, cost center, rounding, write-off and the
 read-only item groups) and this app's custom fields (returns without an invoice, *Store
 controls*). The taxes template, cost center and write-off links are a System Manager's.
+
+**Retry (the `sync_retry` pull entity, 0.11.0).** Retry sets the refused event's
+`retry_requested_at`. A till that pulls `sync_retry` gets `{event_id, retry_requested_at}` for
+each of its own events asked to be retried and not processed since, and pushes that event again
+unchanged (the push is idempotent); once processed again the event comes as a tombstone. Every
+device type may pull it, and `features.sync_retry` says the server has it; a till that never
+pulls it is unaffected.
 
 Setup checks (`web/retail_checks.py`), each `{key, status, label, detail, fix}`:
 `price_list` (a selling list in the shop's currency), `tax_template` (of the company; none is a

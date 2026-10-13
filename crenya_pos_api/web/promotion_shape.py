@@ -66,6 +66,12 @@ def _decimal(value, field, required=False):
 	return parse_decimal(value, field, allow_none=not required)
 
 
+def _number(value) -> float:
+	"""A checked decimal string as the float a Pricing Rule field holds (ERPNext compares them as
+	numbers: a string "0" would read as set)."""
+	return float(as_decimal(value))
+
+
 def _flag(value):
 	return value in (True, 1, "1", "true")
 
@@ -176,7 +182,7 @@ def to_pricing_rule(data) -> dict:
 	free = data["kind"] == "free_item"
 	same = free and _flag(data.get("same_item"))
 	recursive = free and _flag(data.get("recursive"))
-	min_qty = as_decimal(data.get("min_qty"))
+	min_qty = _number(data.get("min_qty"))
 	rule = {
 		"title": data["title"].strip(),
 		"disable": 0 if _flag(data.get("enabled", True)) else 1,
@@ -191,23 +197,23 @@ def to_pricing_rule(data) -> dict:
 		"brands": [],
 		"price_or_product_discount": discount,
 		"rate_or_discount": rate_or_discount or "",
-		**{name: "0" for name in VALUE_FIELDS},
+		**dict.fromkeys(VALUE_FIELDS, 0.0),
 		"same_item": 1 if same else 0,
 		"free_item": None if (not free or same) else data["free_item"].strip(),
-		"free_qty": str(data.get("free_qty")) if free else "0",
+		"free_qty": _number(data.get("free_qty")) if free else 0.0,
 		"is_recursive": 1 if recursive else 0,
 		# whole free units for every `min_qty` bought (pos-core: floor per recurse_for)
-		"recurse_for": f"{min_qty:f}" if recursive else "0",
+		"recurse_for": min_qty if recursive else 0.0,
 		"round_free_qty": 1 if recursive else 0,
-		"min_qty": f"{min_qty:f}",
-		"max_qty": f"{as_decimal(data.get('max_qty')):f}",
+		"min_qty": min_qty,
+		"max_qty": _number(data.get("max_qty")),
 		"valid_from": data.get("valid_from") or None,
 		"valid_upto": data.get("valid_upto") or None,
 		"priority": str(data["priority"]) if data.get("priority") not in (None, "") else "",
 	}
 	rule[table] = [{field: target.strip()} for target in data["targets"]]
 	if value_field:
-		rule[value_field] = str(data["value"])
+		rule[value_field] = _number(data["value"])
 	return rule
 
 

@@ -59,9 +59,9 @@ class TestPromotionShape(unittest.TestCase):
 		self.assertEqual(rule["items"], [{"item_code": "CHIPS"}])
 		self.assertEqual((rule["item_groups"], rule["brands"]), ([], []))
 		self.assertEqual(rule["price_or_product_discount"], "Product")
-		self.assertEqual((rule["same_item"], rule["free_item"], rule["free_qty"]), (1, None, "1"))
-		self.assertEqual((rule["is_recursive"], rule["recurse_for"], rule["min_qty"]), (1, "2", "2"))
-		self.assertEqual(rule["discount_percentage"], "0")
+		self.assertEqual((rule["same_item"], rule["free_item"], rule["free_qty"]), (1, None, 1.0))
+		self.assertEqual((rule["is_recursive"], rule["recurse_for"], rule["min_qty"]), (1, 2.0, 2.0))
+		self.assertEqual((rule["discount_percentage"], rule["max_qty"]), (0.0, 0.0))
 		# the till takes it
 		self.assertTrue(rule_qualifies({**rule, "company": "Shop"}, "Shop"))
 
@@ -107,7 +107,7 @@ class TestPromotionShape(unittest.TestCase):
 		data = promotion(priority=3, valid_from="2026-10-01", min_qty="2")
 		rule = to_pricing_rule(data)
 		self.assertEqual(
-			(rule["rate_or_discount"], rule["discount_percentage"]), ("Discount Percentage", "10")
+			(rule["rate_or_discount"], rule["discount_percentage"]), ("Discount Percentage", 10.0)
 		)
 		self.assertEqual(rule["item_groups"], [{"item_group": "Snacks"}])
 		self.assertEqual(rule["priority"], "3")
@@ -140,7 +140,8 @@ class TestLoyaltyShape(unittest.TestCase):
 		record = to_loyalty_program(program())
 		self.assertEqual(record["auto_opt_in"], 1)
 		self.assertEqual(record["collection_rules"][0]["tier_name"], "Standard")
-		self.assertEqual(record["conversion_factor"], "0.010")
+		self.assertEqual(record["conversion_factor"], 0.01)
+		self.assertEqual(record["collection_rules"][0]["min_spent"], 0.0)
 
 	def test_tiers(self):
 		multi = program(

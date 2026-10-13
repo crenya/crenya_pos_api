@@ -10,7 +10,7 @@ modified?}; the answer adds `active` (today within its dates).
 
 from datetime import date
 
-from crenya_pos_api.utils.decimal import DecimalParseError, parse_decimal
+from crenya_pos_api.utils.decimal import DecimalParseError, as_decimal, parse_decimal
 
 MAX_NAME_LENGTH = 140
 # ERPNext's program type with one tier (its other type has several)
@@ -59,6 +59,12 @@ def _date(value, field, required=False):
 
 def _decimals(value) -> int:
 	return max(-value.as_tuple().exponent, 0)
+
+
+def _number(value) -> float:
+	"""A checked decimal string as the float the Loyalty Program field holds (ERPNext compares
+	them as numbers: its lowest tier check reads a string "0" as not 0)."""
+	return float(as_decimal(value))
 
 
 def _text(value):
@@ -141,13 +147,13 @@ def to_loyalty_program(data) -> dict:
 		{
 			"loyalty_program_name": _text(data["loyalty_program_name"]),
 			"auto_opt_in": 1 if data.get("auto_opt_in") else 0,
-			"conversion_factor": str(data["conversion_factor"]),
+			"conversion_factor": _number(data["conversion_factor"]),
 			"expiry_duration": int(data.get("expiry_duration") or 0),
 			"collection_rules": [
 				{
 					"tier_name": _text(tier["tier_name"]),
-					"min_spent": str(tier.get("min_spent") or "0"),
-					"collection_factor": str(tier["collection_factor"]),
+					"min_spent": _number(tier.get("min_spent")),
+					"collection_factor": _number(tier["collection_factor"]),
 				}
 				for tier in data["collection_rules"]
 			],

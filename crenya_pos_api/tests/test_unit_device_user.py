@@ -36,8 +36,18 @@ class TestSealPinHash(unittest.TestCase):
 
 class TestDeviceUserName(unittest.TestCase):
 	def name(self, device_id, site="shop.example.com"):
-		with mock.patch.object(frappe.local, "site", site, create=True):
+		# frappe.local is a proxy: mock.patch would delete a `site` it believes it created, so
+		# the attribute is set and put back by hand
+		missing = object()
+		saved = getattr(frappe.local, "site", missing)
+		frappe.local.site = site
+		try:
 			return device_user.device_user_name(device_id)
+		finally:
+			if saved is missing:
+				del frappe.local.site
+			else:
+				frappe.local.site = saved
 
 	def test_uuid_and_site_host(self):
 		uid = "0b8a3a55-2f65-4a3c-9c32-4f6a4f3c1c11"

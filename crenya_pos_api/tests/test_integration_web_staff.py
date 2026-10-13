@@ -10,6 +10,7 @@ from crenya_pos_api.api import web_admin
 from crenya_pos_api.sync.approvals import APPROVER_ROLE
 from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, verify_pin
 from crenya_pos_api.sync.context import POS_USER_ROLE
+from crenya_pos_api.tests.fixtures import signed_with_key
 from crenya_pos_api.tests.web_admin_case import MANAGER, SHOP2, SHOP2_CASHIER, WebAdminCase, ensure_user
 
 NEW_STAFF = "crenya.shop.newstaff@example.com"
@@ -86,6 +87,22 @@ class TestWebStaff(WebAdminCase):
 		):
 			with self.assertRaises(frappe.PermissionError):
 				call()
+
+	def test_device_key_refused(self):
+		# a System Manager's own API key (a till signed in as the owner) is not a browser session:
+		# staff never change from a till or another device, whatever the key's user may do
+		for header in ("token device-key:device-secret", "Basic ZGV2aWNlOnNlY3JldA==", "Bearer abc"):
+			for call in (
+				lambda: web_admin.staff_get(NEW_STAFF),
+				lambda: web_admin.staff_save(NEW_STAFF, "manager", PIN),
+				lambda: web_admin.staff_clear_pin(NEW_STAFF),
+			):
+				with signed_with_key(header), self.assertRaises(frappe.PermissionError, msg=header):
+					call()
+		self.assertEqual(roles_of(NEW_STAFF), set())
+		self.assertFalse(frappe.db.get_value("User", NEW_STAFF, PIN_HASH_FIELD))
+		# the same System Manager from the browser session
+		self.assertEqual(web_admin.staff_save(NEW_STAFF, "manager", PIN)["privilege"], "manager")
 
 	def test_cannot_edit_administrator(self):
 		for user in ("Administrator", "administrator", "Guest"):

@@ -161,6 +161,10 @@ class TestCrenyaCashiers(FrappeTestCase):
 			cashier_api.clear_pin(CASHIER)
 		frappe.set_user("Administrator")
 		self.assertTrue(stored_pin_hash(CASHIER))
+		# a System Manager's API key (a till's or device's) is not a browser session
+		with fixtures.signed_with_key(), self.assertRaises(frappe.PermissionError):
+			cashier_api.clear_pin(CASHIER)
+		self.assertTrue(stored_pin_hash(CASHIER))
 
 		result = cashier_api.clear_pin(CASHIER)
 		frappe.db.commit()

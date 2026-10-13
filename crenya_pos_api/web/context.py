@@ -22,6 +22,7 @@ __all__ = [
 	"is_system_manager",
 	"parse_flag",
 	"refuse",
+	"require_web_session",
 	"setting_value",
 ]
 
@@ -51,6 +52,18 @@ class WebAdminContext:
 
 def refuse(message):
 	frappe.throw(message, frappe.PermissionError, title=_("Not allowed"))
+
+
+def require_web_session():
+	"""Refuse a call signed with a key or token rather than a browser session. Staff, PINs and
+	roles change only from app.crenya.com, which calls with the signed-in user's own session
+	(their `sid` cookie) and never an `Authorization` header. A till or another device signs with
+	its user's API key (`token <key>:<secret>`), so any `Authorization` header (token, Basic,
+	Bearer) is refused here: neither a device nor a manager PIN typed at one changes an
+	account."""
+	if frappe.get_request_header("Authorization"):
+		# owner decision 2026-10-13: staff and accounts change on app.crenya.com alone
+		refuse(_("Staff and accounts are managed on app.crenya.com (Restaurants → Staff, People)"))
 
 
 def invalid(message):

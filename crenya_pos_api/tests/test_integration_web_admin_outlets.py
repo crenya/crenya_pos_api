@@ -13,6 +13,7 @@ from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import web_admin
 from crenya_pos_api.api.web_admin import scope
 from crenya_pos_api.sync import central, entitlement
+from crenya_pos_api.sync.approvals import APPROVER_ROLE
 from crenya_pos_api.sync.context import DEVICE_DOCTYPE
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.web_admin_case import CASHIER, MANAGER, SHOP2, SHOP2_MANAGER, WebAdminCase
@@ -77,6 +78,26 @@ class TestWebAdminOutlets(WebAdminCase):
 			web_admin.devices(SHOP2)
 		self.as_user(SHOP2_MANAGER)
 		self.assertIn(SHOP2, names(web_admin.outlets()))
+
+	def test_manager_is_a_system_user_without_privileged_roles(self):
+		self.assertEqual(frappe.db.get_value("Role", APPROVER_ROLE, "desk_access"), 1)
+		self.assertEqual(frappe.db.get_value("User", MANAGER, "user_type"), "System User")
+		self.assertFalse({"System Manager", "Administrator"} & set(frappe.get_roles(MANAGER)))
+		# the role grants nothing by itself
+		self.assertFalse(frappe.get_all("DocPerm", filters={"role": APPROVER_ROLE}))
+		self.assertFalse(
+			frappe.get_all("Custom DocPerm", filters={"role": APPROVER_ROLE, "permlevel": 0, "write": 1})
+		)
+
+	def test_desk_access_patch_on_an_existing_site(self):
+		from crenya_pos_api.patches.v0_11 import manager_desk_access
+
+		frappe.db.set_value("Role", APPROVER_ROLE, "desk_access", 0)
+		frappe.db.set_value("User", MANAGER, "user_type", "Website User")
+		manager_desk_access.execute()
+		frappe.db.commit()
+		self.assertEqual(frappe.db.get_value("Role", APPROVER_ROLE, "desk_access"), 1)
+		self.assertEqual(frappe.db.get_value("User", MANAGER, "user_type"), "System User")
 
 	def test_downloads_reads_retail_manifest(self):
 		answer = {"version": "0.9.0", "installers": []}

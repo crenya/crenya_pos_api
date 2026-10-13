@@ -191,6 +191,15 @@ def save_outlet_settings(outlet: str, values: dict, modified: str) -> dict:
 	ctx = manage(outlet)
 	values = frappe.parse_json(values)
 	_problem(values, settings_fields(), is_system_manager(), OWNER_ONLY, READ_ONLY)
+	price_list = values.get("selling_price_list")
+	if price_list:
+		row = frappe.db.get_value("Price List", price_list, ["selling", "enabled", "currency"], as_dict=True)
+		if not row or not row.selling or not row.enabled or row.currency != ctx.currency:
+			invalid(
+				_("Price List {0} is not an enabled selling price list in {1}").format(
+					price_list, ctx.currency
+				)
+			)
 	check_modified("POS Profile", ctx.outlet, modified)
 	if values:
 		profile = frappe.get_doc("POS Profile", ctx.outlet)

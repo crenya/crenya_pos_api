@@ -76,6 +76,25 @@ class TestWebAdminSettings(WebAdminCase):
 			with self.assertRaises(frappe.ValidationError, msg=values):
 				web_admin.save_outlet_settings(self.profile.name, values, answer["modified"])
 
+	def test_price_list_of_another_currency_refused(self):
+		name = "_Test Crenya Web AED Selling"
+		if not frappe.db.exists("Price List", name):
+			frappe.get_doc(
+				{
+					"doctype": "Price List",
+					"price_list_name": name,
+					"currency": "AED",
+					"selling": 1,
+					"enabled": 1,
+				}
+			).insert(ignore_permissions=True)
+			frappe.db.commit()
+		answer = web_admin.outlet_settings(self.profile.name)
+		with self.assertRaises(frappe.ValidationError):
+			web_admin.save_outlet_settings(
+				self.profile.name, {"selling_price_list": name}, answer["modified"]
+			)
+
 	def test_stale_modified_refused(self):
 		with self.assertRaises(frappe.TimestampMismatchError):
 			web_admin.save_outlet_settings(

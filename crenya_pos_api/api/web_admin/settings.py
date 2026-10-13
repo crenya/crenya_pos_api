@@ -32,7 +32,7 @@ from crenya_pos_api.web.context import (
 	setting_value,
 )
 from crenya_pos_api.web.retail_checks import retail_setup_checks
-from crenya_pos_api.web.setup_checks import money_setup_checks
+from crenya_pos_api.web.setup_checks import fraction_decimals, money_setup_checks
 
 # when a saved setting reaches the outlet's tills: a till fetches the bootstrap (which carries
 # the outlet's settings) at the start of every sync cycle
@@ -304,6 +304,13 @@ def _denominations(ctx) -> dict:
 	}
 
 
+def denomination_precision(currency) -> int:
+	"""The decimals a denomination of `currency` may have: the currency's own (its Fraction Units:
+	OMR 1000 baisa, 3), at least the money precision ERPNext books it at."""
+	units = fraction_decimals(frappe.get_cached_value("Currency", currency, "fraction_units"))
+	return max(units or 0, money_precision(currency))
+
+
 def denomination_problem(row, precision) -> str | None:
 	"""Why a denomination row cannot be saved (pure), or None: its value a positive decimal
 	string with at most the currency's `precision` decimals, a label, a kind of
@@ -353,7 +360,7 @@ def save_denominations(outlet: str, rows: list) -> dict:
 	rows = frappe.parse_json(rows)
 	if not isinstance(rows, list):
 		invalid(_("rows must be a list"))
-	precision = money_precision(ctx.currency)
+	precision = denomination_precision(ctx.currency)
 	for idx, row in enumerate(rows, start=1):
 		problem = denomination_problem(row, precision)
 		if problem:
@@ -457,15 +464,17 @@ def save_terminal(outlet: str, terminal: dict) -> dict:
 	unknown = sorted(set(data) - allowed - {"name", "modified", SECRET_FIELD})
 	if unknown:
 		invalid(_("Not a terminal field: {0}").format(", ".join(unknown)))
-	if data.get("pos_profile") not in (None, "", ctx.outlet):
-		refuse(_("Terminal must be of outlet {0}, or of every outlet").format(ctx.outlet))
-	shared = not data.get("pos_profile")
 	name = data.get("name")
+	row = None
 	if name:
 		row = frappe.db.get_value(TERMINAL_DOCTYPE, name, ["company", "pos_profile"], as_dict=True)
 		if row is None or row.company != ctx.company or row.pos_profile not in (None, "", ctx.outlet):
 			refuse(_("Terminal {0} is not a terminal of outlet {1}").format(name, ctx.outlet))
-		shared = shared or not row.pos_profile
+	# the outlet it serves: as sent, else (a change) as stored
+	pos_profile = data.get("pos_profile") if "pos_profile" in data or row is None else row.pos_profile
+	if pos_profile not in (None, "", ctx.outlet):
+		refuse(_("Terminal must be of outlet {0}, or of every outlet").format(ctx.outlet))
+	shared = not pos_profile or (row is not None and not row.pos_profile)
 	if shared and not is_system_manager():
 		refuse(_("A terminal of every outlet of {0} is changed by a System Manager only").format(ctx.company))
 	if name:
@@ -475,7 +484,7 @@ def save_terminal(outlet: str, terminal: dict) -> dict:
 		doc = frappe.new_doc(TERMINAL_DOCTYPE)
 	doc.update({key: value for key, value in data.items() if key in allowed})
 	doc.company = ctx.company
-	doc.pos_profile = data.get("pos_profile") or None
+	doc.pos_profile = pos_profile or None
 	if data.get(SECRET_FIELD):
 		doc.set(SECRET_FIELD, data[SECRET_FIELD])
 	doc.save(ignore_permissions=True)

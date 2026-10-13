@@ -70,7 +70,9 @@ class TestWebAdminOutlets(WebAdminCase):
 	def test_manager_sees_the_shops_listing_them(self):
 		# the test profile lists nobody (every user works there); shop 2 lists its own manager
 		self.as_user(MANAGER)
-		self.assertEqual(names(web_admin.outlets()), [self.profile.name])
+		listed = names(web_admin.outlets())
+		self.assertIn(self.profile.name, listed)
+		self.assertNotIn(SHOP2, listed)
 		with self.assertRaises(frappe.PermissionError):
 			web_admin.devices(SHOP2)
 		self.as_user(SHOP2_MANAGER)

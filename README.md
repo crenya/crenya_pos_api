@@ -910,6 +910,46 @@ shared by the retail web admin and other apps' (crenya_restaurant imports them):
   whether ERPNext's precision and rounding of the currency are the tills' (Banker's Rounding at
   the currency's decimals), read live; `check(...)` builds a product's own rows.
 
+- `devices.devices_answer(outlet, can_manage, type_order, type_labels)` and
+  `devices.set_device_enabled(ctx, device, enabled, modified)`: an outlet's devices with their
+  open shift and the plan's terminal cap, and deactivating (never while in use: a shift open or
+  seen within 24 hours) or reactivating one within the plan's caps. Never deletes a device.
+- `retail_checks.retail_setup_checks(profile)`: a shop's own setup checks (below).
+
+#### Shops on app.crenya.com (0.11.0)
+
+`crenya_pos_api.api.web_admin` answers app.crenya.com's Shops pages with the method names and
+answer shapes of `crenya_restaurant.api.web_admin`, so the web's till-admin pages read both
+products alike. A shop is a POS Profile that is not a restaurant outlet. Who manages one: a
+System Manager every shop; a **Crenya POS Manager** the shops whose Applicable for Users lists
+them (or lists nobody). For a shop, reading is managing; a cashier gets no outlets. Every write
+runs after that check with `ignore_permissions`, keeps the DocType's own validation, needs the
+`modified` it was read with where the record has one, and comments "Changed from app.crenya.com
+by <user>" on the record.
+
+| method | what |
+|---|---|
+| `outlets()` | the shops the user manages: `{outlets: [{name, outlet_name, company, currency, can_manage}]}` |
+| `devices(outlet)`, `set_device_enabled(outlet, device, enabled, modified)` | the shop's tills; deactivate / reactivate within the plan's caps |
+| `downloads()` | the newest stable crenya pos installers (the central manifest) |
+| `outlet_settings(outlet)`, `save_outlet_settings(outlet, values, modified)` | the settings form and `setup_checks` (money checks + the shop's own) |
+| `scale_rules(outlet)`, `save_scale_rules(outlet, rows, modified)` | the scale barcode rules, checked by the till's own rules |
+| `denominations(outlet)`, `save_denominations(outlet, rows)` | the cash denominations of the shop's currency (System Manager writes) |
+| `terminals(outlet)`, `save_terminal(outlet, terminal)` | payment terminals; the security token is write-only |
+| `company_wording(outlet)`, `save_company_wording(outlet, values, modified)` | the company's receipt wording (System Manager writes) |
+
+The settings form is ERPNext's own POS Profile fields (read from its meta: price list,
+customer, discount and rate changes, warehouse, taxes, cost center, rounding, write-off and the
+read-only item groups) and this app's custom fields (returns without an invoice, *Store
+controls*). The taxes template, cost center and write-off links are a System Manager's.
+
+Setup checks (`web/retail_checks.py`), each `{key, status, label, detail, fix}`:
+`price_list` (a selling list in the shop's currency), `tax_template` (of the company; none is a
+warning), `warehouse` (not a group), `default_customer`, `payment_modes` (each with an account of
+the company), `write_off` (when the rounded total is on), `cashiers` (an enabled user with a
+PIN who works there) and `approver` (a Crenya POS Manager with a PIN; missing when an approval
+is switched on, else a warning).
+
 #### Extending crenya_pos_api
 
 Another Frappe app (`required_apps = ["crenya_pos_api"]`) can add pull

@@ -46,8 +46,11 @@ class TestDeviceUserName(unittest.TestCase):
 	def test_ids_that_differ_only_in_case_are_one_user(self):
 		self.assertEqual(self.name("ABCDEF12-3456"), self.name("abcdef12-3456"))
 
-	def test_a_site_with_no_dot_gets_local(self):
-		self.assertEqual(self.name("abcdef12-3456", site="test_site"), "device-abcdef12-3456@test_site.local")
+	def test_a_site_with_no_dot_gets_local_and_a_domain_safe_name(self):
+		self.assertEqual(self.name("abcdef12-3456", site="test_site"), "device-abcdef12-3456@test-site.local")
+		self.assertEqual(
+			self.name("abcdef12-3456", site="Shop.Example.com"), "device-abcdef12-3456@shop.example.com"
+		)
 
 	def test_an_id_a_mailbox_cannot_hold_is_hashed(self):
 		long_id = "a" * 100

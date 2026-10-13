@@ -91,8 +91,9 @@ def key_kind(user=None):
 
 
 def site_host():
-	"""The site's host (its name); a name with no dot (a bench test site) gets `.local`."""
-	host = str(frappe.local.site)
+	"""The site's host (its name) as a mail domain accepts it: a character a domain cannot hold
+	(the underscore of a bench test site) becomes a dash, and a name with no dot gets `.local`."""
+	host = re.sub(r"[^a-z0-9.-]", "-", str(frappe.local.site).lower())
 	return host if "." in host else f"{host}.local"
 
 

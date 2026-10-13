@@ -84,3 +84,12 @@ class TestApprovalsBootstrap(SyncCase):
 		self.assertTrue(manager["enabled"])
 		# a cashier holds Crenya POS User alone
 		self.assertEqual(next(row for row in records if row["name"] == cashier)["roles"], ["Crenya POS User"])
+
+	def test_patch_switches_every_approval_on_for_existing_profiles(self):
+		from crenya_pos_api.patches.v0_11 import store_controls
+
+		self.set_profile(crenya_approve_no_sale=0, crenya_approve_return=0)
+		store_controls.execute()
+		store_controls.execute()  # idempotent
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		self.assertEqual(len(self.approvals()["required"]), len(APPROVAL_ACTIONS))

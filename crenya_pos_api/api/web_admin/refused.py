@@ -24,7 +24,7 @@ from crenya_pos_api.sync.errors import (
 	VALIDATION,
 )
 from crenya_pos_api.sync.events import STATUS_ERROR
-from crenya_pos_api.sync.retry import RETRY_FIELD
+from crenya_pos_api.sync.retry import RETRY_FIELD, retry_pending
 from crenya_pos_api.utils.dates import format_db_datetime
 from crenya_pos_api.web.devices import wire
 
@@ -108,6 +108,7 @@ def _refused(ctx) -> dict:
 			"error_code",
 			"error_message",
 			RETRY_FIELD,
+			"processed_at",
 		],
 		order_by="received_at desc",
 		limit=MAX_REFUSED,
@@ -128,6 +129,9 @@ def _refused(ctx) -> dict:
 				"hint": hint,
 				"hint_ar": hint_ar,
 				"retry_requested_at": wire(row.get(RETRY_FIELD)),
+				# asked and not processed since: the till has not sent it again yet (the rule of the
+				# `sync_retry` entity); false again once a re-push is refused, so Retry comes back
+				"retry_pending": retry_pending(row.get(RETRY_FIELD), row.get("processed_at")),
 			}
 		)
 	return {"outlet": ctx.outlet, "rows": out}

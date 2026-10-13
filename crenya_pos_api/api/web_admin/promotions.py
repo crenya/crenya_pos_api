@@ -148,8 +148,16 @@ def save_promotion(outlet: str, promotion: dict) -> dict:
 	if data.get("name"):
 		doc = _own_rule(ctx, data["name"], data.get("modified"))
 	else:
+		price_list = ctx.profile.get("selling_price_list") or None
+		if not price_list and not is_system_manager():
+			# a rule without a price list applies to every price list of the company
+			refuse(
+				_(
+					"Outlet {0} has no selling price list: only a System Manager creates a promotion for every price list"
+				).format(ctx.outlet)
+			)
 		doc = frappe.new_doc(RULE_DOCTYPE)
-		doc.for_price_list = ctx.profile.get("selling_price_list") or None
+		doc.for_price_list = price_list
 	doc.update(to_pricing_rule(data))
 	doc.company = ctx.company
 	doc.currency = ctx.currency

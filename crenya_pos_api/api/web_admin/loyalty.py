@@ -1,6 +1,8 @@
 """A shop's loyalty programs on app.crenya.com: ERPNext's Loyalty Programs of the shop's company
-(`web.loyalty_shape`), listed, created and changed by the shop's managers (`scope.manage`), so no
-owner needs the desk to set loyalty up. The tills use them as before (`sync/loyalty.py`).
+(`web.loyalty_shape`), so no owner needs the desk to set loyalty up. The tills use them as before
+(`sync/loyalty.py`). A shop's managers (`scope.manage`) and Accounts Managers read them; a program
+is company-wide accounting (its redemptions are booked to the company's accounts), so only a
+System Manager or an Accounts Manager creates or changes one (`can_edit`).
 
 A program is never deleted or renamed here: set its `to_date` to end it. Its redemption account
 and cost center must be the company's (not groups); ERPNext's own checks still decide.
@@ -12,18 +14,32 @@ import frappe
 from frappe import _
 from frappe.utils import cint, getdate, today
 
-from crenya_pos_api.api.web_admin.scope import manage
+from crenya_pos_api.api.web_admin.scope import manage, shop_profiles
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.utils.dates import format_date, format_db_datetime
 from crenya_pos_api.utils.decimal import format_money, format_number
-from crenya_pos_api.web.context import check_modified, invalid, refuse
+from crenya_pos_api.web.context import WebAdminContext, check_modified, invalid, refuse
 from crenya_pos_api.web.loyalty_shape import PLAIN_FIELDS, loyalty_problem, to_loyalty_program
 from crenya_pos_api.web.reports import money_view
 
 PROGRAM_DOCTYPE = "Loyalty Program"
+# who creates and changes a loyalty program
+WRITE_ROLES = ("System Manager", "Accounts Manager")
 TIER_DOCTYPE = "Loyalty Program Collection"
 # how many names each Link choice offers (a datalist; any other may be typed)
 MAX_CHOICES = 200
+
+
+def _can_edit() -> bool:
+	return bool(set(frappe.get_roles()) & set(WRITE_ROLES))
+
+
+def _context(outlet):
+	"""The shop's WebAdminContext for a manager of it (`manage`) or an Accounts Manager of any shop;
+	frappe.PermissionError otherwise."""
+	if "Accounts Manager" in frappe.get_roles() and isinstance(outlet, str) and shop_profiles(outlet):
+		return WebAdminContext(frappe.session.user, outlet)
+	return manage(outlet)
 
 
 def _program_types() -> list:
@@ -70,6 +86,7 @@ def _programs(ctx) -> dict:
 	on_date = getdate(today())
 	return {
 		"currency": money_view(ctx.currency),
+		"can_edit": _can_edit(),
 		"rows": [
 			{
 				"name": row.name,
@@ -130,14 +147,17 @@ def _check_links(ctx, data):
 def loyalty_programs(outlet: str) -> dict:
 	"""The loyalty programs of the shop's company, with whether each is active today, and the
 	choices the editor offers."""
-	return _programs(manage(outlet))
+	return _programs(_context(outlet))
 
 
 @frappe.whitelist(methods=["POST"])
 def save_loyalty_program(outlet: str, program: dict) -> dict:
 	"""Create (no `name`) or change (with the `modified` `loyalty_programs` answered) a loyalty
-	program of the shop's company. Answers `loyalty_programs`."""
-	ctx = manage(outlet)
+	program of the shop's company; a System Manager's or an Accounts Manager's. Answers
+	`loyalty_programs`."""
+	ctx = _context(outlet)
+	if not _can_edit():
+		refuse(_("Only a System Manager or an Accounts Manager creates or changes a loyalty program"))
 	data = frappe.parse_json(program)
 	problem = loyalty_problem(data, money_precision(ctx.currency), _program_types())
 	if problem:

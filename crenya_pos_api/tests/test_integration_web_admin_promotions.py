@@ -17,6 +17,7 @@ from crenya_pos_api.tests.sync_case import SyncCase
 from crenya_pos_api.tests.web_admin_case import CASHIER, MANAGER, ensure_user
 
 TITLE = "_Test Crenya Web"
+ACCOUNTS = "crenya.shop.accounts@example.com"
 
 
 def promotion(**over):
@@ -109,6 +110,60 @@ class TestWebAdminPromotions(SyncCase):
 		with self.assertRaises(frappe.TimestampMismatchError):
 			web_admin.set_promotion_enabled(self.profile.name, row["name"], True, row["modified"])
 
+	def test_shop_without_price_list_refused_for_a_manager(self):
+		frappe.set_user("Administrator")
+		saved = frappe.db.get_value("POS Profile", self.profile.name, "selling_price_list")
+		frappe.db.set_value(
+			"POS Profile", self.profile.name, "selling_price_list", None, update_modified=False
+		)
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		frappe.db.commit()
+
+		def restore():
+			frappe.db.set_value(
+				"POS Profile", self.profile.name, "selling_price_list", saved, update_modified=False
+			)
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+			frappe.db.commit()
+
+		self.addCleanup(restore)
+		frappe.set_user(MANAGER)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.save_promotion(self.profile.name, promotion())
+		self.assertFalse(frappe.get_all("Pricing Rule", filters={"title": ["like", f"{TITLE}%"]}))
+
+	def test_every_price_list_promotion_refused_for_a_manager(self):
+		frappe.set_user("Administrator")
+		rule = frappe.get_doc(
+			{
+				"doctype": "Pricing Rule",
+				"title": f"{TITLE} every list",
+				"apply_on": "Item Code",
+				"items": [{"item_code": fixtures.CHIPS}],
+				"selling": 1,
+				"company": fixtures.COMPANY,
+				"currency": fixtures.CURRENCY,
+				"price_or_product_discount": "Price",
+				"rate_or_discount": "Discount Percentage",
+				"discount_percentage": 5,
+			}
+		).insert(ignore_permissions=True)
+		frappe.db.commit()
+		frappe.set_user(MANAGER)
+		row = row_titled(web_admin.promotions(self.profile.name), f"{TITLE} every list")
+		self.assertFalse(row["can_edit"])
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.set_promotion_enabled(self.profile.name, rule.name, False, row["modified"])
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.save_promotion(
+				self.profile.name,
+				promotion(title=f"{TITLE} every list", name=rule.name, modified=row["modified"]),
+			)
+		frappe.set_user("Administrator")
+		self.assertTrue(
+			row_titled(web_admin.promotions(self.profile.name), f"{TITLE} every list")["can_edit"]
+		)
+
 	def test_coupon_refused(self):
 		with self.assertRaises(frappe.ValidationError):
 			web_admin.save_promotion(self.profile.name, promotion(coupon_code_based=1))
@@ -156,6 +211,7 @@ class TestWebAdminLoyalty(SyncCase):
 	def setUpClass(cls):
 		super().setUpClass()
 		ensure_user(MANAGER, [POS_USER_ROLE, APPROVER_ROLE])
+		ensure_user(ACCOUNTS, ["Accounts Manager"])
 		frappe.db.commit()
 
 	def tearDown(self):
@@ -180,15 +236,24 @@ class TestWebAdminLoyalty(SyncCase):
 		row.update(over)
 		return row
 
-	def test_manager_lists_creates_and_changes_programs(self):
+	def test_manager_reads_programs_but_never_writes(self):
 		frappe.set_user(MANAGER)
 		answer = web_admin.loyalty_programs(self.profile.name)
+		self.assertFalse(answer["can_edit"])
 		existing = next(row for row in answer["rows"] if row["name"] == fixtures.LOYALTY_PROGRAM)
 		self.assertTrue(existing["active"])
 		self.assertEqual(existing["collection_rules"][0]["min_spent"], "0.000")
 		self.assertIn("Multiple Tier Program", answer["choices"]["program_types"])
 		self.assertIn(fixtures.LOYALTY_ACCOUNT, answer["choices"]["expense_accounts"])
+		data = self.program()
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.save_loyalty_program(self.profile.name, data)
+		self.assertFalse(frappe.db.exists("Loyalty Program", data["loyalty_program_name"]))
 
+	def test_accounts_manager_creates_and_changes_programs(self):
+		frappe.set_user(ACCOUNTS)
+		answer = web_admin.loyalty_programs(self.profile.name)
+		self.assertTrue(answer["can_edit"])
 		data = self.program()
 		answer = web_admin.save_loyalty_program(self.profile.name, data)
 		saved = next(row for row in answer["rows"] if row["name"] == data["loyalty_program_name"])
@@ -207,9 +272,12 @@ class TestWebAdminLoyalty(SyncCase):
 			web_admin.save_loyalty_program(
 				self.profile.name, {**data, "name": saved["name"], "modified": saved["modified"]}
 			)
+		# an Accounts Manager reads no outlet that is not a shop
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.loyalty_programs("_Test Crenya No Such Outlet")
 
 	def test_links_of_another_company_or_groups_refused(self):
-		frappe.set_user(MANAGER)
+		frappe.set_user(ACCOUNTS)
 		group = f"Indirect Expenses - {fixtures.ABBR}"
 		with self.assertRaises(frappe.ValidationError):
 			web_admin.save_loyalty_program(self.profile.name, self.program(expense_account=group))

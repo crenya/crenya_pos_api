@@ -179,6 +179,21 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
 | `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
 
+#### What a till never pulls; what a cashier needs no desk role for (0.11.0)
+
+- The `item` pull leaves out a **variant template** (`has_variants`) and a **serial-numbered
+  item** (`has_serial_no`): ERPNext refuses either on a till's sale. The `item_price` pull leaves
+  out a price for **one customer, supplier or batch** (`customer`, `supplier`, `batch_no`): the
+  till would charge it to everyone. Each such row is sent as a **tombstone** instead of a record,
+  so a till that already holds it drops it. Both pulls' cursors are scoped (`sellable`): a cursor
+  issued before 0.11.0 restarts its records once (tombstones keep their position), so a till
+  drops what it already held. An extension's `EntitySpec` can do the same with `excluded(row)`.
+- A **customer** captured at the till is created for the authorised device
+  (`ignore_permissions`), like the till's sales: a cashier whose only role is Crenya POS User
+  needs no Customer right on the desk. The customer gets a comment naming the till.
+- The **return lookup** (`returns.get_invoice_for_return`) is authorised by the device, not the
+  cashier's desk roles: the invoice and its POS Profile must be the device's company's.
+
 #### Device ids
 
 A device id is the device's UUID. Ids that differ only in case are the same

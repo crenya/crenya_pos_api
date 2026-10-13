@@ -69,6 +69,8 @@ class EntitySpec:
 	- `cursor_scope(ctx)`: a short string the records depend on besides the rows themselves
 	  (default None). A cursor issued under another scope restarts the records from the
 	  beginning (tombstones keep their position), so the device gets every record again.
+	- `excluded(row)`: True for a row the device must not hold (default never). It is sent as a
+	  tombstone instead of a record, so a device that already holds it drops it.
 	"""
 
 	doctype = None
@@ -88,6 +90,14 @@ class EntitySpec:
 	def cursor_scope(self, ctx):
 		return None
 
+	def excluded(self, row):
+		return False
+
+
+# the cursor scope of the item and price pulls since they leave out what a till cannot sell
+# (0.11.0): an older cursor restarts once, so a till drops what it already held
+SELLABLE_SCOPE = "sellable"
+
 
 class ItemSpec(EntitySpec):
 	doctype = "Item"
@@ -102,10 +112,20 @@ class ItemSpec(EntitySpec):
 		"has_batch_no",
 		"has_expiry_date",
 		"disabled",
+		"has_variants",
+		"has_serial_no",
 	)
 
 	def filters(self, table, ctx):
 		return _profile_item_conditions(table, ctx)
+
+	def excluded(self, row):
+		"""A variant template is never sold itself, and the till cannot record serial numbers:
+		ERPNext would refuse the sale."""
+		return bool(cint(row.get("has_variants")) or cint(row.get("has_serial_no")))
+
+	def cursor_scope(self, ctx):
+		return SELLABLE_SCOPE
 
 	def select(self, table):
 		columns = super().select(table)
@@ -234,10 +254,28 @@ class BatchSpec(EntitySpec):
 
 class ItemPriceSpec(EntitySpec):
 	doctype = "Item Price"
-	fields = ("name", "item_code", "uom", "price_list_rate", "currency", "valid_from", "valid_upto")
+	fields = (
+		"name",
+		"item_code",
+		"uom",
+		"price_list_rate",
+		"currency",
+		"valid_from",
+		"valid_upto",
+		"customer",
+		"supplier",
+		"batch_no",
+	)
 
 	def filters(self, table, ctx):
 		return [table.price_list == (ctx.profile.selling_price_list or "")]
+
+	def excluded(self, row):
+		"""A price for one customer, supplier or batch: the till would charge it to everyone."""
+		return bool(row.get("customer") or row.get("supplier") or row.get("batch_no"))
+
+	def cursor_scope(self, ctx):
+		return SELLABLE_SCOPE
 
 	def build(self, rows, ctx):
 		precision = money_precision()
@@ -767,10 +805,15 @@ def pull_changes(ctx, entity, cursor_token=None, limit=None):
 		seen = {row.name for row in rows}
 		rows = rows + [row for row in stock_rows if row.name not in seen]
 
+	# rows the device must not hold go as tombstones (after the position above is taken)
+	dropped = [row.name for row in rows if spec.excluded(row)]
+	if dropped:
+		rows = [row for row in rows if not spec.excluded(row)]
+
 	return {
 		"entity": entity,
 		"records": spec.build(rows, ctx),
-		"tombstones": _still_deleted(spec.doctype, [row.deleted_name for row in tomb_rows]),
+		"tombstones": _still_deleted(spec.doctype, [row.deleted_name for row in tomb_rows]) + dropped,
 		"next_cursor": encode_cursor(next_cursor),
 		"has_more": bool(records_more or tombs_more or stock_more),
 		"server_time": utc_now_iso(),

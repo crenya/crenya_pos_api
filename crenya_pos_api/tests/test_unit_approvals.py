@@ -73,8 +73,8 @@ class TestApprovalActions(unittest.TestCase):
 			],
 		)
 		self.assertEqual(answer["approver_roles"], ["Crenya POS Manager"])
-		# a profile without the fields (not migrated yet) requires every action: the default
-		self.assertEqual(len(approvals.approvals_bootstrap(profile())["required"]), len(APPROVAL_ACTIONS))
+		# a profile without the fields (not migrated yet) requires nothing: today's behaviour
+		self.assertEqual(approvals.approvals_bootstrap(profile())["required"], [])
 
 	def test_blank_max_discount_is_null(self):
 		for blank in (None, 0, 0.0, ""):

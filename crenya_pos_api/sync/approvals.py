@@ -40,14 +40,9 @@ def max_discount_percent(profile):
 
 
 def required_actions(profile):
-	"""The action keys whose approval Check is on, in APPROVAL_ACTIONS order (a profile not yet
-	migrated, without the field, requires it: the field's default)."""
-	required = []
-	for key, field, _label, _label_ar in APPROVAL_ACTIONS:
-		value = profile.get(field)
-		if value is None or cint(value):
-			required.append(key)
-	return required
+	"""The action keys whose approval Check is on, in APPROVAL_ACTIONS order. A profile not yet
+	migrated (without the fields) requires none: today's behaviour, as the patch keeps it."""
+	return [key for key, field, _label, _label_ar in APPROVAL_ACTIONS if cint(profile.get(field))]
 
 
 def approvals_bootstrap(profile) -> dict:

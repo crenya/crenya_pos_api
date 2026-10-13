@@ -336,8 +336,10 @@ table's order. Crenya POS Manager opens a retail till like Crenya POS User (a co
 of type `till` only), so the `cashier` pull sends it in a manager's `roles`; the cashier cursor
 of a till restarts once because its role set changed. `approvals.RETAIL_PRIVILEGES` maps the
 staff privileges to roles: cashier = Crenya POS User, manager = Crenya POS User + Crenya POS
-Manager. Patch `v0_11.store_controls` creates the role and fields on existing sites and switches
-every approval on for existing profiles.
+Manager. The approval Checks default to on for POS Profiles created from 0.11.0. Patch
+`v0_11.store_controls` creates the role and fields on existing sites and switches every approval
+**off** for the profiles that existed before: their tills ask for nothing new until the owner
+turns actions on.
 
 Request-level errors carry `error: {code, message, retryable}` in the JSON
 body next to Frappe's `exc_type`; per-event errors are returned inside the

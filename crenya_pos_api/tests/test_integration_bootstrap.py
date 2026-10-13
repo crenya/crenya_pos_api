@@ -7,7 +7,8 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module creny
 import frappe
 
 from crenya_pos_api.api import device as device_api
-from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE
+from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE, approvals_bootstrap
+from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.sync_case import SyncCase, new_id
 
 MANAGER = "crenya.manager.test@example.com"
@@ -85,11 +86,28 @@ class TestApprovalsBootstrap(SyncCase):
 		# a cashier holds Crenya POS User alone
 		self.assertEqual(next(row for row in records if row["name"] == cashier)["roles"], ["Crenya POS User"])
 
-	def test_patch_switches_every_approval_on_for_existing_profiles(self):
+	def test_patch_leaves_existing_profiles_without_approvals(self):
+		"""An existing profile keeps today's behaviour: the patch switches every approval off, so
+		an updated till asks for nothing new until the owner turns actions on."""
 		from crenya_pos_api.patches.v0_11 import store_controls
 
-		self.set_profile(crenya_approve_no_sale=0, crenya_approve_return=0)
+		self.set_profile(**{field: 1 for _key, field, *_ in APPROVAL_ACTIONS})
+		self.assertEqual(len(self.approvals()["required"]), len(APPROVAL_ACTIONS))
 		store_controls.execute()
 		store_controls.execute()  # idempotent
 		frappe.clear_document_cache("POS Profile", self.profile.name)
-		self.assertEqual(len(self.approvals()["required"]), len(APPROVAL_ACTIONS))
+		self.assertEqual(self.approvals()["required"], [])
+
+	def test_new_profile_has_every_approval_on(self):
+		"""A POS Profile created after this version starts with every approval on (the default)."""
+		name = f"_Test Crenya POS New {new_id()[:8]}"
+		created = fixtures.ensure_pos_profile(fixtures.ensure_company(), self.walk_in, name=name)
+		self.addCleanup(frappe.delete_doc, "POS Profile", name, force=True, ignore_permissions=True)
+		stored = frappe.db.get_value(
+			"POS Profile", created.name, [f for _k, f, *_ in APPROVAL_ACTIONS], as_dict=True
+		)
+		self.assertEqual(set(stored.values()), {1})
+		self.assertEqual(
+			approvals_bootstrap(frappe.get_doc("POS Profile", created.name))["required"],
+			[key for key, *_ in APPROVAL_ACTIONS],
+		)

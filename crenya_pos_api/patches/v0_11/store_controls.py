@@ -1,6 +1,10 @@
 """Store controls on existing sites (0.11.0): the Crenya POS Manager role and the POS Profile
-*Store controls* fields, made before anything reads them (after_migrate runs after the patches),
-and every existing POS Profile starting with every approval on, the fields' default."""
+*Store controls* fields, made before anything reads them (after_migrate runs after the patches).
+
+The approval Checks default to on, for POS Profiles created from now on. A profile that existed
+before this migrate keeps today's behaviour: every approval off, so an updated till asks for
+nothing new until the owner switches actions on (app.crenya.com). The patch runs once, so every
+row it sees existed before."""
 
 import frappe
 
@@ -14,5 +18,5 @@ def execute():
 	profile = frappe.qb.DocType("POS Profile")
 	query = frappe.qb.update(profile)
 	for _key, field, _label, _label_ar in APPROVAL_ACTIONS:
-		query = query.set(profile[field], 1)
+		query = query.set(profile[field], 0)
 	query.run()

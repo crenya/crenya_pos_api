@@ -18,10 +18,18 @@ from frappe.utils import cint, get_datetime, getdate, now_datetime, nowdate
 
 from crenya_pos_api.sync.batches import batch_quantities, batches_of_bundles, build_batch_records
 from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, device_roles_of
-from crenya_pos_api.sync.context import device_roles, get_pull_lag_seconds, money_precision, profile_users
+from crenya_pos_api.sync.context import (
+	EVENT_DOCTYPE,
+	device_roles,
+	get_pull_lag_seconds,
+	money_precision,
+	profile_users,
+)
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.promotions import rule_is_active
+from crenya_pos_api.sync.retry import ENTITY as RETRY_ENTITY
+from crenya_pos_api.sync.retry import RETRY_FIELD, retry_pending
 from crenya_pos_api.sync.tax_wording import GSTIN_FIELD, item_tax_code_field, tax_id_value
 from crenya_pos_api.utils.dates import format_date, format_db_datetime, utc_now_iso
 from crenya_pos_api.utils.decimal import format_money, format_number
@@ -628,6 +636,31 @@ def build_uom_records(rows):
 	]
 
 
+class SyncRetrySpec(EntitySpec):
+	"""`sync_retry` (sync/retry.py): the device's own events app.crenya.com asked to be retried,
+	`{event_id, retry_requested_at}`; one no longer waiting (processed since) goes as a tombstone,
+	so the till drops it."""
+
+	doctype = EVENT_DOCTYPE
+	fields = ("name", "event_id", RETRY_FIELD, "processed_at")
+
+	def filters(self, table, ctx):
+		return [table.device == ctx.device_id, table[RETRY_FIELD].isnotnull()]
+
+	def excluded(self, row):
+		return not retry_pending(row.get(RETRY_FIELD), row.get("processed_at"))
+
+	def build(self, rows, ctx):
+		return [
+			{
+				"event_id": row.event_id or row.name,
+				"retry_requested_at": format_db_datetime(row.get(RETRY_FIELD)),
+				"modified": format_db_datetime(row.modified),
+			}
+			for row in rows
+		]
+
+
 # built-in entities; crenya_pos_api.sync.registry.entities() adds those of other apps
 ENTITIES = {
 	"item": ItemSpec(),
@@ -639,6 +672,7 @@ ENTITIES = {
 	"pricing_rule": PricingRuleSpec(),
 	"batch": BatchSpec(),
 	"uom": UomSpec(),
+	RETRY_ENTITY: SyncRetrySpec(),
 }
 
 

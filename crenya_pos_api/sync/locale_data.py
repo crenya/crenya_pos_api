@@ -16,6 +16,7 @@ from crenya_pos_api.utils.phone import build_phone_country_codes, phone_country_
 BANKERS = "Banker's Rounding"
 # what Frappe rounds with while System Settings leave Rounding Method empty (`frappe.utils.rounded`)
 LEGACY_ROUNDING = "Banker's Rounding (legacy)"
+COMMERCIAL_ROUNDING = "Commercial Rounding"
 DENOMINATION_DOCTYPE = "Crenya Cash Denomination"
 DENOMINATION_KINDS = ("note", "coin")
 CURRENCY_FIELDS = [
@@ -83,6 +84,11 @@ def rounding_method() -> str:
 	"""The rounding method ERPNext applies on this site: System Settings' Rounding Method, else
 	Frappe's own default for an empty one."""
 	return frappe.db.get_single_value("System Settings", "rounding_method") or LEGACY_ROUNDING
+
+
+def rounding_of(method: str | None) -> str:
+	"""A rounding method as the web's `rounding`: half_up (Commercial Rounding) or half_even."""
+	return "half_up" if method == COMMERCIAL_ROUNDING else "half_even"
 
 
 def system_date_format():

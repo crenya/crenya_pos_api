@@ -53,3 +53,15 @@ def erpnext_before_tests():
 	_enable_all_roles_for_admin()
 	set_defaults_for_tests()
 	frappe.db.commit()  # nosemgrep
+
+
+def number_format_precisions() -> dict[str, int]:
+	"""{number format: its decimals} for every number format Frappe knows (System Settings' and a
+	Currency's *Number Format* options), from Frappe's own table: v16's
+	`frappe.utils.number_format.NUMBER_FORMAT_MAP`, v15's `frappe.utils.data.number_format_info`
+	(deprecated on v16)."""
+	try:
+		from frappe.utils.number_format import NUMBER_FORMAT_MAP as formats
+	except ImportError:
+		from frappe.utils.data import number_format_info as formats
+	return {number_format: info[2] for number_format, info in formats.items()}

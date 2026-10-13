@@ -5,6 +5,7 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module creny
 """
 
 import frappe
+from frappe.utils import add_to_date
 
 from crenya_pos_api.api import device as device_api
 from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE, approvals_bootstrap
@@ -115,9 +116,17 @@ class TestApprovalsBootstrap(SyncCase):
 		name = f"_Test Crenya POS New {new_id()[:8]}"
 		created = fixtures.ensure_pos_profile(fixtures.ensure_company(), self.walk_in, name=name)
 		self.addCleanup(frappe.delete_doc, "POS Profile", name, force=True, ignore_permissions=True)
-		# the patch never touches a profile created after the fields
+		# the patch never touches a profile created after the fields. The test site's time zone
+		# changes after the app is installed (the setup wizard), so the wall-clock order is set
+		# explicitly: the profile one second after the fields
 		from crenya_pos_api.patches.v0_11 import store_controls
 
+		since = frappe.db.get_value(
+			"Custom Field", {"dt": "POS Profile", "fieldname": APPROVAL_ACTIONS[0][1]}, "creation"
+		)
+		frappe.db.set_value(
+			"POS Profile", created.name, "creation", add_to_date(since, seconds=1), update_modified=False
+		)
 		store_controls.execute()
 		stored = frappe.db.get_value(
 			"POS Profile", created.name, [f for _k, f, *_ in APPROVAL_ACTIONS], as_dict=True

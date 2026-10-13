@@ -30,6 +30,7 @@ DEVICE_COLUMNS = (
 	"device_type",
 	"pos_profile",
 	"user",
+	"paired_by",
 	"platform",
 	"app_version",
 	"update_channel",
@@ -90,9 +91,12 @@ def device_rows(outlets, types=None, enabled_only=True) -> list:
 	Read with the query builder: frappe.get_all drops `last_seen` from its fields (Frappe strips
 	any field containing `_seen`, one of its optional columns, when the table has no `_seen`)."""
 	device = frappe.qb.DocType(DEVICE_DOCTYPE)
+	# a site whose deploy skipped `bench migrate` has no `paired_by` column yet
+	meta = frappe.get_meta(DEVICE_DOCTYPE)
+	columns = [column for column in DEVICE_COLUMNS if column != "paired_by" or meta.has_field(column)]
 	query = (
 		frappe.qb.from_(device)
-		.select(*(device[column] for column in DEVICE_COLUMNS))
+		.select(*(device[column] for column in columns))
 		.where(device.pos_profile.isin(list(outlets) or [""]))
 	)
 	if enabled_only:
@@ -149,7 +153,9 @@ def devices_answer(outlet: str, can_manage: bool, type_order=(), type_labels=Non
 		key=lambda row: rank.get(row.device_type or DEFAULT_DEVICE_TYPE, len(rank)),
 	)
 	shifts = open_shifts(row.name for row in rows)
-	users = full_names(row.user for row in rows)
+	# a device signs in as its own device user (0.12.0): the list names the person who paired it
+	people = {row.name: row.get("paired_by") or row.user for row in rows}
+	users = full_names(people.values())
 	now = now_datetime()
 	return {
 		"outlet": outlet,
@@ -167,8 +173,8 @@ def devices_answer(outlet: str, can_manage: bool, type_order=(), type_labels=Non
 				"registered_on": wire(row.registered_on),
 				"last_seen": wire(row.last_seen),
 				"enabled": cint(row.enabled),
-				"user": row.user or None,
-				"user_name": users.get(row.user),
+				"user": people[row.name] or None,
+				"user_name": users.get(people[row.name]),
 				"modified": format_db_datetime(row.modified),
 				"in_use": device_in_use(row.last_seen, row.name in shifts, now),
 				"open_shift": {

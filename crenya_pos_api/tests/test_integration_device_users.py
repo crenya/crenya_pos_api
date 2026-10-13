@@ -198,6 +198,20 @@ class TestDeviceUsers(SyncCase):
 		boot = self.as_user(name, device_api.get_bootstrap, device_id=device_id)
 		self.assertEqual(boot["key_kind"], "device")
 
+	def test_the_devices_list_names_the_person_who_paired_the_device(self):
+		from crenya_pos_api.web.devices import devices_answer
+
+		device_id, answer = self.pair()
+		self.register(answer["device_user"], device_id)
+		rows = {row["name"]: row for row in devices_answer(self.profile.name, True)["rows"]}
+		self.assertEqual(rows[device_id]["user"], self.cashier)
+		self.assertEqual(rows[device_id]["user_name"], frappe.db.get_value("User", self.cashier, "full_name"))
+		# a device not yet re-keyed still shows the person it is registered to
+		old_id = new_id()
+		self.register(self.other, old_id)
+		rows = {row["name"]: row for row in devices_answer(self.profile.name, True)["rows"]}
+		self.assertEqual(rows[old_id]["user"], self.other)
+
 	def test_a_device_user_registers_other_device_types(self):
 		for device_type in ("restaurant_pos", "kds", "waiter"):
 			device_id, answer = self.pair()

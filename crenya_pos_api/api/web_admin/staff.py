@@ -9,14 +9,16 @@ import frappe
 from crenya_pos_api.api.web_admin.scope import shop_profiles
 from crenya_pos_api.sync.approvals import RETAIL_PRIVILEGE_LABELS, RETAIL_PRIVILEGES
 from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, clear_user_pin
-from crenya_pos_api.sync.context import profile_users
+from crenya_pos_api.sync.context import is_system_manager, profile_users
 from crenya_pos_api.web import staff
 from crenya_pos_api.web.context import WebAdminContext
 from crenya_pos_api.web.devices import labelled
 
 
 def _staff_user(user):
-	frappe.only_for("System Manager")
+	# not frappe.only_for, which lets every user through while tests run
+	if not is_system_manager():
+		raise frappe.PermissionError
 	return staff.web_staff_user(user)
 
 

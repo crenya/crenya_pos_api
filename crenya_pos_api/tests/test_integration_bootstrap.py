@@ -86,15 +86,27 @@ class TestApprovalsBootstrap(SyncCase):
 		# a cashier holds Crenya POS User alone
 		self.assertEqual(next(row for row in records if row["name"] == cashier)["roles"], ["Crenya POS User"])
 
+	def backdate(self, name):
+		"""Make `name` a profile that existed before the store controls' fields."""
+		created = frappe.db.get_value("POS Profile", name, "creation")
+		frappe.db.set_value("POS Profile", name, "creation", "2001-01-01 00:00:00", update_modified=False)
+		frappe.db.commit()
+
+		def restore():
+			frappe.db.set_value("POS Profile", name, "creation", created, update_modified=False)
+			frappe.db.commit()
+
+		self.addCleanup(restore)
+
 	def test_patch_leaves_existing_profiles_without_approvals(self):
 		"""An existing profile keeps today's behaviour: the patch switches every approval off, so
 		an updated till asks for nothing new until the owner turns actions on."""
 		from crenya_pos_api.patches.v0_11 import store_controls
 
 		self.set_profile(**{field: 1 for _key, field, *_ in APPROVAL_ACTIONS})
+		self.backdate(self.profile.name)
 		self.assertEqual(len(self.approvals()["required"]), len(APPROVAL_ACTIONS))
 		store_controls.execute()
-		store_controls.execute()  # idempotent
 		frappe.clear_document_cache("POS Profile", self.profile.name)
 		self.assertEqual(self.approvals()["required"], [])
 
@@ -103,6 +115,10 @@ class TestApprovalsBootstrap(SyncCase):
 		name = f"_Test Crenya POS New {new_id()[:8]}"
 		created = fixtures.ensure_pos_profile(fixtures.ensure_company(), self.walk_in, name=name)
 		self.addCleanup(frappe.delete_doc, "POS Profile", name, force=True, ignore_permissions=True)
+		# the patch never touches a profile created after the fields
+		from crenya_pos_api.patches.v0_11 import store_controls
+
+		store_controls.execute()
 		stored = frappe.db.get_value(
 			"POS Profile", created.name, [f for _k, f, *_ in APPROVAL_ACTIONS], as_dict=True
 		)

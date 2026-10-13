@@ -1,4 +1,4 @@
-"""Create a Customer captured offline at the till."""
+"""Create a Customer captured offline at the till; the device is the authority, not desk roles."""
 
 import frappe
 from frappe.utils import cint
@@ -53,8 +53,16 @@ def create_customer(ctx, data):
 			"crenya_local_id": data["local_id"],
 		}
 	)
-	customer.insert()
+	# created for the authorised device (get_device_context in the push): a cashier needs no
+	# desk role on Customer, as the invoice push posts its sale (0.9.3)
+	customer.insert(ignore_permissions=True)
+	customer.add_comment("Info", f"Created at the till {_device_label(ctx)}")
 	return customer
+
+
+def _device_label(ctx):
+	name = (ctx.device or {}).get("device_name")
+	return f"{name} ({ctx.device_id})" if name else ctx.device_id
 
 
 def customer_result_fields(doc):

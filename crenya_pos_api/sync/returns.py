@@ -35,6 +35,14 @@ def _find_invoice(ctx, invoice):
 	return None
 
 
+def invoice_of_company(ctx, header, profile_company):
+	"""True when the invoice, and its POS Profile when it has one (`profile_company`: that
+	profile's company), are the device's company's."""
+	if header.company != ctx.company:
+		return False
+	return not header.pos_profile or profile_company == ctx.company
+
+
 def returned_quantities(invoice_name, rows):
 	"""Already returned qty per original row (in the row's UOM).
 
@@ -87,8 +95,10 @@ def get_invoice_for_return(ctx, invoice):
 	header = _find_invoice(ctx, invoice.strip())
 	if not header:
 		raise frappe.DoesNotExistError(f"No submitted invoice {invoice} found for {ctx.company}")
-	if not frappe.has_permission("Sales Invoice", "read", header.name):
-		raise frappe.PermissionError(f"Not permitted to read {header.name}")
+	# the authorised device is the authority, not the cashier's desk roles
+	profile_company = header.pos_profile and frappe.db.get_value("POS Profile", header.pos_profile, "company")
+	if not invoice_of_company(ctx, header, profile_company):
+		raise frappe.PermissionError(f"{header.name} is not an invoice of {ctx.company}")
 
 	precision = money_precision()
 	q_precision = qty_precision()

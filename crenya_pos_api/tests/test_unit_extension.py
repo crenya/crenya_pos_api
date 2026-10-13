@@ -78,7 +78,9 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		self.assertEqual(registry.bootstrap_hooks(), [])
 		self.assertEqual(registry.capability_hooks(), [])
 		self.assertEqual(registry.invoice_extenders(), [])
-		self.assertEqual(registry.device_roles(), ("Crenya POS User",))
+		# core: Crenya POS User, and the store controls' approver on a retail till
+		self.assertEqual(registry.device_roles(), ("Crenya POS User", "Crenya POS Manager"))
+		self.assertEqual(registry.device_roles("kds"), ("Crenya POS User",))
 		features = {"sales": True}
 		self.assertEqual(registry.extend_features(features), {"sales": True})
 		self.assertEqual(registry.profile_flag_hooks(), [])
@@ -146,7 +148,9 @@ class TestRegistryMerge(unittest.TestCase):
 			self.assertEqual(registry.bootstrap_hooks(), [dummy.extend_bootstrap])
 			self.assertEqual(registry.capability_hooks(), [dummy.features])
 			self.assertEqual(registry.invoice_extenders(), [dummy.extend_invoice])
-			self.assertEqual(registry.device_roles(), ("Crenya POS User", dummy.DEVICE_ROLE))
+			self.assertEqual(
+				registry.device_roles(), ("Crenya POS User", "Crenya POS Manager", dummy.DEVICE_ROLE)
+			)
 
 	def test_profile_flags_are_added_and_core_keys_kept(self):
 		profiles = [
@@ -175,19 +179,25 @@ class TestRegistryMerge(unittest.TestCase):
 				self.assertEqual(registry.extend_profiles(profiles), [{"name": "Shop", "company": "C"}])
 
 	def test_device_roles_are_scoped_by_device_type(self):
-		pos = "Crenya POS User"
+		pos, manager = "Crenya POS User", "Crenya POS Manager"
 		with dummy.fake_hooks(site_ready=True):
-			# a retail till (default type, or blank) never accepts the kds-only role
-			self.assertEqual(registry.device_roles(), (pos, dummy.DEVICE_ROLE))
-			self.assertEqual(registry.device_roles("till"), (pos, dummy.DEVICE_ROLE))
-			self.assertEqual(registry.device_roles(None), (pos, dummy.DEVICE_ROLE))
-			self.assertEqual(registry.device_roles(""), (pos, dummy.DEVICE_ROLE))
+			# a retail till (default type, or blank) never accepts the kds-only role; only a retail
+			# till accepts the store controls' approver
+			self.assertEqual(registry.device_roles(), (pos, manager, dummy.DEVICE_ROLE))
+			self.assertEqual(registry.device_roles("till"), (pos, manager, dummy.DEVICE_ROLE))
+			self.assertEqual(registry.device_roles(None), (pos, manager, dummy.DEVICE_ROLE))
+			self.assertEqual(registry.device_roles(""), (pos, manager, dummy.DEVICE_ROLE))
 			for device_type in dummy.KDS_TYPES:
 				self.assertEqual(registry.device_roles(device_type), (pos, dummy.DEVICE_ROLE, dummy.KDS_ROLE))
-			self.assertEqual(registry.all_device_roles(), (pos, dummy.DEVICE_ROLE, dummy.KDS_ROLE))
+			self.assertEqual(registry.all_device_roles(), (pos, manager, dummy.DEVICE_ROLE, dummy.KDS_ROLE))
 			self.assertEqual(
 				registry.device_role_rules(),
-				{pos: None, dummy.DEVICE_ROLE: None, dummy.KDS_ROLE: frozenset(dummy.KDS_TYPES)},
+				{
+					pos: None,
+					manager: frozenset({"till"}),
+					dummy.DEVICE_ROLE: None,
+					dummy.KDS_ROLE: frozenset(dummy.KDS_TYPES),
+				},
 			)
 
 	def test_a_role_declared_twice_gets_the_union_of_its_types(self):
@@ -202,7 +212,7 @@ class TestRegistryMerge(unittest.TestCase):
 			self.assertEqual(rules["R"], frozenset({"kds", "waiter"}))
 			# a plain name opens every type
 			self.assertIsNone(rules["S"])
-			self.assertEqual(registry.device_roles("till"), ("Crenya POS User", "S"))
+			self.assertEqual(registry.device_roles("till"), ("Crenya POS User", "Crenya POS Manager", "S"))
 			self.assertEqual(registry.device_roles("waiter"), ("Crenya POS User", "R", "S"))
 			# Crenya POS User cannot be narrowed by a hook
 			with dummy.fake_hooks(

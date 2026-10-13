@@ -233,10 +233,12 @@ class SyncCase(FrappeTestCase):
 			).insert(ignore_permissions=True)
 		return email
 
-	def _pull_all(self, entity, limit, cursor=None):
+	def _pull_all(self, entity, limit, cursor=None, device_id=None):
 		records, pages = [], 0
 		while True:
-			page = sync_api.pull_changes(device_id=self.device_id, entity=entity, cursor=cursor, limit=limit)
+			page = sync_api.pull_changes(
+				device_id=device_id or self.device_id, entity=entity, cursor=cursor, limit=limit
+			)
 			pages += 1
 			records.extend(page["records"])
 			cursor = page["next_cursor"]

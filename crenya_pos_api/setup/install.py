@@ -12,6 +12,7 @@ from crenya_pos_api.sync.tax_wording import (
 )
 
 POS_USER_ROLE = "Crenya POS User"
+DEVICE_ROLE = "Crenya POS Device"
 
 # Read rights a device's user needs for ERPNext to accept a pushed sale (0.9.3). The push posts
 # for the authorised device (sync/invoice_builder.py, ignore_permissions), but two ERPNext checks
@@ -148,6 +149,29 @@ CUSTOM_FIELDS = {
 			"hidden": 1,
 			"read_only": 1,
 			"no_copy": 1,
+		},
+		# a device user (0.12.0): the user of one till, phone or display, not a person
+		{
+			"fieldname": "crenya_device_id",
+			"fieldtype": "Data",
+			"label": "POS Device ID",
+			"description": "Set on the user a POS device signs in with; never a person.",
+			"insert_after": "crenya_pos_pin_hash",
+			"read_only": 1,
+			"no_copy": 1,
+			"search_index": 1,
+			# System Manager only (permlevel 1): a device user cannot rewrite who it is
+			"permlevel": 1,
+		},
+		{
+			"fieldname": "crenya_paired_by",
+			"fieldtype": "Link",
+			"label": "POS Device Paired By",
+			"options": "User",
+			"insert_after": "crenya_device_id",
+			"read_only": 1,
+			"no_copy": 1,
+			"permlevel": 1,
 		},
 	],
 	"Customer": [
@@ -346,12 +370,16 @@ CUSTOM_FIELDS = {
 
 # the till roles and their desk access: a cashier never signs in to the desk; the store controls'
 # approver manages shops on app.crenya.com, which signs in System Users only (as Restaurant
-# Manager). Desk access gives no permission by itself: the role has no DocPerm of its own.
-ROLE_DESK_ACCESS = {POS_USER_ROLE: 0, APPROVER_ROLE: 1}
+# Manager); a device user's role (0.12.0) never opens the desk. Desk access gives no permission by
+# itself: the role has no DocPerm of its own. Crenya POS User already exists with desk access when
+# this runs (the DocType sync makes the roles its DocPerms name); it is left as it is, since
+# turning desk access off would make every cashier a Website User on their next save.
+ROLE_DESK_ACCESS = {POS_USER_ROLE: 0, APPROVER_ROLE: 1, DEVICE_ROLE: 0}
 
 
 def make_role():
-	"""The till roles: Crenya POS User and the store controls' approver (ROLE_DESK_ACCESS)."""
+	"""The till roles: Crenya POS User, the store controls' approver and the device user's
+	(ROLE_DESK_ACCESS)."""
 	for role, desk_access in ROLE_DESK_ACCESS.items():
 		if frappe.db.exists("Role", role):
 			continue

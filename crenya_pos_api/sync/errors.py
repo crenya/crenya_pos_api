@@ -13,6 +13,7 @@ PAYLOAD_CONFLICT = "payload_conflict"
 PROTOCOL_UNSUPPORTED = "protocol_unsupported"
 UNSUPPORTED_TAX = "unsupported_tax"
 INTERNAL = "internal"
+REKEY_REQUIRED = "rekey_required"
 
 RETRYABLE_CODES = frozenset({DEPENDENCY_MISSING, INTERNAL})
 
@@ -51,6 +52,14 @@ class ProtocolUnsupportedError(CrenyaAPIError):
 
 class DeviceNotRegisteredError(CrenyaAPIError):
 	code = DEVICE_NOT_REGISTERED
+	http_status_code = 403
+
+
+class RekeyRequiredError(CrenyaAPIError):
+	"""The device is called with a person's API key while the site requires device keys
+	(`crenya_require_device_keys`): it must exchange it for its own (`device.rekey_device`)."""
+
+	code = REKEY_REQUIRED
 	http_status_code = 403
 
 

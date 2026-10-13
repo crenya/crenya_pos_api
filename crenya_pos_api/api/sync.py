@@ -1,6 +1,7 @@
 import json
 
 import frappe
+from frappe.utils import cint
 
 import crenya_pos_api
 from crenya_pos_api.sync.context import (
@@ -9,6 +10,7 @@ from crenya_pos_api.sync.context import (
 	get_device_context,
 	require_login,
 )
+from crenya_pos_api.sync.device_user import acting_user, key_kind
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.events import process_batch
 from crenya_pos_api.sync.fawtara import COMPLIANCE_APP
@@ -39,7 +41,10 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 		"erpnext_version": _app_version("erpnext") if "erpnext" in installed else None,
 		"server_time": utc_now_iso(),
 		"site_timezone": get_system_timezone(),
-		"user": frappe.session.user,
+		# a device user answers as the person who paired it (the name the device shows as signed in)
+		"user": acting_user(),
+		# "device" when the call is made with a device user's key, "user" with a person's
+		"key_kind": key_kind(),
 		"features": {
 			"sales": True,
 			"returns": True,
@@ -59,6 +64,10 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"fawtara": COMPLIANCE_APP in installed,
 			# protocol 2: entities, aggregates and invoice data of other apps (crenya_pos_* hooks)
 			"extensions": True,
+			# per-device users (0.12.0): sign-in and `device.rekey_device` return the key of a
+			# device user and the key `pull_changes(pin_seal=1)` seals PIN hashes with
+			"device_users": True,
+			"pin_seal": True,
 		},
 	}
 	# other apps' crenya_pos_capabilities hooks add their own flags; core flags are kept
@@ -73,9 +82,12 @@ def pull_changes(
 	cursor: str | None = None,
 	limit: int | str | None = None,
 	protocol_version: int | str | None = None,
+	pin_seal: int | str | None = None,
 ):
 	check_protocol_version(protocol_version)
 	ctx = get_device_context(device_id)
+	# the device holds its PIN seal key (0.12.0): it receives sealed PIN hashes, never raw ones
+	ctx.pin_seal = bool(cint(pin_seal))
 	return _pull_changes(ctx, entity, cursor, limit)
 
 

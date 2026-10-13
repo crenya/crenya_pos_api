@@ -1,14 +1,30 @@
-"""Till sign-in with ERPNext username + password.
+"""Device sign-in with ERPNext username + password.
 
-The till exchanges the password once for the user's API key pair and keeps it
-in the OS keychain; the password is never stored on the till.
+The person signing in authorises the pairing (role checked, audited, kept as `paired_by`); the
+device gets the API key of its own device user (`sync.device_user`), never the person's. The
+password is sent once and never stored on the device.
 """
 
 import frappe
 from frappe import _
 from frappe.rate_limiter import rate_limit
 
-from crenya_pos_api.sync.context import POS_USER_ROLE, all_device_roles, check_protocol_version
+from crenya_pos_api.sync import device_user
+from crenya_pos_api.sync.context import (
+	DEVICE_DOCTYPE,
+	POS_USER_ROLE,
+	all_device_roles,
+	check_protocol_version,
+	find_device_name,
+	is_system_manager,
+	user_can_use_profile,
+)
+from crenya_pos_api.sync.errors import (
+	DeviceNotRegisteredError,
+	DevicePermissionError,
+	InvalidRequestError,
+	raise_api_error,
+)
 
 ALLOWED_ROLES = {POS_USER_ROLE, "System Manager"}
 
@@ -22,12 +38,13 @@ def login(
 	pwd: str | None = None,
 	device_id: str | None = None,
 	protocol_version: int | str | None = None,
+	device_type: str | None = None,
 ):
 	check_protocol_version(protocol_version)
-	return sign_in(usr, pwd)
+	return sign_in(usr, pwd, device_id, device_type)
 
 
-def sign_in(usr, pwd):
+def sign_in(usr, pwd, device_id=None, device_type=None):
 	from frappe.auth import LoginManager
 
 	if not usr or not pwd:
@@ -39,6 +56,8 @@ def sign_in(usr, pwd):
 	manager = LoginManager.__new__(LoginManager)
 	manager.authenticate(user=usr, pwd=pwd)
 	user = manager.user
+	if device_user.is_device_user(user):
+		frappe.throw(_("A device user has no password login"), frappe.AuthenticationError)
 
 	from frappe.twofactor import should_run_2fa
 
@@ -52,31 +71,46 @@ def sign_in(usr, pwd):
 	if not ALLOWED_ROLES.union(all_device_roles()).intersection(frappe.get_roles(user)):
 		frappe.throw(_("{0} does not have the {1} role").format(user, POS_USER_ROLE), frappe.PermissionError)
 
-	api_key, api_secret = _ensure_api_keys(user)
-	return {
-		"user": user,
-		"full_name": frappe.db.get_value("User", user, "full_name"),
-		"api_key": api_key,
-		"api_secret": api_secret,
-	}
+	answer = {"user": user, "full_name": frappe.db.get_value("User", user, "full_name")}
+	if not device_id or not device_user.user_has_fields():
+		# a sign-in with no device (the oldest tills) or a site not migrated yet: the person's own
+		# key, unless the site requires device keys
+		if device_user.require_device_keys():
+			raise_api_error(InvalidRequestError, "device_id is required to sign in a device")
+		api_key, api_secret = device_user.ensure_api_keys(user)
+		return {**answer, "api_key": api_key, "api_secret": api_secret, "key_kind": device_user.KEY_KIND_USER}
+
+	_check_pairing(user, device_id)
+	return {**answer, **device_user.credentials(device_id, user, device_type)}
 
 
-def _ensure_api_keys(user):
-	"""Returns the user's key pair, creating it on first sign-in.
+def _check_pairing(person, device_id):
+	"""A person may pair a device id that no device has, or one they may use: a device already
+	registered is signed in again by a System Manager or by someone who may use its POS Profile
+	(a device id is not a secret)."""
+	from crenya_pos_api.sync.device import DEVICE_ID_RE
 
-	Existing keys are reused so several tills can share one cashier account;
-	regenerating keys in ERPNext signs every till out.
-	"""
-	from frappe.utils.password import get_decrypted_password, set_encrypted_password
+	if not isinstance(device_id, str) or not DEVICE_ID_RE.match(device_id):
+		raise_api_error(InvalidRequestError, "device_id must be the till's UUID")
+	name = find_device_name(device_id)
+	if not name:
+		return
+	device = frappe.db.get_value(DEVICE_DOCTYPE, name, ["enabled", "pos_profile"], as_dict=True)
+	if not frappe.utils.cint(device.enabled):
+		raise_api_error(DeviceNotRegisteredError, f"Device {name} is disabled")
+	if not is_system_manager(person) and not user_can_use_profile(
+		frappe.get_cached_doc("POS Profile", device.pos_profile), person
+	):
+		raise_api_error(DevicePermissionError, f"User {person} may not sign in device {name}")
 
-	api_key = frappe.db.get_value("User", user, "api_key")
-	api_secret = api_key and get_decrypted_password("User", user, "api_secret", raise_exception=False)
-	if api_key and api_secret:
-		return api_key, api_secret
 
-	if not api_key:
-		api_key = frappe.generate_hash(length=15)
-		frappe.db.set_value("User", user, "api_key", api_key, update_modified=False)
-	api_secret = frappe.generate_hash(length=15)
-	set_encrypted_password("User", user, api_secret, "api_secret")
-	return api_key, api_secret
+@frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep
+def reset_password(user: str):
+	"""Frappe's forgot-password (hooked over it, `override_whitelisted_methods`): a device user has
+	no mailbox and no password, so nothing is sent or reset for it; everyone else goes on to Frappe's
+	own, rate limits included."""
+	if device_user.is_device_user(user):
+		frappe.throw(_("A device user has no password"), frappe.PermissionError)
+	from frappe.core.doctype.user.user import reset_password as frappe_reset_password
+
+	return frappe_reset_password(user=user)

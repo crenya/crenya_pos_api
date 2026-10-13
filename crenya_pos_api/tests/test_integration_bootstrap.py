@@ -34,7 +34,8 @@ class TestApprovalsBootstrap(SyncCase):
 
 	def test_role_and_fields_exist(self):
 		self.assertTrue(frappe.db.exists("Role", APPROVER_ROLE))
-		self.assertEqual(frappe.db.get_value("Role", APPROVER_ROLE, "desk_access"), 0)
+		# a shop manager signs in to app.crenya.com as a System User (review ruling, 0.11.0)
+		self.assertEqual(frappe.db.get_value("Role", APPROVER_ROLE, "desk_access"), 1)
 		meta = frappe.get_meta("POS Profile")
 		for _key, field, *_ in APPROVAL_ACTIONS:
 			self.assertTrue(meta.has_field(field), field)

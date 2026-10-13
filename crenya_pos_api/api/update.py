@@ -35,8 +35,11 @@ def download(release: str | None = None, target: str | None = None, device_id: s
 
 @frappe.whitelist(methods=["GET", "POST"])
 def downloads() -> dict:
-	"""The installers of the newest stable crenya pos release (the central manifest), for any
-	signed-in user: {version, pub_date, notes, installers: [{platform, label, label_ar, url,
-	sha256, size}]}, or {installers: []}."""
+	"""The installers of the newest stable crenya pos release (the central manifest), for a
+	signed-in system user (an owner or manager; never a portal user or Guest): {version,
+	pub_date, notes, installers: [{platform, label, label_ar, url, sha256, size}]}, or
+	{installers: []}."""
 	require_login()
+	if frappe.get_cached_value("User", frappe.session.user, "user_type") != "System User":
+		raise frappe.PermissionError("Downloads are for system users")
 	return central.downloads(central.RETAIL)

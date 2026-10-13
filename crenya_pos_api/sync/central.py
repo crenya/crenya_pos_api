@@ -8,7 +8,7 @@ its own) share one implementation and never share a cache entry or a disk folder
 - Its releases are shaped like a site's own release rows (named `central:<version>`), so
   `sync.update.select_release` and `updater_document` are reused unchanged; a published local
   release of the same version wins (`merged_releases`: a site-only hotfix or beta).
-- The manifest is fetched with a 3 s timeout, kept 10 minutes, and its last good copy 7 days:
+- The manifest is fetched within one 3 s deadline, kept 10 minutes, and its last good copy 7 days:
   unreachable or invalid, the site's own releases are still offered, and one warning (the URL
   and the reason) goes to the product's logger, at most once per 10 minutes (the failure is
   cached like an answer).
@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import uuid
 from typing import NamedTuple
 from urllib.parse import urlsplit
@@ -245,14 +246,24 @@ def manifest_url(product):
 
 
 def _fetch_bytes(url, limit, timeout=ARTIFACT_TIMEOUT):
-	"""At most `limit` bytes of `url`, never following a redirect (the network: patched in the
-	unit tests)."""
+	"""At most `limit` bytes of `url`, never following a redirect, within one overall deadline
+	of `timeout` seconds: connecting and each read are bounded by what is left of it, and
+	TimeoutError is raised once it has passed (the network: patched in the unit tests)."""
 	import httpx
 
+	deadline = time.monotonic() + timeout
+
+	def left():
+		remaining = deadline - time.monotonic()
+		if remaining <= 0:
+			raise TimeoutError(f"{url} took longer than {timeout} s")
+		return remaining
+
 	chunks, total = [], 0
-	with httpx.stream("GET", url, timeout=timeout, follow_redirects=False) as response:
+	with httpx.stream("GET", url, timeout=httpx.Timeout(left()), follow_redirects=False) as response:
 		response.raise_for_status()
 		for chunk in response.iter_bytes():
+			left()
 			chunks.append(chunk)
 			total += len(chunk)
 			if total >= limit:

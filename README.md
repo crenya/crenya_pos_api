@@ -765,7 +765,7 @@ Code: `crenya_pos_api/sync/central.py`, product-neutral (`central.Product`; reta
 - Its releases are offered like the site's own rows (named `central:<version>`; the same
   channel, target and version rules). A published Crenya POS Release of the **same version
   wins**, when it has a file for the till's target.
-- The manifest is fetched with a 3 s timeout (connect plus read), at most 1 MB, and kept 10
+- The manifest is fetched within one 3 s deadline (connect and every read together; an installer 120 s), at most 1 MB, and kept 10
   minutes; its last good copy is kept 7 days. Unreachable or invalid, the site's own releases
   are still offered, and one warning with the URL and the reason goes to the `crenya_pos_api`
   logger, at most once per 10 minutes. An invalid release, target or installer is left out,
@@ -777,7 +777,7 @@ Code: `crenya_pos_api/sync/central.py`, product-neutral (`central.Product`; reta
   artifact is kept on the site by its sha256 (`private/crenya_pos_api/release_artifacts/`, not
   a File, so never in the site's backups) and served from there afterwards. The signature is
   passed through byte for byte: the till's own key stays the only trust anchor.
-- `update.downloads` (any signed-in user) answers the newest stable central release with
+- `update.downloads` (a signed-in system user; portal users and Guest are refused) answers the newest stable central release with
   installers, `{version, pub_date, notes, installers: [{platform, label, label_ar, url,
   sha256, size}]}`, or `{installers: []}`: the Downloads page of app.crenya.com.
 

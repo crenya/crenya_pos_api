@@ -309,3 +309,20 @@ class TestCrenyaUpdates(FrappeTestCase):
 		frappe.set_user("Guest")
 		with self.assertRaises(frappe.PermissionError):
 			update_api.downloads()
+		# a portal (website) user is refused too
+		portal = "crenya.portal.test@example.com"
+		frappe.set_user("Administrator")
+		if not frappe.db.exists("User", portal):
+			frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": portal,
+					"first_name": "Portal",
+					"send_welcome_email": 0,
+					"user_type": "Website User",
+				}
+			).insert(ignore_permissions=True)
+		self.assertEqual(frappe.db.get_value("User", portal, "user_type"), "Website User")
+		frappe.set_user(portal)
+		with self.assertRaises(frappe.PermissionError):
+			update_api.downloads()

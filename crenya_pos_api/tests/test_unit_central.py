@@ -444,7 +444,8 @@ class TestCentralRetail(ManifestCases, CentralCase):
 		"""httpx stands in: the unit tests need no network."""
 		stream = mock.MagicMock()
 		stream.__enter__.return_value.iter_bytes.return_value = iter(chunks)
-		return types.SimpleNamespace(stream=mock.Mock(return_value=stream))
+		# httpx.Timeout(seconds) stands in as the seconds themselves
+		return types.SimpleNamespace(stream=mock.Mock(return_value=stream), Timeout=lambda seconds: seconds)
 
 	def test_fetches_follow_no_redirect(self):
 		body = json.dumps(manifest()).encode()
@@ -452,13 +453,26 @@ class TestCentralRetail(ManifestCases, CentralCase):
 		with mock.patch.dict(sys.modules, {"httpx": httpx}):
 			self.assertEqual(FETCH_MANIFEST(self.manifest_url), manifest())
 		self.assertEqual(httpx.stream.call_args.kwargs["follow_redirects"], False)
-		self.assertEqual(httpx.stream.call_args.kwargs["timeout"], central.MANIFEST_TIMEOUT)
+		self.assertAlmostEqual(httpx.stream.call_args.kwargs["timeout"], central.MANIFEST_TIMEOUT, places=1)
 		httpx = self.fake_httpx([b"a" * 4, b"b" * 4, b"c" * 4])
 		with mock.patch.dict(sys.modules, {"httpx": httpx}):
 			# reading stops at the limit
 			self.assertEqual(central._fetch_bytes(f"{HOST}/a.exe", 6), b"aaaabb")
 		self.assertEqual(httpx.stream.call_args.kwargs["follow_redirects"], False)
-		self.assertEqual(httpx.stream.call_args.kwargs["timeout"], central.ARTIFACT_TIMEOUT)
+		self.assertAlmostEqual(httpx.stream.call_args.kwargs["timeout"], central.ARTIFACT_TIMEOUT, places=1)
+
+	def test_one_overall_deadline(self):
+		httpx = self.fake_httpx([b"a" * 4, b"b" * 4, b"c" * 4])
+		# 0 s at the start, then 2 s per read: the third read is past a 5 s deadline
+		clock = iter([0, 0, 2, 4, 6, 8])
+		with (
+			mock.patch.dict(sys.modules, {"httpx": httpx}),
+			mock.patch.object(central.time, "monotonic", lambda: next(clock)),
+			self.assertRaises(TimeoutError),
+		):
+			central._fetch_bytes(f"{HOST}/a.exe", 100, timeout=5)
+		# connecting gets what is left of the deadline
+		self.assertEqual(httpx.stream.call_args.kwargs["timeout"], 5)
 
 	def test_manifest_capped_at_one_megabyte(self):
 		self.assertEqual(central.MANIFEST_MAX_BYTES, 1024 * 1024)

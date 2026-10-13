@@ -195,7 +195,8 @@ kept (a second sign-in returns it), `register_device` makes the device user the 
 and `get_sync_capabilities` / `get_bootstrap` answer `key_kind` (`device` or `user`); the
 capabilities' `user` stays the person who paired it (the name a till shows as signed in). The
 device user is disabled when its device is deactivated (or deleted) and enabled when it is
-reactivated. Device users are not cashiers (the `cashier` pull, `staff_roles` and the staff lists
+reactivated. The devices list on app.crenya.com (`web.devices`) names the person who paired a
+device, not its device user. Device users are not cashiers (the `cashier` pull, `staff_roles` and the staff lists
 leave them out).
 
 A device paired before this holds a person's key. The site setting `crenya_require_device_keys`

@@ -6,6 +6,7 @@ persist on the test site (all names are prefixed with _Test Crenya / _TC).
 """
 
 import uuid
+from unittest.mock import patch
 
 import frappe
 from frappe.utils import cint, get_datetime, get_system_timezone
@@ -14,7 +15,7 @@ from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import loyalty as loyalty_api
 from crenya_pos_api.api import returns as returns_api
 from crenya_pos_api.api import sync as sync_api
-from crenya_pos_api.sync import errors
+from crenya_pos_api.sync import errors, events
 from crenya_pos_api.sync.context import check_protocol_version, get_device_context
 from crenya_pos_api.sync.cursor import decode_cursor
 from crenya_pos_api.tests import fixtures
@@ -392,6 +393,43 @@ class TestCrenyaSync(SyncCase):
 		self.assertEqual(len(self.invoices_with_local_id(good_b["local_id"])), 1)
 		self.assertFalse(self.invoices_with_local_id(bad["local_id"]))
 		self.assertEqual(frappe.db.get_value(EVENT, bad["event_id"], "status"), "error")
+
+	def _deadlocking(self, times):
+		"""`events._apply` that hits a deadlock `times` times, then applies the event."""
+		real, calls = events._apply, []
+
+		def apply(ctx, env):
+			calls.append(env["event_id"])
+			if len(calls) <= times:
+				raise frappe.QueryDeadlockError("(1213, 'Deadlock found when trying to get lock')")
+			return real(ctx, env)
+
+		return patch.object(events, "_apply", apply), calls
+
+	def test_a_deadlock_is_tried_again_at_once(self):
+		"""Two tills' sales on the same stock deadlock now and then (load test 2026-10): the event
+		is applied again in the same request, not sent back for the till's retry backoff."""
+		event = self.event(self.sale_payload())
+		logged = frappe.db.count("Error Log")
+		deadlock, calls = self._deadlocking(1)
+		with deadlock:
+			result = self.assertOk(self.push_one(event))
+		self.assertEqual(len(calls), 2)
+		self.assertEqual(len(self.invoices_with_local_id(event["local_id"])), 1)
+		self.assertEqual(frappe.db.get_value(EVENT, event["event_id"], "attempts"), 1)
+		self.assertEqual(result["status"], "ok")
+		self.assertEqual(frappe.db.count("Error Log"), logged, "a deadlock overcome is not an error")
+
+	def test_a_lasting_deadlock_is_left_to_the_till(self):
+		event = self.event(self.sale_payload())
+		deadlock, calls = self._deadlocking(events.TRANSIENT_ATTEMPTS)
+		with deadlock:
+			result = self.push_one(event)
+		self.assertEqual(len(calls), events.TRANSIENT_ATTEMPTS)
+		self.assertEqual(result["status"], "error")
+		self.assertEqual(result["error"]["code"], "internal")
+		self.assertTrue(result["error"]["retryable"])
+		self.assertFalse(self.invoices_with_local_id(event["local_id"]))
 
 	def test_invalid_payload_is_validation(self):
 		payload = self.sale_payload()

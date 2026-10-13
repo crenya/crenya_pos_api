@@ -105,7 +105,8 @@ def error_dict(code, message, retryable=None):
 	return {"code": code, "message": clean_message(message), "retryable": bool(retryable)}
 
 
-def _is_transient_db_error(exc):
+def is_transient_db_error(exc):
+	"""A deadlock or a lock wait timeout: the same work may well go through when tried again."""
 	transient = tuple(
 		cls
 		for cls in (
@@ -136,7 +137,7 @@ def classify_exception(exc):
 	if isinstance(exc, frappe.PermissionError):
 		return error_dict(PERMISSION, str(exc) or "Not permitted", False), False
 
-	if _is_transient_db_error(exc):
+	if is_transient_db_error(exc):
 		return error_dict(INTERNAL, "Temporary database contention, retry later", True), True
 
 	if isinstance(exc, frappe.ValidationError | frappe.DuplicateEntryError):

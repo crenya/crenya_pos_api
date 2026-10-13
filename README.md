@@ -815,6 +815,24 @@ before installing and reject any file that does not match, so a replaced or
 corrupted installer is never installed. A release therefore only works with
 installers signed by the CI signing key of the till.
 
+#### Web admin core
+
+`crenya_pos_api/web/` holds the product-neutral pieces of the till admin on app.crenya.com,
+shared by the retail web admin and other apps' (crenya_restaurant imports them):
+
+- `forms.settings_form(fields, owner_editable, owner_only=frozenset(), read_only=frozenset())`
+  builds the settings form from custom field definitions (Section Breaks open sections), and
+  `forms.settings_change_problem(values, fields, owner_editable, owner_only, read_only)` says why
+  a change may not be written (`("invalid" | "refused", message)` or None). Which settings only a
+  System Manager changes, and which are never written from the web, are the caller's.
+- `context.WebAdminContext(approver, outlet=None)`: the signed-in user changing an outlet (its
+  company and currency come with it); `log(doc)` comments "Changed from app.crenya.com by …".
+  Also `refuse`, `invalid`, `checked`, `parse_flag`, `check_modified` (a stale save is refused
+  with Frappe's TimestampMismatchError), `setting_value`, `is_system_manager`.
+- `setup_checks.money_setup_checks(currency)`: rows `{key, status, label, detail, fix}` saying
+  whether ERPNext's precision and rounding of the currency are the tills' (Banker's Rounding at
+  the currency's decimals), read live; `check(...)` builds a product's own rows.
+
 #### Extending crenya_pos_api
 
 Another Frappe app (`required_apps = ["crenya_pos_api"]`) can add pull

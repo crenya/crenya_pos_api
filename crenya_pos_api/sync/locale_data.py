@@ -12,6 +12,10 @@ from frappe.utils.caching import request_cache
 from crenya_pos_api.utils.decimal import as_decimal, format_number
 from crenya_pos_api.utils.phone import build_phone_country_codes, phone_country_code
 
+# the method the tills round with (pos-core money.rs: MidpointNearestEven)
+BANKERS = "Banker's Rounding"
+# what Frappe rounds with while System Settings leave Rounding Method empty (`frappe.utils.rounded`)
+LEGACY_ROUNDING = "Banker's Rounding (legacy)"
 DENOMINATION_DOCTYPE = "Crenya Cash Denomination"
 DENOMINATION_KINDS = ("note", "coin")
 CURRENCY_FIELDS = [
@@ -73,6 +77,12 @@ def format_denominations(rows):
 
 def system_number_format():
 	return frappe.get_system_settings("number_format") or frappe.db.get_default("number_format")
+
+
+def rounding_method() -> str:
+	"""The rounding method ERPNext applies on this site: System Settings' Rounding Method, else
+	Frappe's own default for an empty one."""
+	return frappe.db.get_single_value("System Settings", "rounding_method") or LEGACY_ROUNDING
 
 
 def system_date_format():

@@ -40,7 +40,7 @@ class TestApprovalsBootstrap(SyncCase):
 
 	def test_bootstrap_lists_required_actions_in_order(self):
 		every = {field: 1 for _key, field, *_ in APPROVAL_ACTIONS}
-		self.set_profile(**every, crenya_approve_line_void=0, crenya_approve_settings=0)
+		self.set_profile(**{**every, "crenya_approve_line_void": 0, "crenya_approve_settings": 0})
 		answer = self.approvals()
 		self.assertEqual(answer["approver_roles"], ["Crenya POS Manager"])
 		self.assertEqual(

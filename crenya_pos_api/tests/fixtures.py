@@ -1,7 +1,10 @@
 """Idempotent ERPNext master data for the integration tests (Oman: OMR, 5 % inclusive VAT)."""
 
+from contextlib import contextmanager
+
 import frappe
 from frappe.utils import add_days, getdate, nowdate
+from werkzeug.test import EnvironBuilder
 
 COMPANY = "_Test Crenya POS Co"
 ABBR = "_TCP"
@@ -466,3 +469,17 @@ def setup_terminal_fixtures():
 	)
 	frappe.db.commit()
 	return profile
+
+
+@contextmanager
+def signed_with_key(authorization="token device-key:device-secret"):
+	"""Run the block as a request signed with an `Authorization` header (a till's or device's API
+	key), as `crenya_pos_api.web.context.require_web_session` sees it; the request is gone after."""
+	saved = getattr(frappe.local, "request", None)
+	frappe.local.request = EnvironBuilder(
+		path="/api/method/x", method="POST", headers={"Authorization": authorization}
+	).get_request()
+	try:
+		yield
+	finally:
+		frappe.local.request = saved

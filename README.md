@@ -176,7 +176,7 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `fawtara.get_status` | Fawtara status and ASP document id of up to 50 till invoices (`device_id`, `local_ids`; POST) |
 | `returns.get_invoice_for_return` | original invoice (by name or offline number) with returned / returnable qty, `batch_no` / `expiry_date` per row, `taxes_and_charges` and `loyalty_amount` |
 | `setup.ensure_custom_fields` | create / update the app's role and custom fields, as after a migrate (System Manager only, POST, idempotent) |
-| `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, POST) |
+| `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, from a browser session: a call with an `Authorization` header, a till's or device's key, is refused (0.11.1); POST) |
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
 | `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
 
@@ -770,8 +770,9 @@ field `crenya_pos_pin_hash` and empties the PIN field, so the PIN is stored
 nowhere in readable or decryptable form. The PIN field therefore always looks
 empty; leaving it empty keeps the current PIN, typing a new one replaces it.
 Desk users can also set their own PIN under *My Settings*. To remove a PIN, a
-System Manager calls `crenya_pos_api.api.cashier.clear_pin` with `user`
-(e.g. `bench --site <site> execute crenya_pos_api.sync.cashier.clear_user_pin --args "['cashier1@store.om']"`).
+System Manager calls `crenya_pos_api.api.cashier.clear_pin` with `user` from a
+signed-in browser session (never with an API key: see *Staff and accounts* below); on the
+server, `bench --site <site> execute crenya_pos_api.sync.cashier.clear_user_pin --args "['cashier1@store.om']"`.
 
 Tills receive cashiers through `pull_changes` entity `cashier`:
 `{name, full_name, enabled, pin_hash, roles, modified}`, keyset-paginated on the
@@ -931,6 +932,13 @@ them (or lists nobody). For a shop, reading is managing; a cashier gets no outle
 runs after that check with `ignore_permissions`, keeps the DocType's own validation, needs the
 `modified` it was read with where the record has one, and comments "Changed from app.crenya.com
 by <user>" on the record.
+
+**Staff and accounts are changed from app.crenya.com alone (0.11.1).** `staff_get`, `staff_save`,
+`staff_clear_pin` and `cashier.clear_pin` refuse (403) a call that carries an `Authorization`
+header (`web.context.require_web_session`): app.crenya.com calls with the signed-in user's own
+session cookie, while a till or another device signs with its user's API key. So no device, and
+no manager PIN typed at one, ever changes a user, a PIN or a role, even when the till is signed
+in as a System Manager.
 
 | method | what |
 |---|---|

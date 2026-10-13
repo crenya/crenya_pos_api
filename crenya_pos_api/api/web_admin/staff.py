@@ -1,7 +1,8 @@
 """Shop staff on app.crenya.com (People → a user → Shop till): a user's retail till privilege,
 6-digit till PIN and the shops they work at. System Manager only, as the restaurant's; the rules
 are `web.staff`'s, the privileges `sync.approvals.RETAIL_PRIVILEGES` (cashier: Crenya POS User;
-manager: also Crenya POS Manager, who approves at the till). The answer is the restaurant's
+manager: also Crenya POS Manager, who approves at the till). From a browser session only
+(`require_web_session`): a till or device key is refused. The answer is the restaurant's
 `staff_get` shape plus `privileges`, the options the web offers."""
 
 import frappe
@@ -11,11 +12,12 @@ from crenya_pos_api.sync.approvals import RETAIL_PRIVILEGE_LABELS, RETAIL_PRIVIL
 from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, clear_user_pin
 from crenya_pos_api.sync.context import is_system_manager, profile_users
 from crenya_pos_api.web import staff
-from crenya_pos_api.web.context import WebAdminContext
+from crenya_pos_api.web.context import WebAdminContext, require_web_session
 from crenya_pos_api.web.devices import labelled
 
 
 def _staff_user(user):
+	require_web_session()
 	# not frappe.only_for, which lets every user through while tests run
 	if not is_system_manager():
 		raise frappe.PermissionError

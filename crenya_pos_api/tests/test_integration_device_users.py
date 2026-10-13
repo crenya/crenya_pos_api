@@ -443,7 +443,7 @@ class TestDeviceUsers(SyncCase):
 		derived_text = raw.split("$")[3]
 		self.assertNotIn(derived_text, json.dumps(page))
 		# it is the seal of that hash under the key shared at pairing, which checks the PIN
-		key = base64.b64decode(answer["pin_seal_key"])
+		key = bytes.fromhex(answer["pin_seal_key"])
 		_scheme, key_id, rounds, salt, seal = sealed.split("$")
 		self.assertEqual(rounds, raw.split("$")[1])
 		self.assertEqual(salt, raw.split("$")[2])

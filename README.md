@@ -209,7 +209,7 @@ A device paired before this holds a person's key. The site setting `crenya_requi
 
 `device.rekey_device(device_id)`, called with the person's key for a device that person owns
 (`device.user`; not even a System Manager takes over another's), makes the device user and answers
-`{user, api_key, api_secret, key_kind, device_user, pin_seal_key}`; the device stores it and deletes
+`{user, api_key, api_secret, key_kind, device_user, pin_seal_key}` (the key in hex); the device stores it and deletes
 the person's key from its secret store. Called with a device user's key it answers the same key. The
 person's own key is never rotated. A branch master's device user acts for the devices it registered
 with the person's key before (`device.user` is the person it was paired by).

@@ -217,7 +217,8 @@ def credentials(device_id, person, device_type=None):
 		"api_secret": api_secret,
 		"key_kind": KEY_KIND_DEVICE,
 		"device_user": user,
-		"pin_seal_key": base64.b64encode(pin_seal_key(device_id)).decode("ascii"),
+		# hex, as pos-core keeps its keys
+		"pin_seal_key": pin_seal_key(device_id).hex(),
 	}
 
 

@@ -1,4 +1,3 @@
-import base64
 import unittest
 from unittest import mock
 
@@ -70,4 +69,3 @@ class TestKeys(unittest.TestCase):
 			self.assertEqual(len(a), 32)
 		with mock.patch("frappe.utils.password.get_encryption_key", return_value="another-site"):
 			self.assertNotEqual(a, device_user.pin_seal_key("dev-a-0001"))
-		base64.b64encode(a)

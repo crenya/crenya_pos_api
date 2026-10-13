@@ -915,6 +915,10 @@ shared by the retail web admin and other apps' (crenya_restaurant imports them):
   open shift and the plan's terminal cap, and deactivating (never while in use: a shift open or
   seen within 24 hours) or reactivating one within the plan's caps. Never deletes a device.
 - `retail_checks.retail_setup_checks(profile)`: a shop's own setup checks (below).
+- `staff.save_web_staff(approver, doc, privilege, pin, outlets, outlet_users, privilege_roles)`
+  and its rules (`pin_problem`, `listing_changes`, `privilege_of`, `role_changes`,
+  `web_staff_user`, ...): a user's till privilege, 6-digit PIN and outlets, with each product's
+  `{privilege: roles}` map (retail: `sync.approvals.RETAIL_PRIVILEGES`).
 
 #### Shops on app.crenya.com (0.11.0)
 
@@ -937,6 +941,7 @@ by <user>" on the record.
 | `denominations(outlet)`, `save_denominations(outlet, rows)` | the cash denominations of the shop's currency (System Manager writes) |
 | `terminals(outlet)`, `save_terminal(outlet, terminal)` | payment terminals; the security token is write-only |
 | `company_wording(outlet)`, `save_company_wording(outlet, values, modified)` | the company's receipt wording (System Manager writes) |
+| `staff_get(user)`, `staff_save(user, privilege, pin, outlets)`, `staff_clear_pin(user)` | a user's shop till privilege (`cashier`: Crenya POS User; `manager`: also Crenya POS Manager), 6-digit PIN and shops; System Manager only, never Administrator or Guest, never System Manager given; the answer lists the `privileges` offered |
 
 The settings form is ERPNext's own POS Profile fields (read from its meta: price list,
 customer, discount and rate changes, warehouse, taxes, cost center, rounding, write-off and the

@@ -18,6 +18,7 @@ from crenya_pos_api.api.web_admin.settings import (
 	scale_rules,
 	terminals,
 )
+from crenya_pos_api.api.web_admin.staff import staff_clear_pin, staff_get, staff_save
 
 __all__ = [
 	"company_wording",
@@ -33,5 +34,8 @@ __all__ = [
 	"save_terminal",
 	"scale_rules",
 	"set_device_enabled",
+	"staff_clear_pin",
+	"staff_get",
+	"staff_save",
 	"terminals",
 ]

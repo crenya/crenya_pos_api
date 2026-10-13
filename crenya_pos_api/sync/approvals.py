@@ -28,6 +28,8 @@ APPROVAL_ACTIONS = (
 )
 # the privileges the retail staff screen offers and the roles each one gives
 RETAIL_PRIVILEGES = {"cashier": (POS_USER_ROLE,), "manager": (POS_USER_ROLE, APPROVER_ROLE)}
+# their labels (English, Arabic), in RETAIL_PRIVILEGES order: the web's staff screen offers these
+RETAIL_PRIVILEGE_LABELS = {"cashier": ("Cashier", "كاشير"), "manager": ("Manager", "مدير")}
 # the most a cashier may discount a bill or line alone, in percent; 0 or blank: no limit
 MAX_DISCOUNT_FIELD = "crenya_max_discount_percent"
 

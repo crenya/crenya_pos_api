@@ -61,7 +61,9 @@ def require_web_session():
 	its user's API key (`token <key>:<secret>`), so any `Authorization` header (token, Basic,
 	Bearer) is refused here: neither a device nor a manager PIN typed at one changes an
 	account."""
-	if frappe.get_request_header("Authorization"):
+	# not frappe.get_request_header: on v16 it raises outside a request (a job, a test, the console)
+	request = getattr(frappe.local, "request", None)
+	if request is not None and request.headers.get("Authorization"):
 		# owner decision 2026-10-13: staff and accounts change on app.crenya.com alone
 		refuse(_("Staff and accounts are managed on app.crenya.com (Restaurants → Staff, People)"))
 

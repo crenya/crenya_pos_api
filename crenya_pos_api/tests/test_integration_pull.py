@@ -57,6 +57,22 @@ class TestPullTraps(SyncCase):
 	def test_serial_item_not_pulled(self):
 		self.assert_item_dropped("has_serial_no")
 
+	def test_batches_of_serial_items_not_pulled(self):
+		from frappe.utils import add_days, nowdate
+
+		code = f"_TC-SERBATCH-{uuid.uuid4().hex[:8]}"
+		fixtures.ensure_item(code, 1.0, has_batch_no=1, create_new_batch=0)
+		batch = f"{code}-B1"
+		fixtures.ensure_batch(batch, code, add_days(nowdate(), 365))
+		frappe.db.commit()
+		records, _tombs, _cursor = self.pull_all("batch")
+		self.assertIn(batch, [r["name"] for r in records])
+
+		frappe.db.set_value("Item", code, "has_serial_no", 1)
+		frappe.db.commit()
+		records, _tombs, _cursor = self.pull_all("batch")
+		self.assertNotIn(batch, [r["name"] for r in records])
+
 	def test_customer_price_not_pulled(self):
 		code = self.new_item("CUSTPRICE")
 		general = frappe.db.get_value("Item Price", {"item_code": code, "price_list": fixtures.PRICE_LIST})

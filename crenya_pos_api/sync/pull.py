@@ -174,7 +174,8 @@ class ItemSpec(EntitySpec):
 
 
 class BatchSpec(EntitySpec):
-	"""Batches of the profile's batch tracked items with their stock in the profile warehouse.
+	"""Batches of the profile's batch tracked items (never a serial-numbered one) with their stock
+	in the profile warehouse.
 
 	A batch is (re)sent when the Batch changes (keyset on Batch `modified`) and when
 	its stock in the warehouse moves: a second keyset position (`sm`/`sn` in the
@@ -190,7 +191,12 @@ class BatchSpec(EntitySpec):
 
 	def _items(self, ctx):
 		item = frappe.qb.DocType("Item")
-		query = frappe.qb.from_(item).select(item.name).where(item.has_batch_no == 1)
+		# a serial-numbered item is never sold at a till (ItemSpec.excluded): nor are its batches
+		query = (
+			frappe.qb.from_(item)
+			.select(item.name)
+			.where((item.has_batch_no == 1) & (item.has_serial_no == 0))
+		)
 		for condition in _profile_item_conditions(item, ctx):
 			query = query.where(condition)
 		return query

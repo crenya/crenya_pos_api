@@ -12,6 +12,7 @@ from crenya_pos_api.sync.errors import (
 	DevicePermissionError,
 	InvalidRequestError,
 	ProtocolUnsupportedError,
+	RekeyRequiredError,
 	UnsupportedTaxError,
 	raise_api_error,
 )
@@ -24,6 +25,8 @@ PROTOCOL_VERSION = 2
 DEVICE_DOCTYPE = "Crenya POS Device"
 EVENT_DOCTYPE = "Crenya Sync Event"
 POS_USER_ROLE = "Crenya POS User"
+# the one role of a device user (sync.device_user): opens every device type, has no desk access
+DEVICE_ROLE = "Crenya POS Device"
 SUPPORTED_CHARGE_TYPES = ("On Net Total",)
 DEFAULT_DEVICE_TYPE = "till"
 # device_type values: lower case letters, digits, _ and - (at most 40)
@@ -45,6 +48,8 @@ class DeviceContext:
 	profile: "frappe.model.document.Document"
 	# the workspace's plan (sync.entitlement), None when unrestricted
 	entitlement: dict | None = None
+	# the request asked for sealed PIN hashes (it holds the key `device_user.pin_seal_key` gives)
+	pin_seal: bool = False
 
 	@property
 	def device_id(self):
@@ -79,6 +84,14 @@ def check_protocol_version(protocol_version):
 			f"Client protocol {version} is newer than server protocol {PROTOCOL_VERSION}; "
 			"update the server app",
 		)
+
+
+def request_uses_api_key():
+	"""True when the request carries an `Authorization` header (token, Basic or Bearer): it is
+	signed with an API key, as a till or other device signs, not with a browser session. Read from
+	the request itself: on v16 `frappe.get_request_header` raises outside a request."""
+	request = getattr(frappe.local, "request", None)
+	return request is not None and bool(request.headers.get("Authorization"))
 
 
 def require_login():
@@ -136,10 +149,16 @@ def is_system_manager(user=None):
 
 
 def user_can_use_profile(profile, user=None):
-	"""Profile must be enabled and list the user (or have no user list, or user is System Manager)."""
+	"""Profile must be enabled and list the user (or have no user list, or user is System Manager).
+	A device user has no say of its own: the human who paired it was checked when it registered,
+	so only a disabled profile closes it."""
+	from crenya_pos_api.sync.device_user import is_device_user
+
 	user = user or frappe.session.user
 	if cint(profile.get("disabled")):
 		return False
+	if is_device_user(user):
+		return True
 	if is_system_manager(user):
 		return True
 	users = profile_users(profile)
@@ -242,8 +261,9 @@ def get_device_context(device_id, touch=True):
 		raise_api_error(DeviceNotRegisteredError, f"Device {device_id} is not registered or is disabled")
 
 	user = frappe.session.user
-	if device.user != user and not is_system_manager(user):
+	if not device_owned_by(device, user):
 		raise_api_error(DevicePermissionError, f"Device {device_id} is registered to another user")
+	enforce_device_key(device)
 	# roles scoped to other device types (e.g. restaurant staff) never open a retail till
 	require_device_role(device.get("device_type") or DEFAULT_DEVICE_TYPE)
 
@@ -260,6 +280,31 @@ def get_device_context(device_id, touch=True):
 	entitlement = get_entitlement()
 	attach_to_reply(entitlement)
 	return DeviceContext(device=device, profile=profile, entitlement=entitlement)
+
+
+def device_owned_by(device, user):
+	"""Whether `user` may act for `device`: its user, a System Manager, or the device user of the
+	human the device was registered to (a branch master acts for the tills it registered with that
+	human's key before it had a key of its own)."""
+	from crenya_pos_api.sync.device_user import paired_by
+
+	return device.user == user or is_system_manager(user) or (device.user == paired_by(user))
+
+
+def enforce_device_key(device):
+	"""A device is called with its own device user's key. A human's key (`key_kind` user) is
+	refused with `rekey_required` once the site requires device keys, and otherwise allowed with
+	a warning (Error Log, once a day per device); sessions in a browser are not keys."""
+	from crenya_pos_api.sync.device_user import is_device_user, require_device_keys, warn_user_key
+
+	user = frappe.session.user
+	if is_device_user(user) or not request_uses_api_key():
+		return
+	if require_device_keys():
+		raise_api_error(
+			RekeyRequiredError, f"Device {device.name} is signed in with a person's key; re-key it first"
+		)
+	warn_user_key(device.name, user)
 
 
 def get_total_tolerance(precision):

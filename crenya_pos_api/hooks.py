@@ -145,6 +145,11 @@ doc_events = {
 		"before_validate": "crenya_pos_api.sync.cashier.user_validate",
 		"validate": "crenya_pos_api.sync.cashier.user_validate",
 	},
+	"Crenya POS Device": {
+		# a deactivated device's user is disabled with it (its key stops working)
+		"on_update": "crenya_pos_api.sync.device_user.device_on_update",
+		"on_trash": "crenya_pos_api.sync.device_user.device_on_trash",
+	},
 	"POS Profile": {
 		# tills learn about cashiers added to / removed from Applicable for Users
 		"on_update": "crenya_pos_api.sync.cashier.pos_profile_on_update",

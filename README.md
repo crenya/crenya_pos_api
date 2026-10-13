@@ -165,12 +165,13 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 
 | method | purpose |
 |---|---|
-| `auth.login` | username + password → user's API key pair (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
+| `auth.login` | username + password (+ `device_id`) → the **device user's** API key pair, `key_kind: "device"`, `pin_seal_key`; `user` is the person who signed in, who only authorises the pairing (see *Device users*); without a `device_id` the person's own key while `crenya_require_device_keys` is off (guest, POST, rate limited 10 / 5 min, desk lockout rules apply) |
+| `device.rekey_device` | exchange the key of the person who owns a device (`device_id`) for its device user's key (see *Device users*; POST) |
 | `sync.get_sync_capabilities` | ping, `protocol_version` (2), versions, features incl. `shifts`, `tax_templates`, `loyalty`, `promotions`, `verify_page`, `batches`, `open_returns`, `tax_wording`, `payment_terminals`, `scale_rules`, `uom_entity`, `extensions`, plus flags of installed extension apps (GET or POST) |
 | `device.list_pos_profiles` | POS Profiles the user may use: `{name, company, warehouse, currency}`, plus flags of installed extension apps (`crenya_pos_profile_flags`) |
 | `device.register_device` | idempotent device registration, assigns `D01`…; `device_id` compared ignoring case (see *Device ids*); optional `device_type` (lower case letters, digits, `_`, `-`; default `till`, kept when a later registration omits it); a NEW `till` / `restaurant_pos` is refused (`permission`) past the plan's caps or with its add-on off (see *Plan caps*) |
 | `device.get_bootstrap` | device (incl. `device_type`), profile (incl. `allow_negative_stock` from Stock Settings, `tax_templates`, `loyalty_enabled`, `allow_return_without_invoice`, `scale_barcode_rules`), company (incl. `phone_country_code` and the tax / invoice wording), `settings.qty_precision`, `settings.rate_precision`, taxes, payment modes, `payment_terminals`, and the locale data `currency`, `phone_country_codes`, `cash_denominations`, `site_timezone`, `date_format` (System Settings, else the site default, else `null`) for the till, plus keys of installed extension apps, and `entitlement` (see *Plan caps*) |
-| `sync.pull_changes` | keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch`, `uom` (+ entities of installed extension apps) + tombstones |
+| `sync.pull_changes` | (`pin_seal=1`: sealed PIN hashes, see *Device users*) keyset-paginated feed: `item`, `item_price`, `customer`, `stock`, `cashier`, `item_group`, `pricing_rule`, `batch`, `uom` (+ entities of installed extension apps) + tombstones |
 | `sync.push_batch` | up to 50 events (Customer / Sales Invoice / Crenya POS Shift submit, + aggregates and operations of installed extension apps), one savepoint + commit per event |
 | `loyalty.get_details` | redeemable loyalty points of a Customer (`device_id`, `customer`; POST) |
 | `fawtara.get_status` | Fawtara status and ASP document id of up to 50 till invoices (`device_id`, `local_ids`; POST) |
@@ -179,6 +180,48 @@ sync protocol document of the till: `apps/pos-desktop/docs/sync-protocol.md`.
 | `cashier.clear_pin` | remove a cashier's POS PIN (`user`; System Manager only, from a browser session: a call with an `Authorization` header, a till's or device's key, is refused (0.11.1); POST) |
 | `update.check` | newest published release for the till (`device_id`, `target`, `current_version`); raw updater JSON or HTTP 204 (GET) |
 | `update.download` | the release's installer for `target` (`release`, `target`, `device_id`; GET) |
+
+#### Device users: a device never holds a person's API key (0.12.0)
+
+Signing in on a till, waiter phone or kitchen display (`auth.login` with the device's id) only
+**authorises the pairing**: the person is role-checked (Crenya POS User, a device role, or System
+Manager), a device already registered is signed in again only by a System Manager or someone who
+may use its POS Profile, and the person is kept as `paired_by` (on the Crenya POS Device and on the
+device user, with a comment). The device gets the key pair of its own **device user**
+`device-<device id>@<site host>`: a System User, with the one role `Crenya POS Device` (no desk
+access, no DocPerm on User, Has Role or Role; `tests/test_integration_device_users`), made with
+`explicit_roles` so another app's "new users get every role" rule does not widen it. The key is
+kept (a second sign-in returns it), `register_device` makes the device user the device's `user`,
+and `get_sync_capabilities` / `get_bootstrap` answer `key_kind` (`device` or `user`); the
+capabilities' `user` stays the person who paired it (the name a till shows as signed in). The
+device user is disabled when its device is deactivated (or deleted) and enabled when it is
+reactivated. Device users are not cashiers (the `cashier` pull, `staff_roles` and the staff lists
+leave them out).
+
+A device paired before this holds a person's key. The site setting `crenya_require_device_keys`
+(site_config.json) decides what happens when such a key calls a device endpoint
+(`get_device_context`; a browser session is no key):
+
+| `crenya_require_device_keys` | a person's key on a device |
+|---|---|
+| off (the default) | allowed; an Error Log "a device is signed in with a person's API key" once a day per device; raw PIN hashes still go to devices that do not ask for seals |
+| on | refused with error code `rekey_required` (403); old tills get no PIN hashes |
+
+`device.rekey_device(device_id)`, called with the person's key for a device that person owns
+(`device.user`; not even a System Manager takes over another's), makes the device user and answers
+`{user, api_key, api_secret, key_kind, device_user, pin_seal_key}`; the device stores it and deletes
+the person's key from its secret store. Called with a device user's key it answers the same key. The
+person's own key is never rotated. A branch master's device user acts for the devices it registered
+with the person's key before (`device.user` is the person it was paired by).
+
+**Sealed PIN hashes.** The `cashier` pull sent every device each staff member's raw
+`pbkdf2_sha256` hash. A device that holds its `pin_seal_key` (answered at sign-in and re-key; an
+HMAC of the site's encryption key and the device id, never stored) sends `pin_seal=1` and gets
+`crenya_pin1$<key id>$<rounds>$<salt>$<HMAC of the PBKDF2 key>` (pos-core's sealed format): it checks
+a PIN by deriving the PBKDF2 key and comparing seals, and the PBKDF2 key never leaves the server.
+A device that starts asking for seals is sent every cashier again. Other devices get the raw hash
+only while `crenya_require_device_keys` is off. Capabilities `features.device_users` and
+`features.pin_seal` say the server does this.
 
 #### What a till never pulls; what a cashier needs no desk role for (0.11.0)
 

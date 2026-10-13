@@ -5,6 +5,7 @@ import re
 import frappe
 from frappe.utils import cint, get_system_timezone, now
 
+from crenya_pos_api.sync import device_user
 from crenya_pos_api.sync.approvals import approvals_bootstrap
 from crenya_pos_api.sync.context import (
 	DEFAULT_DEVICE_TYPE,
@@ -46,7 +47,7 @@ from crenya_pos_api.sync.terminals import payment_terminals
 from crenya_pos_api.utils.dates import utc_now_iso
 from crenya_pos_api.utils.decimal import format_money, format_number
 
-_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,139}$")
+DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,139}$")
 _SHORT_RE = re.compile(r"^D(\d+)$")
 
 
@@ -56,7 +57,8 @@ def offline_prefix(device_short):
 
 def list_profiles():
 	require_device_role()
-	user = frappe.session.user
+	# a device user lists the profiles of the person who paired it
+	user = device_user.acting_user()
 	profiles = frappe.get_all(
 		"POS Profile",
 		filters={"disabled": 0},
@@ -167,7 +169,7 @@ def register(
 	device_id, device_name=None, pos_profile=None, app_version=None, platform=None, device_type=None
 ):
 	require_device_role()
-	if not isinstance(device_id, str) or not _DEVICE_ID_RE.match(device_id):
+	if not isinstance(device_id, str) or not DEVICE_ID_RE.match(device_id):
 		raise_api_error(InvalidRequestError, "device_id must be the till's UUID")
 	device_type = _device_type(device_type)
 	# a site whose last deploy skipped `bench migrate` has no device_type column yet
@@ -184,8 +186,10 @@ def register(
 
 	profile = get_profile(pos_profile)
 	user = frappe.session.user
-	if not user_can_use_profile(profile, user):
-		raise_api_error(DevicePermissionError, f"User {user} may not use POS Profile {profile.name}")
+	# the person who signed in to pair a device user is the one who must be allowed the profile
+	person = device_user.acting_user(user)
+	if not user_can_use_profile(profile, person):
+		raise_api_error(DevicePermissionError, f"User {person} may not use POS Profile {profile.name}")
 	assert_supported_taxes(profile)
 	# the type the device will have, checked against the plan
 	plan_type = (device_type if has_device_type else None) or stored_type
@@ -201,6 +205,8 @@ def register(
 	if has_device_type and device_type:
 		# re-registering without a device_type keeps the stored one
 		values["device_type"] = device_type
+	if device_user.is_device_user(user) and frappe.get_meta(DEVICE_DOCTYPE).has_field("paired_by"):
+		values["paired_by"] = person
 
 	if stored_name:
 		device = frappe.get_doc(DEVICE_DOCTYPE, stored_name, for_update=True)
@@ -248,6 +254,42 @@ def register(
 			raise_api_error(InvalidRequestError, "Could not allocate a device code, retry")
 
 	return _registration(device)
+
+
+def rekey(device_id):
+	"""Exchange the key of the person who owns a device for its device user's key (made the first
+	time). The call is made with the current key and the id of a device that key's user already
+	owns; a device user's own key just comes back. The person's key is untouched on the server:
+	the device deletes its copy."""
+	require_device_role()
+	name = find_device_name(device_id)
+	device = name and frappe.db.get_value(
+		DEVICE_DOCTYPE, name, ["name", "user", "enabled", "device_type", "pos_profile"], as_dict=True
+	)
+	if not device or not cint(device.enabled):
+		raise_api_error(DeviceNotRegisteredError, f"Device {device_id} is not registered or is disabled")
+	user = frappe.session.user
+	if device.user != user:
+		raise_api_error(DevicePermissionError, f"Device {device_id} is registered to another user")
+	own = device_user.device_id_of(user)
+	if own and own != name.lower():
+		raise_api_error(DevicePermissionError, f"This key belongs to another device than {device_id}")
+	person = device_user.acting_user(user)
+	if not user_can_use_profile(get_profile(device.pos_profile), person):
+		raise_api_error(DevicePermissionError, f"User {person} may not use POS Profile {device.pos_profile}")
+
+	answer = device_user.credentials(name, person, device.device_type)
+	if not own:
+		frappe.db.set_value(
+			DEVICE_DOCTYPE,
+			name,
+			{"user": answer["device_user"], "paired_by": person},
+			update_modified=False,
+		)
+		frappe.get_doc(DEVICE_DOCTYPE, name).add_comment(
+			"Info", f"Key of {person} exchanged for the device user {answer['device_user']}"
+		)
+	return {"user": person, **answer}
 
 
 def _company_address_lines(profile, company):
@@ -447,6 +489,8 @@ def bootstrap(ctx):
 		"server_time": utc_now_iso(),
 		# the plan's caps and licence state (null: no restriction); also beside `message`
 		"entitlement": ctx.entitlement,
+		# "device": called with a device user's key; "user": with a person's (it re-keys)
+		"key_kind": device_user.key_kind(),
 	}
 	if ctx.device_type == DEFAULT_DEVICE_TYPE:
 		# store controls of a retail till (0.11.0; older tills ignore the key)

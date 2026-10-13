@@ -17,7 +17,7 @@ import frappe
 from frappe.utils import cint, get_datetime, getdate, now_datetime, nowdate
 
 from crenya_pos_api.sync.batches import batch_quantities, batches_of_bundles, build_batch_records
-from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, device_roles_of
+from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, device_roles_of, pin_hash_for
 from crenya_pos_api.sync.context import (
 	EVENT_DOCTYPE,
 	device_roles,
@@ -403,7 +403,9 @@ class CashierSpec(EntitySpec):
 		return columns
 
 	def cursor_scope(self, ctx):
-		roles = "\n".join(device_roles(ctx.device_type))
+		# the roles and whether the hashes come sealed: a device that starts asking for seals is
+		# sent every cashier again
+		roles = "\n".join(device_roles(ctx.device_type)) + ("\nsealed" if ctx.pin_seal else "")
 		return hashlib.sha256(roles.encode("utf-8")).hexdigest()[:16]
 
 	def filters(self, table, ctx):
@@ -420,11 +422,21 @@ class CashierSpec(EntitySpec):
 		if self._has_pin_hash():
 			pin_hash = getattr(table, PIN_HASH_FIELD)
 			candidate = candidate | (pin_hash.notnull() & (pin_hash != ""))
-		return [table.name != "Guest", candidate]
+		return [table.name != "Guest", candidate, *self._not_a_device_user(table)]
+
+	def _not_a_device_user(self, table):
+		"""The users a device signs in with are not cashiers."""
+		from crenya_pos_api.sync.device_user import DEVICE_ID_FIELD, user_has_fields
+
+		if not user_has_fields():
+			return []
+		column = getattr(table, DEVICE_ID_FIELD)
+		return [column.isnull() | (column == "")]
 
 	def build(self, rows, ctx):
 		held = device_roles_of([row.name for row in rows], ctx.device_type)
 		allowed = set(profile_users(ctx.profile))
+		pin_view = pin_hash_for(ctx)
 
 		records = []
 		for row in rows:
@@ -435,7 +447,7 @@ class CashierSpec(EntitySpec):
 					"name": row.name,
 					"full_name": row.full_name,
 					"enabled": 1 if enabled else 0,
-					"pin_hash": (row.get(PIN_HASH_FIELD) or None) if enabled else None,
+					"pin_hash": pin_view(row.get(PIN_HASH_FIELD)) if enabled else None,
 					"roles": list(roles) if enabled else [],
 					"modified": format_db_datetime(row.modified),
 				}

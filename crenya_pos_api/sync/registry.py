@@ -26,7 +26,7 @@ import re
 import frappe
 
 from crenya_pos_api.sync.approvals import APPROVER_ROLE
-from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, DEVICE_TYPE_RE, POS_USER_ROLE
+from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, DEVICE_ROLE, DEVICE_TYPE_RE, POS_USER_ROLE
 from crenya_pos_api.sync.errors import ExtensionHookError, clean_message, error_dict
 
 ENTITY_HOOK = "crenya_pos_pull_entities"
@@ -187,8 +187,7 @@ def _check_handler(handler, aggregate_type, path):
 		handler.aggregate_type = aggregate_type
 	elif handler.aggregate_type != aggregate_type:
 		_fail(
-			f"{AGGREGATE_HOOK}[{aggregate_type!r}]: {path} declares aggregate_type "
-			f"{handler.aggregate_type!r}"
+			f"{AGGREGATE_HOOK}[{aggregate_type!r}]: {path} declares aggregate_type {handler.aggregate_type!r}"
 		)
 
 	operations = handler.operations
@@ -377,16 +376,17 @@ def _role_rule(entry):
 
 
 def _load_device_role_rules():
-	"""{role: frozenset of device types, or None for every type}: Crenya POS User and the store
-	controls' approver role (retail tills) first.
+	"""{role: frozenset of device types, or None for every type}: Crenya POS User, the store
+	controls' approver role (retail tills) and the device user's role first.
 	A role declared twice (two apps) applies to the union of its types."""
 	entries = _hook(DEVICE_ROLE_HOOK, [])
 	if isinstance(entries, str):
 		entries = [entries]
 	if not isinstance(entries, list | tuple):
 		_fail(f"{DEVICE_ROLE_HOOK} must be a list of role names or {{role, device_types}} entries")
-	# core: Crenya POS User opens every device type, the approver role (store controls) retail tills
-	rules = {POS_USER_ROLE: None, APPROVER_ROLE: frozenset({DEFAULT_DEVICE_TYPE})}
+	# core: Crenya POS User and the device user's role open every device type, the approver role
+	# (store controls) retail tills
+	rules = {POS_USER_ROLE: None, APPROVER_ROLE: frozenset({DEFAULT_DEVICE_TYPE}), DEVICE_ROLE: None}
 	for entry in entries:
 		role, types = _role_rule(entry)
 		if role in rules:

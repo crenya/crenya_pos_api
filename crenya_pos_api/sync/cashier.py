@@ -186,6 +186,35 @@ def device_roles_of(users, device_type):
 	return {user: [role for role in roles if role in held[user]] for user in users if user in held}
 
 
+def without_device_users(query, user_table):
+	"""`query` without the users a device signs in with (they hold the device role but are no
+	staff); a site that is not migrated yet has none."""
+	from crenya_pos_api.sync.device_user import DEVICE_ID_FIELD, user_has_fields
+
+	if not user_has_fields():
+		return query
+	column = getattr(user_table, DEVICE_ID_FIELD)
+	return query.where(column.isnull() | (column == ""))
+
+
+def pin_hash_for(ctx):
+	"""A function from a stored PIN hash to what the pulling device receives.
+
+	A device that asked for seals (`ctx.pin_seal`: it holds the key `device_user.pin_seal_key`
+	gave it at pairing) gets the seal of the hash, never the PBKDF2 key itself. Any other device
+	gets the hash as stored while the site does not require device keys
+	(`crenya_require_device_keys`), and none once it does: an old till then has no PINs offline
+	until it is updated."""
+	from crenya_pos_api.sync.device_user import pin_seal_key, require_device_keys, seal_pin_hash
+
+	if ctx.pin_seal:
+		key = pin_seal_key(ctx.device_id)
+		return lambda stored: seal_pin_hash(stored, key) if stored else None
+	if require_device_keys():
+		return lambda stored: None
+	return lambda stored: stored or None
+
+
 def staff_roles(profile, device_type):
 	"""{user: [roles of `device_type`]} of the staff a device of `profile` and `device_type`
 	knows as enabled cashiers: enabled users (not Guest) with a role for that type, limited to
@@ -208,6 +237,7 @@ def staff_roles(profile, device_type):
 	allowed = profile_users(profile)
 	if allowed:
 		query = query.where(has_role.parent.isin(allowed))
+	query = without_device_users(query, user)
 	held = device_roles_of(query.run(pluck=True), device_type)
 	return {name: held[name] for name in sorted(held)}
 

@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta
 import frappe
 from frappe import _
 
-from crenya_pos_api.sync.context import DeviceContext, is_system_manager
+from crenya_pos_api.sync.context import DeviceContext, is_system_manager, request_uses_api_key
 from crenya_pos_api.utils.dates import format_db_datetime
 
 # where a change from the web was made, as its comment names it
@@ -61,9 +61,7 @@ def require_web_session():
 	its user's API key (`token <key>:<secret>`), so any `Authorization` header (token, Basic,
 	Bearer) is refused here: neither a device nor a manager PIN typed at one changes an
 	account."""
-	# not frappe.get_request_header: on v16 it raises outside a request (a job, a test, the console)
-	request = getattr(frappe.local, "request", None)
-	if request is not None and request.headers.get("Authorization"):
+	if request_uses_api_key():
 		# owner decision 2026-10-13: staff and accounts change on app.crenya.com alone
 		refuse(_("Staff and accounts are managed on app.crenya.com (Restaurants → Staff, People)"))
 

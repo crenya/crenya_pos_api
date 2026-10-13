@@ -29,3 +29,10 @@ def get_bootstrap(device_id: str | None = None, protocol_version: int | str | No
 	check_protocol_version(protocol_version)
 	ctx = get_device_context(device_id)
 	return device_service.bootstrap(ctx)
+
+
+@frappe.whitelist(methods=["POST"])
+def rekey_device(device_id: str | None = None, protocol_version: int | str | None = None):
+	"""Exchange the API key of the device's owner for its device user's key (0.12.0)."""
+	check_protocol_version(protocol_version)
+	return device_service.rekey(device_id)

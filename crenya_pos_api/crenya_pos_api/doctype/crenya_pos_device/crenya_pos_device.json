@@ -13,6 +13,7 @@
   "column_break_main",
   "pos_profile",
   "user",
+  "paired_by",
   "details_section",
   "app_version",
   "platform",
@@ -80,6 +81,14 @@
    "search_index": 1
   },
   {
+   "description": "The person who signed in to pair the device; the device itself holds its own user's key",
+   "fieldname": "paired_by",
+   "fieldtype": "Link",
+   "label": "Paired By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
    "fieldname": "details_section",
    "fieldtype": "Section Break",
    "label": "Details"
@@ -132,7 +141,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-05 12:00:00.000000",
+ "modified": "2026-10-13 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya POS Device",

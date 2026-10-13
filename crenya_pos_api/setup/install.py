@@ -3,6 +3,7 @@
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE, MAX_DISCOUNT_FIELD
 from crenya_pos_api.sync.tax_wording import (
 	DEFAULT_CREDIT_NOTE_TITLE,
 	DEFAULT_INVOICE_TITLE,
@@ -23,6 +24,49 @@ POS_USER_ROLE = "Crenya POS User"
 # {DocType: right}, read-only, never a write; granted to the roles of devices that post sales only
 # (`ensure_push_reads`).
 PUSH_READS = {"Account": "select", "Item": "read"}
+
+
+def _store_control_fields():
+	"""POS Profile's *Store controls* section: the cashier's discount limit and one Check per
+	`APPROVAL_ACTIONS` row (on by default), in that order."""
+	fields = [
+		{
+			"fieldname": "crenya_store_controls_section",
+			"fieldtype": "Section Break",
+			"label": "Store controls",
+			"collapsible": 1,
+			"insert_after": "crenya_scale_barcode_rules",
+		},
+		{
+			"fieldname": MAX_DISCOUNT_FIELD,
+			"fieldtype": "Percent",
+			"label": "Most discount without a manager (%)",
+			"description": "Blank or 0: no limit. Above it, a Crenya POS Manager approves at the till.",
+			"insert_after": "crenya_store_controls_section",
+		},
+		{
+			"fieldname": "crenya_store_controls_column",
+			"fieldtype": "Column Break",
+			"insert_after": MAX_DISCOUNT_FIELD,
+		},
+	]
+	previous = "crenya_store_controls_column"
+	for _key, fieldname, label, _label_ar in APPROVAL_ACTIONS:
+		fields.append(
+			{
+				"fieldname": fieldname,
+				"fieldtype": "Check",
+				"label": label,
+				"description": "Needs a Crenya POS Manager's approval at the till",
+				"default": "1",
+				"insert_after": previous,
+			}
+		)
+		previous = fieldname
+	return fields
+
+
+STORE_CONTROL_FIELDS = _store_control_fields()
 
 CUSTOM_FIELDS = {
 	"Sales Invoice": [
@@ -162,6 +206,7 @@ CUSTOM_FIELDS = {
 			"When rules are set they replace the scale settings of the tills.",
 			"insert_after": "crenya_scale_section",
 		},
+		*STORE_CONTROL_FIELDS,
 	],
 	"Company": [
 		{
@@ -300,15 +345,13 @@ CUSTOM_FIELDS = {
 
 
 def make_role():
-	if frappe.db.exists("Role", POS_USER_ROLE):
-		return
-	frappe.get_doc(
-		{
-			"doctype": "Role",
-			"role_name": POS_USER_ROLE,
-			"desk_access": 0,
-		}
-	).insert(ignore_permissions=True)
+	"""The till roles (no desk access): Crenya POS User, and the store controls' approver."""
+	for role in (POS_USER_ROLE, APPROVER_ROLE):
+		if frappe.db.exists("Role", role):
+			continue
+		frappe.get_doc({"doctype": "Role", "role_name": role, "desk_access": 0}).insert(
+			ignore_permissions=True
+		)
 
 
 def make_custom_fields():
@@ -346,6 +389,7 @@ def ensure_setup():
 	ensure_push_reads()
 	return {
 		"role": POS_USER_ROLE,
+		"approver_role": APPROVER_ROLE,
 		"push_reads": PUSH_READS,
 		"custom_fields": {
 			doctype: [field["fieldname"] for field in fields] for doctype, fields in CUSTOM_FIELDS.items()

@@ -48,7 +48,8 @@ Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
   them through bootstrap).
 - Child DocType **Crenya POS Scale Barcode Rule** (prefix, PLU length, value
   type, value decimals) on the POS Profile (see *Scale barcode rules*).
-- Role **Crenya POS User**.
+- Roles **Crenya POS User** and **Crenya POS Manager** (store controls' approver; see
+  *Store controls*).
 - Custom fields (created on install and on every migrate):
   - Sales Invoice: `crenya_local_id` (unique), `crenya_offline_number`, `crenya_device`,
     `crenya_shift_id` (shift of the till that sold it, in standard filter),
@@ -278,6 +279,65 @@ after it. Each Sales Invoice payload may carry `shift_local_id` (string or
 null, optional for older tills), stored in `crenya_shift_id` so ERPNext can
 report per shift. The per-event result is the standard one with
 `doctype: "Crenya POS Shift"`, `docstatus: 0` and `totals: null`.
+
+Since 0.11.0 the payload may also carry the shift's **store controls** (see *Store controls*):
+
+```json
+"store_controls": {
+  "line_voids": {"count": 3, "amount": "1.250"},
+  "bill_clears": {"count": 1, "amount": "4.000"},
+  "no_sales": 2,
+  "approvals": 5
+}
+```
+
+Counts are whole numbers >= 0; amounts decimal strings >= 0 with at most the currency's
+decimals (`1.2345` for OMR is refused: `validation`). They are stored read-only in the shift's
+*Store controls* section (`line_voids_count`, `line_voids_amount`, `bill_clears_count`,
+`bill_clears_amount`, `no_sales_count`, `approvals_count`). A missing object or key is 0, so
+a till before 0.9.0 closes its shifts unchanged.
+
+#### Store controls (approvals, 0.11.0)
+
+Which till actions need a manager is set per POS Profile, in its collapsible **Store controls**
+section, and reaches retail tills (device type `till`) in the bootstrap. Code:
+`crenya_pos_api/sync/approvals.py`; `APPROVAL_ACTIONS` is the one table of the actions (the
+custom fields, the bootstrap and the web settings form are made from it):
+
+| action | POS Profile field (Check, default on) |
+|---|---|
+| `price_change` | `crenya_approve_price_change` |
+| `discount_over_limit` | `crenya_approve_discount_over_limit` |
+| `line_void` | `crenya_approve_line_void` |
+| `bill_clear` | `crenya_approve_bill_clear` |
+| `return` | `crenya_approve_return` |
+| `open_return` | `crenya_approve_open_return` |
+| `no_sale` | `crenya_approve_no_sale` |
+| `stock_mode` | `crenya_approve_stock_mode` |
+| `settings` | `crenya_approve_settings` |
+
+`crenya_max_discount_percent` (Percent) is the most a cashier discounts alone; blank or 0 is no
+limit. The profile's `allow_discount_change` and `allow_rate_change` keep their meaning, what a
+cashier may do alone; beyond that an action switched on here is allowed with the PIN of a
+**Crenya POS Manager** (a role this app creates, no desk access), or at once when one is signed
+in at the till. The bootstrap of a retail till carries:
+
+```json
+"approvals": {
+  "approver_roles": ["Crenya POS Manager"],
+  "max_discount_percent": "10",
+  "required": ["price_change", "discount_over_limit", "line_void", "bill_clear", "return",
+               "open_return", "no_sale", "stock_mode", "settings"]
+}
+```
+
+`max_discount_percent` is `null` for no limit; `required` lists the switched-on actions in the
+table's order. Crenya POS Manager opens a retail till like Crenya POS User (a core device role
+of type `till` only), so the `cashier` pull sends it in a manager's `roles`; the cashier cursor
+of a till restarts once because its role set changed. `approvals.RETAIL_PRIVILEGES` maps the
+staff privileges to roles: cashier = Crenya POS User, manager = Crenya POS User + Crenya POS
+Manager. Patch `v0_11.store_controls` creates the role and fields on existing sites and switches
+every approval on for existing profiles.
 
 Request-level errors carry `error: {code, message, retryable}` in the JSON
 body next to Frappe's `exc_type`; per-event errors are returned inside the

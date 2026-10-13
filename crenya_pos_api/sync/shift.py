@@ -12,7 +12,9 @@ from frappe.utils import cint, flt, get_system_timezone
 from crenya_pos_api.sync.cashier import enabled_user
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
+from crenya_pos_api.sync.validation import STORE_CONTROL_AMOUNTS, STORE_CONTROL_COUNTS
 from crenya_pos_api.utils.dates import format_db_datetime, to_site_naive
+from crenya_pos_api.utils.decimal import quantize
 
 SHIFT_DOCTYPE = "Crenya POS Shift"
 SHIFT_MONEY_FIELDS = ("opening_float", "sales_total", "returns_total", "net_total", "tax_total")
@@ -32,6 +34,22 @@ def _resolve_cashier(data, notes):
 	if cashier:
 		notes.append(f"Till cashier {cashier} is not an enabled user; recorded as {frappe.session.user}")
 	return frappe.session.user
+
+
+def _set_store_controls(doc, controls, precision):
+	"""The shift's store controls (validation.validate_store_controls); an amount with more
+	decimals than the currency's is refused."""
+	for key in STORE_CONTROL_AMOUNTS:
+		amount = controls[key]["amount"]
+		if quantize(amount, precision) != amount:
+			raise SyncError(
+				VALIDATION,
+				f"store_controls.{key}.amount {amount} has more than {precision} decimals",
+			)
+		doc.set(f"{key}_count", controls[key]["count"])
+		doc.set(f"{key}_amount", _money(amount, precision))
+	for key in STORE_CONTROL_COUNTS:
+		doc.set(f"{key}_count", controls[key])
 
 
 def count_shift_invoices(shift_local_id):
@@ -80,6 +98,7 @@ def create_shift(ctx, data, notes):
 	)
 	for field in SHIFT_MONEY_FIELDS:
 		doc.set(field, _money(data[field], precision))
+	_set_store_controls(doc, data["store_controls"], precision)
 	for row in data["payments"]:
 		values = {"mode_of_payment": row["mode_of_payment"]}
 		for field in PAYMENT_MONEY_FIELDS:

@@ -5,6 +5,7 @@ import re
 import frappe
 from frappe.utils import cint, get_system_timezone, now
 
+from crenya_pos_api.sync.approvals import approvals_bootstrap
 from crenya_pos_api.sync.context import (
 	DEFAULT_DEVICE_TYPE,
 	DEVICE_DOCTYPE,
@@ -447,5 +448,8 @@ def bootstrap(ctx):
 		# the plan's caps and licence state (null: no restriction); also beside `message`
 		"entitlement": ctx.entitlement,
 	}
+	if ctx.device_type == DEFAULT_DEVICE_TYPE:
+		# store controls of a retail till (0.11.0; older tills ignore the key)
+		doc["approvals"] = approvals_bootstrap(profile)
 	# other apps' crenya_pos_bootstrap hooks: fn(ctx, doc), adding their own keys
 	return extend_bootstrap(ctx, doc)

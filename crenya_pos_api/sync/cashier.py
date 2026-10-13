@@ -170,7 +170,7 @@ def clear_user_pin(user):
 
 def device_roles_of(users, device_type):
 	"""{user: [roles of `device_type` the user holds]} for the users holding at least one, each
-	list in `device_roles(device_type)` order (Crenya POS User first, then the hooked roles).
+	list in `device_roles(device_type)` order (the core roles first, then the hooked roles).
 	No other role of the user is ever returned."""
 	users = sorted({user for user in users or [] if user})
 	if not users:

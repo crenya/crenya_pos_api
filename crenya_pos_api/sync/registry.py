@@ -25,6 +25,7 @@ import re
 
 import frappe
 
+from crenya_pos_api.sync.approvals import APPROVER_ROLE
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, DEVICE_TYPE_RE, POS_USER_ROLE
 from crenya_pos_api.sync.errors import ExtensionHookError, clean_message, error_dict
 
@@ -376,14 +377,16 @@ def _role_rule(entry):
 
 
 def _load_device_role_rules():
-	"""{role: frozenset of device types, or None for every type}, Crenya POS User first.
+	"""{role: frozenset of device types, or None for every type}: Crenya POS User and the store
+	controls' approver role (retail tills) first.
 	A role declared twice (two apps) applies to the union of its types."""
 	entries = _hook(DEVICE_ROLE_HOOK, [])
 	if isinstance(entries, str):
 		entries = [entries]
 	if not isinstance(entries, list | tuple):
 		_fail(f"{DEVICE_ROLE_HOOK} must be a list of role names or {{role, device_types}} entries")
-	rules = {POS_USER_ROLE: None}
+	# core: Crenya POS User opens every device type, the approver role (store controls) retail tills
+	rules = {POS_USER_ROLE: None, APPROVER_ROLE: frozenset({DEFAULT_DEVICE_TYPE})}
 	for entry in entries:
 		role, types = _role_rule(entry)
 		if role in rules:
@@ -395,15 +398,16 @@ def _load_device_role_rules():
 
 
 def device_role_rules():
-	"""{role: frozenset of device types or None (every type)}: Crenya POS User (every type),
-	then the `crenya_pos_device_roles` entries in hook order."""
+	"""{role: frozenset of device types or None (every type)}: Crenya POS User (every type), the
+	approver role (retail tills), then the `crenya_pos_device_roles` entries in hook order."""
 	return _cached(DEVICE_ROLE_HOOK, _load_device_role_rules)
 
 
 def device_roles(device_type=DEFAULT_DEVICE_TYPE):
 	"""Roles that may register and use a device of `device_type` (blank = the default "till"):
-	Crenya POS User, then the hooked roles declared for every type or for this one. A retail
-	till therefore only ever accepts Crenya POS User and roles hooked without device_types."""
+	Crenya POS User (and for a retail till the approver role, `sync.approvals`), then the hooked
+	roles declared for every type or for this one. A retail till therefore only ever accepts
+	those two and roles hooked without device_types."""
 	device_type = device_type or DEFAULT_DEVICE_TYPE
 	return tuple(role for role, types in device_role_rules().items() if types is None or device_type in types)
 

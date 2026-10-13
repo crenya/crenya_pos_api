@@ -26,6 +26,14 @@
   "returns_total",
   "net_total",
   "tax_total",
+  "store_controls_section",
+  "line_voids_count",
+  "line_voids_amount",
+  "bill_clears_count",
+  "bill_clears_amount",
+  "column_break_store_controls",
+  "no_sales_count",
+  "approvals_count",
   "payments_section",
   "payments",
   "notes"
@@ -168,6 +176,55 @@
    "read_only": 1
   },
   {
+   "fieldname": "store_controls_section",
+   "fieldtype": "Section Break",
+   "label": "Store controls"
+  },
+  {
+   "description": "Scanned lines removed from a bill",
+   "fieldname": "line_voids_count",
+   "fieldtype": "Int",
+   "label": "Line Voids",
+   "read_only": 1
+  },
+  {
+   "fieldname": "line_voids_amount",
+   "fieldtype": "Currency",
+   "label": "Line Voids Amount",
+   "read_only": 1
+  },
+  {
+   "description": "Bills cleared before payment",
+   "fieldname": "bill_clears_count",
+   "fieldtype": "Int",
+   "label": "Bills Cleared",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bill_clears_amount",
+   "fieldtype": "Currency",
+   "label": "Bills Cleared Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_store_controls",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Drawer opened without a sale",
+   "fieldname": "no_sales_count",
+   "fieldtype": "Int",
+   "label": "No Sales",
+   "read_only": 1
+  },
+  {
+   "description": "Actions a manager approved at the till",
+   "fieldname": "approvals_count",
+   "fieldtype": "Int",
+   "label": "Approvals",
+   "read_only": 1
+  },
+  {
    "fieldname": "payments_section",
    "fieldtype": "Section Break",
    "label": "Payments"
@@ -190,7 +247,7 @@
  "index_web_pages_for_search": 0,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-09-29 12:00:00.000000",
+ "modified": "2026-10-13 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya POS Shift",

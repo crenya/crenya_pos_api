@@ -506,6 +506,41 @@ def _validate_invoice_local_ids(value):
 	return list(dict.fromkeys(result))
 
 
+# the counted store controls of a shift (0.11.0): {key: amount too} in payload order
+STORE_CONTROL_AMOUNTS = ("line_voids", "bill_clears")
+STORE_CONTROL_COUNTS = ("no_sales", "approvals")
+
+
+def validate_store_controls(value):
+	"""A shift's optional `store_controls`: {line_voids: {count, amount}, bill_clears: {count,
+	amount}, no_sales, approvals}. Absent (a crenya pos till before 0.9.0, e.g. 0.8.0; the key is new in this
+	server's 0.11.0) or a missing key is zero. Counts
+	are whole numbers >= 0, amounts decimals >= 0 (their decimals are checked against the
+	currency by the shift builder)."""
+	if value is None:
+		value = {}
+	if not isinstance(value, dict):
+		_fail("store_controls must be an object")
+	result = {}
+	for key in STORE_CONTROL_AMOUNTS:
+		row = value.get(key)
+		if row is None:
+			row = {}
+		if not isinstance(row, dict):
+			_fail(f"store_controls.{key} must be an object")
+		amount = _decimal(row.get("amount", 0), f"store_controls.{key}.amount", allow_none=True) or Decimal(0)
+		if amount < 0:
+			_fail(f"store_controls.{key}.amount must not be negative")
+		result[key] = {
+			"count": _int(row.get("count", 0), f"store_controls.{key}.count", minimum=0, allow_none=True)
+			or 0,
+			"amount": amount,
+		}
+	for key in STORE_CONTROL_COUNTS:
+		result[key] = _int(value.get(key, 0), f"store_controls.{key}", minimum=0, allow_none=True) or 0
+	return result
+
+
 def validate_shift_payload(payload):
 	"""Validate a closed Crenya POS Shift payload; returns a normalized dict.
 
@@ -542,4 +577,6 @@ def validate_shift_payload(payload):
 		or 0,
 		"invoice_local_ids": _validate_invoice_local_ids(payload.get("invoice_local_ids")),
 		"notes": _optional_str(payload, "notes", max_length=MAX_NOTES_LENGTH),
+		# optional since 0.11.0: tills before crenya pos 0.9.0 (e.g. 0.8.0) send no store_controls (zeros)
+		"store_controls": validate_store_controls(payload.get("store_controls")),
 	}

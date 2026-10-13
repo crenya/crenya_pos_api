@@ -295,7 +295,7 @@ Counts are whole numbers >= 0; amounts decimal strings >= 0 with at most the cur
 decimals (`1.2345` for OMR is refused: `validation`). They are stored read-only in the shift's
 *Store controls* section (`line_voids_count`, `line_voids_amount`, `bill_clears_count`,
 `bill_clears_amount`, `no_sales_count`, `approvals_count`). A missing object or key is 0, so
-a till before 0.9.0 closes its shifts unchanged.
+a crenya pos till before 0.9.0 (e.g. 0.8.0) closes its shifts unchanged.
 
 #### Store controls (approvals, 0.11.0)
 

@@ -513,7 +513,8 @@ STORE_CONTROL_COUNTS = ("no_sales", "approvals")
 
 def validate_store_controls(value):
 	"""A shift's optional `store_controls`: {line_voids: {count, amount}, bill_clears: {count,
-	amount}, no_sales, approvals}. Absent (a till before 0.9.0) or a missing key is zero. Counts
+	amount}, no_sales, approvals}. Absent (a crenya pos till before 0.9.0, e.g. 0.8.0; the key is new in this
+	server's 0.11.0) or a missing key is zero. Counts
 	are whole numbers >= 0, amounts decimals >= 0 (their decimals are checked against the
 	currency by the shift builder)."""
 	if value is None:
@@ -576,6 +577,6 @@ def validate_shift_payload(payload):
 		or 0,
 		"invoice_local_ids": _validate_invoice_local_ids(payload.get("invoice_local_ids")),
 		"notes": _optional_str(payload, "notes", max_length=MAX_NOTES_LENGTH),
-		# optional: tills before 0.9.0 send no store_controls (zeros)
+		# optional since 0.11.0: tills before crenya pos 0.9.0 (e.g. 0.8.0) send no store_controls (zeros)
 		"store_controls": validate_store_controls(payload.get("store_controls")),
 	}

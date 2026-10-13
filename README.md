@@ -742,7 +742,47 @@ ask `update.check` for a newer build and download it through
 `update.download`, both authorized like every other call (enabled device,
 registered to the calling user, POS Profile access).
 
-Publishing a release:
+**Central releases are the default** (0.11.0). A build is published once to the static
+manifest `https://dl.crenya.com/pos/releases.json` (`constants.CENTRAL_RELEASES_URL`; site
+config `crenya_pos_releases_url` overrides it, an empty value turns it off), not to each site.
+Code: `crenya_pos_api/sync/central.py`, product-neutral (`central.Product`; retail is
+`central.RETAIL`, other apps pass their own):
+
+```json
+{"schema": 1, "product": "crenya pos",
+ "releases": [{"version": "0.9.0", "channel": "stable", "pub_date": "2026-10-13T08:00:00Z",
+               "notes": "...",
+               "updater": {"windows-x86_64": {"url": "https://dl.crenya.com/pos/0.9.0/...exe",
+                                              "signature": "<the .sig file>",
+                                              "sha256": "<64 hex>", "size": 15700000}},
+               "installers": [{"platform": "windows", "label": "Windows", "label_ar": "ويندوز",
+                               "url": "https://dl.crenya.com/pos/0.9.0/...exe",
+                               "sha256": "<64 hex>", "size": 15700000}]}]}
+```
+
+- Only retail tills (device type `till`) are offered central retail builds; other device
+  types see the site's own releases only, as before.
+- Its releases are offered like the site's own rows (named `central:<version>`; the same
+  channel, target and version rules). A published Crenya POS Release of the **same version
+  wins**, when it has a file for the till's target.
+- The manifest is fetched within one 3 s deadline (connect and every read together; an installer 120 s), at most 1 MB, and kept 10
+  minutes; its last good copy is kept 7 days. Unreachable or invalid, the site's own releases
+  are still offered, and one warning with the URL and the reason goes to the `crenya_pos_api`
+  logger, at most once per 10 minutes. An invalid release, target or installer is left out,
+  the rest kept.
+- `check` still answers the workspace's own `download` URL (the till's `Authorization` stays
+  on its workspace). `download` of a `central:` release fetches it from the **manifest's own
+  host** only (scheme, host and port; no redirect followed), reads at most `size` plus one
+  byte, and refuses it (`not_found`) unless its sha256 and size are the manifest's. A verified
+  artifact is kept on the site by its sha256 (`private/crenya_pos_api/release_artifacts/`, not
+  a File, so never in the site's backups) and served from there afterwards. The signature is
+  passed through byte for byte: the till's own key stays the only trust anchor.
+- `update.downloads` (a signed-in system user; portal users and Guest are refused) answers the newest stable central release with
+  installers, `{version, pub_date, notes, installers: [{platform, label, label_ar, url,
+  sha256, size}]}`, or `{installers: []}`: the Downloads page of app.crenya.com.
+
+Publishing a site-only release (a hotfix or a beta for one workspace; it overrides a
+central release of the same version):
 
 1. Let CI build the till. For Windows it produces the NSIS installer
    (`…_x64-setup.exe`) and its signature file (`…_x64-setup.exe.sig`).

@@ -5,8 +5,11 @@ Releases, devices and test files created here are rolled back after the class
 (Frappe removes the files of rolled-back File records from disk).
 """
 
+import hashlib
 import json
+import os
 import uuid
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import frappe
@@ -19,7 +22,8 @@ except ImportError:
 
 from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import update as update_api
-from crenya_pos_api.sync import errors
+from crenya_pos_api.constants import CENTRAL_RELEASES_CONFIG
+from crenya_pos_api.sync import central, errors
 from crenya_pos_api.sync.update import RELEASE_DOCTYPE
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.utils.dates import site_naive_to_utc_iso
@@ -85,8 +89,51 @@ class TestCrenyaUpdates(FrappeTestCase):
 		make_release("0.1.5", cls.files["0.1.5"].file_url, notes="Faster sync", pub_date=PUB_DATE)
 		make_release("0.3.0", cls.files["0.3.0"].file_url, channel="beta", notes="Beta build")
 
+	def setUp(self):
+		# the site's own releases only, unless a case serves a manifest (`central_manifest`)
+		no_manifest = patch.dict(frappe.conf, {CENTRAL_RELEASES_CONFIG: ""})
+		no_manifest.start()
+		self.addCleanup(no_manifest.stop)
+
 	def tearDown(self):
 		frappe.set_user("Administrator")
+
+	def central_manifest(self, *versions, target=WIN):
+		"""Serve a central manifest of `versions` (stable) at a URL of this case only (its own
+		cache keys); returns {version: installer bytes}."""
+		host = "https://dl.example.test"
+		url = f"{host}/{uuid.uuid4().hex}/pos/releases.json"
+		contents = {version: installer_bytes(version) for version in versions}
+		releases = []
+		for version, content in contents.items():
+			file = {
+				"url": f"{host}/pos/{version}/crenya-pos_{version}_x64-setup.exe",
+				"sha256": hashlib.sha256(content).hexdigest(),
+				"size": len(content),
+			}
+			releases.append(
+				{
+					"version": version,
+					"channel": "stable",
+					"pub_date": "2026-10-12T08:00:00Z",
+					"notes": f"Central {version}",
+					"updater": {target: {**file, "signature": f"central-signature-{version}"}},
+					"installers": [{"platform": "windows", "label": "Windows", "label_ar": "ويندوز", **file}],
+				}
+			)
+		conf = patch.dict(frappe.conf, {CENTRAL_RELEASES_CONFIG: url})
+		fetch = patch.object(
+			central,
+			"_fetch_manifest",
+			return_value={"schema": 1, "product": "crenya pos", "releases": releases},
+		)
+		for each in (conf, fetch):
+			each.start()
+			self.addCleanup(each.stop)
+		for content in contents.values():
+			path = central._artifact_cache_path(central.RETAIL, hashlib.sha256(content).hexdigest())
+			self.addCleanup(lambda path=path: os.path.exists(path) and os.remove(path))
+		return contents
 
 	def check(self, current_version, device_id=None, target=WIN):
 		return update_api.check(
@@ -214,3 +261,68 @@ class TestCrenyaUpdates(FrappeTestCase):
 			make_release("0.9.0", public.file_url)
 
 		self.assertFalse(frappe.db.exists(RELEASE_DOCTYPE, "0.9.0"))
+
+	def test_check_offers_central_release_when_site_has_none(self):
+		# the site has no release for this target: the central one is offered and downloaded
+		contents = self.central_manifest("0.4.0", target=MAC)
+		body = json.loads(self.check("0.1.0", target=MAC).get_data())
+		self.assertEqual(body["version"], "0.4.0")
+		self.assertEqual(body["signature"], "central-signature-0.4.0")
+		self.assertEqual(body["pub_date"], "2026-10-12T08:00:00Z")
+		parts = urlsplit(body["url"])
+		self.assertTrue(body["url"].startswith(frappe.utils.get_url()))
+		self.assertEqual(
+			parse_qs(parts.query),
+			{"release": ["central:0.4.0"], "target": [MAC], "device_id": [self.stable_device]},
+		)
+		with patch.object(central, "_fetch_bytes", return_value=contents["0.4.0"]):
+			response = update_api.download(release="central:0.4.0", target=MAC, device_id=self.stable_device)
+		self.assertEqual(response.get_data(), contents["0.4.0"])
+		self.assertIn("crenya-pos_0.4.0_x64-setup.exe", response.headers["Content-Disposition"])
+
+	def test_local_release_same_version_wins(self):
+		self.central_manifest("0.1.5")
+		body = json.loads(self.check("0.1.0").get_data())
+		self.assertEqual(body["version"], "0.1.5")
+		self.assertEqual(body["signature"], SIGNATURE)
+		self.assertEqual(parse_qs(urlsplit(body["url"]).query)["release"], ["0.1.5"])
+
+	def test_newer_central_release_wins_over_local(self):
+		self.central_manifest("0.2.5")
+		body = json.loads(self.check("0.1.0").get_data())
+		self.assertEqual(body["version"], "0.2.5")
+		self.assertEqual(parse_qs(urlsplit(body["url"]).query)["release"], ["central:0.2.5"])
+
+	def test_central_release_not_in_manifest_is_not_found(self):
+		self.central_manifest("0.4.0")
+		with self.assertRaises(errors.NotFoundError):
+			update_api.download(release="central:0.9.9", target=WIN, device_id=self.stable_device)
+
+	def test_downloads_lists_newest_stable_installers(self):
+		self.central_manifest("0.4.0", "0.5.0")
+		answer = update_api.downloads()
+		self.assertEqual(answer["version"], "0.5.0")
+		self.assertEqual([row["platform"] for row in answer["installers"]], ["windows"])
+		# central turned off: nothing to download
+		with patch.dict(frappe.conf, {CENTRAL_RELEASES_CONFIG: ""}):
+			self.assertEqual(update_api.downloads(), {"installers": []})
+		frappe.set_user("Guest")
+		with self.assertRaises(frappe.PermissionError):
+			update_api.downloads()
+		# a portal (website) user is refused too
+		portal = "crenya.portal.test@example.com"
+		frappe.set_user("Administrator")
+		if not frappe.db.exists("User", portal):
+			frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": portal,
+					"first_name": "Portal",
+					"send_welcome_email": 0,
+					"user_type": "Website User",
+				}
+			).insert(ignore_permissions=True)
+		self.assertEqual(frappe.db.get_value("User", portal, "user_type"), "Website User")
+		frappe.set_user(portal)
+		with self.assertRaises(frappe.PermissionError):
+			update_api.downloads()

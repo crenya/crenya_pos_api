@@ -2,6 +2,11 @@
 
 The pure helpers at the top take plain dicts and do no database access; the
 functions below them load Crenya POS Release rows for an authorized device.
+
+A retail till (device type "till") is also offered the central manifest's releases
+(`sync.central`, `central.RETAIL`): central is the default source, a site's own published
+Crenya POS Release of the same version wins (a site-only hotfix or beta). Other device types
+(restaurant devices update from their own app) see the site's own rows only, as before.
 """
 
 import os
@@ -11,7 +16,7 @@ from urllib.parse import urlencode
 import frappe
 from packaging.version import InvalidVersion, Version
 
-from crenya_pos_api.sync.context import DEVICE_DOCTYPE
+from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, DEVICE_DOCTYPE
 from crenya_pos_api.sync.errors import InvalidRequestError, NotFoundError, raise_api_error
 from crenya_pos_api.utils.dates import site_naive_to_utc_iso
 
@@ -33,6 +38,9 @@ TARGETS = (
 )
 
 DOWNLOAD_PATH = "/api/method/crenya_pos_api.api.update.download"
+# names of the central manifest's releases (sync.central): never a Crenya POS Release name,
+# whose names are plain X.Y.Z versions
+CENTRAL_PREFIX = "central:"
 PRIVATE_FILES_PREFIX = "/private/files/"
 MAX_VERSION_LENGTH = 64
 
@@ -172,23 +180,52 @@ def _published_releases(channels, target):
 	return releases
 
 
+def _reads_central(ctx):
+	"""Only a retail till is offered the retail central manifest's builds."""
+	return ctx.device_type == DEFAULT_DEVICE_TYPE
+
+
 def check_update(ctx, target, current_version):
-	"""Updater document for the device, or None when nothing newer is published."""
+	"""Updater document for the device, or None when nothing newer is published (the site's own
+	releases and, for a retail till, the central ones)."""
 	from frappe.utils import get_system_timezone, get_url
+
+	# sync.central imports this module's release rules
+	from crenya_pos_api.sync import central
 
 	target = _valid_or_raise(validate_target, target)
 	current = _valid_or_raise(parse_client_version, current_version)
 	channels = channels_for(device_channel(ctx))
 
-	match = select_release(_published_releases(channels, target), current, target, channels)
+	releases = _published_releases(channels, target)
+	if _reads_central(ctx):
+		releases = central.merged_releases(
+			releases, central.central_releases(central.RETAIL, channels, target), target
+		)
+	match = select_release(releases, current, target, channels)
 	if not match:
 		return None
 	release, artifact = match
 	url = download_url(get_url(), release["name"], target, ctx.device_id)
-	pub_date = site_naive_to_utc_iso(
-		release.get("pub_date") or release.get("modified"), get_system_timezone()
-	)
+	if release.get("central"):
+		pub_date = release["pub_date"]
+	else:
+		pub_date = site_naive_to_utc_iso(
+			release.get("pub_date") or release.get("modified"), get_system_timezone()
+		)
 	return updater_document(release, artifact, url, pub_date)
+
+
+def _central_artifact(ctx, release, target):
+	"""(filename, bytes) of a central release a retail till may install."""
+	from crenya_pos_api.sync import central
+
+	row = _reads_central(ctx) and central.central_release(
+		central.RETAIL, release, channels_for(device_channel(ctx)), target
+	)
+	if not row:
+		raise_api_error(NotFoundError, f"Release {release} is not available to this device")
+	return central.artifact_filename(row, target), central.central_artifact(central.RETAIL, row, target)
 
 
 def get_artifact(ctx, release, target):
@@ -197,6 +234,8 @@ def get_artifact(ctx, release, target):
 	if not isinstance(release, str) or not release.strip():
 		raise_api_error(InvalidRequestError, "release is required")
 	release = release.strip()
+	if release.startswith(CENTRAL_PREFIX):
+		return _central_artifact(ctx, release, target)
 
 	row = frappe.db.get_value(RELEASE_DOCTYPE, release, ["name", "channel", "published"], as_dict=True)
 	if not row or not row.published or row.channel not in channels_for(device_channel(ctx)):

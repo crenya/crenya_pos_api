@@ -10,6 +10,7 @@ dynamic = ["version"]
 dependencies = [
     # "frappe~=15.0.0" # Installed and managed by bench.
     "packaging>=23.0", # release version comparison (already installed with Frappe)
+    "httpx>=0.27", # the central release manifest and its artifacts (sync.central)
 ]
 
 [build-system]

@@ -283,12 +283,9 @@ def get_device_context(device_id, touch=True):
 
 
 def device_owned_by(device, user):
-	"""Whether `user` may act for `device`: its user, a System Manager, or the device user of the
-	human the device was registered to (a branch master acts for the tills it registered with that
-	human's key before it had a key of its own)."""
-	from crenya_pos_api.sync.device_user import paired_by
-
-	return device.user == user or is_system_manager(user) or (device.user == paired_by(user))
+	"""Whether `user` may act for `device`: its user, or a System Manager. A device user acts for
+	its own device only, never for another registered to the person who paired it."""
+	return device.user == user or is_system_manager(user)
 
 
 def enforce_device_key(device):

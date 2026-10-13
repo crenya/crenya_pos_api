@@ -201,16 +201,21 @@ def pin_hash_for(ctx):
 	"""A function from a stored PIN hash to what the pulling device receives.
 
 	A device that asked for seals (`ctx.pin_seal`: it holds the key `device_user.pin_seal_key`
-	gave it at pairing) gets the seal of the hash, never the PBKDF2 key itself. Any other device
-	gets the hash as stored while the site does not require device keys
-	(`crenya_require_device_keys`), and none once it does: an old till then has no PINs offline
-	until it is updated."""
-	from crenya_pos_api.sync.device_user import pin_seal_key, require_device_keys, seal_pin_hash
+	gave it at pairing) gets the seal of the hash, never the PBKDF2 key itself. The raw hash goes
+	only to a call made with a person's key (an old till not yet re-keyed) while the site does not
+	require device keys (`crenya_require_device_keys`). A device user's key always gets the seal
+	or none: an old till signed in again on this server has no PINs offline until it is updated."""
+	from crenya_pos_api.sync.device_user import (
+		is_device_user,
+		pin_seal_key,
+		require_device_keys,
+		seal_pin_hash,
+	)
 
 	if ctx.pin_seal:
 		key = pin_seal_key(ctx.device_id)
 		return lambda stored: seal_pin_hash(stored, key) if stored else None
-	if require_device_keys():
+	if require_device_keys() or is_device_user(frappe.session.user):
 		return lambda stored: None
 	return lambda stored: stored or None
 

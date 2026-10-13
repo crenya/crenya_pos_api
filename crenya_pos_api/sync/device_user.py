@@ -24,6 +24,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, nowdate
 
+from crenya_pos_api.sync.context import request_uses_api_key
+
 DEVICE_ID_FIELD = "crenya_device_id"
 PAIRED_BY_FIELD = "crenya_paired_by"
 # the site setting (site_config.json): 1 = a device must hold a device user's key
@@ -39,6 +41,39 @@ _SEAL_KEY_CONTEXT = b"crenya pin seal key v1\0"
 _KEY_ID_CONTEXT = b"crenya pin key id"
 _SEAL_CONTEXT = b"crenya pin seal v1\0"
 SEALED_SCHEME = "crenya_pin1"
+
+
+# set by the pairing and re-key code on the User it makes: the only server code that may write the
+# two fields above (a System Manager in a browser session may too)
+TRUSTED_FLAG = "crenya_device_user_trusted"
+
+
+def guard_user(doc, method=None):
+	"""doc_events hook on User: who a device user is (`crenya_device_id`, `crenya_paired_by`) is
+	written only by the pairing code (`TRUSTED_FLAG`) or a System Manager in a browser session, never
+	by a device user through Frappe's API; and a device user takes no password."""
+	if not user_has_fields():
+		return
+	trusted = doc.flags.get(TRUSTED_FLAG) or (
+		"System Manager" in frappe.get_roles() and not request_uses_api_key()
+	)
+	if not trusted:
+		if doc.is_new():
+			stored = (None, None)
+		else:
+			stored = frappe.db.get_value("User", doc.name, [DEVICE_ID_FIELD, PAIRED_BY_FIELD]) or (None, None)
+		now = (doc.get(DEVICE_ID_FIELD) or None, doc.get(PAIRED_BY_FIELD) or None)
+		if now != tuple(value or None for value in stored):
+			frappe.throw(_("A device user's device and pairing are not changed here"), frappe.PermissionError)
+	if doc.get("new_password") and (doc.get(DEVICE_ID_FIELD) or _device_row(doc.name)[0]):
+		frappe.throw(_("A device user has no password"), frappe.PermissionError)
+
+
+def refuse_login(login_manager=None, **kwargs):
+	"""on_login hook: a device user signs in with its API key only, never a session."""
+	user = getattr(login_manager, "user", None)
+	if is_device_user(user):
+		raise frappe.AuthenticationError(_("A device user has no password login"))
 
 
 def require_device_keys():
@@ -182,11 +217,30 @@ def _create(device_id, person, device_type):
 			"explicit_roles": 1,
 		}
 	)
+	doc.flags[TRUSTED_FLAG] = True
 	doc.insert(ignore_permissions=True)
 	# Frappe turns a user whose roles have no desk access into a Website User on save; a device
 	# user is a System User (the update check and the plan read the user type)
 	frappe.db.set_value("User", name, "user_type", "System User", update_modified=False)
 	return name
+
+
+def _require_exact_roles(name, device_type, delete):
+	"""A device user holds exactly its device role. Another rule (another app's grant-every-role
+	hook) may have added more: a new user is deleted and the pairing refused, an existing one is
+	refused (an administrator widened it)."""
+	from crenya_pos_api.sync.errors import DevicePermissionError, raise_api_error
+
+	held = set(frappe.get_all("Has Role", filters={"parent": name, "parenttype": "User"}, pluck="role"))
+	if held == set(device_roles_for(device_type)):
+		return
+	if delete:
+		frappe.delete_doc("User", name, force=True, ignore_permissions=True)
+	raise_api_error(
+		DevicePermissionError,
+		f"The device user {name} holds roles beyond its device role ({', '.join(sorted(held))}); "
+		"it was not used",
+	)
 
 
 def ensure_device_user(device_id, person, device_type=None):
@@ -195,8 +249,10 @@ def ensure_device_user(device_id, person, device_type=None):
 	name = frappe.db.get_value("User", {DEVICE_ID_FIELD: device_id.strip().lower()}, "name")
 	if not name:
 		name = _create(device_id, person, device_type)
+		_require_exact_roles(name, device_type, delete=True)
 		frappe.get_doc("User", name).add_comment("Info", _("Paired by {0}").format(person))
 		return name
+	_require_exact_roles(name, device_type, delete=False)
 	changes = {}
 	if frappe.db.get_value("User", name, PAIRED_BY_FIELD) != person:
 		changes[PAIRED_BY_FIELD] = person

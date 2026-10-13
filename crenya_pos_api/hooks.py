@@ -142,8 +142,14 @@ doc_events = {
 	"User": {
 		# hash a newly entered POS PIN and clear it before Frappe stores Password fields;
 		# before_validate also runs when flags.ignore_validate skips validate
-		"before_validate": "crenya_pos_api.sync.cashier.user_validate",
-		"validate": "crenya_pos_api.sync.cashier.user_validate",
+		"before_validate": [
+			"crenya_pos_api.sync.cashier.user_validate",
+			"crenya_pos_api.sync.device_user.guard_user",
+		],
+		"validate": [
+			"crenya_pos_api.sync.cashier.user_validate",
+			"crenya_pos_api.sync.device_user.guard_user",
+		],
 	},
 	"Crenya POS Device": {
 		# a deactivated device's user is disabled with it (its key stops working)
@@ -269,3 +275,9 @@ before_tests = "crenya_pos_api.setup.install.before_tests"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
+
+# a device user has no password: no password login, no password reset (0.12.0)
+on_login = ["crenya_pos_api.sync.device_user.refuse_login"]
+override_whitelisted_methods = {
+	"frappe.core.doctype.user.user.reset_password": "crenya_pos_api.api.auth.reset_password",
+}

@@ -212,17 +212,41 @@ A device paired before this holds a person's key. The site setting `crenya_requi
 (`device.user`; not even a System Manager takes over another's), makes the device user and answers
 `{user, api_key, api_secret, key_kind, device_user, pin_seal_key}` (the key in hex); the device stores it and deletes
 the person's key from its secret store. Called with a device user's key it answers the same key. The
-person's own key is never rotated. A branch master's device user acts for the devices it registered
-with the person's key before (`device.user` is the person it was paired by).
+person's own key is never rotated. A device user acts for its own device only.
 
 **Sealed PIN hashes.** The `cashier` pull sent every device each staff member's raw
 `pbkdf2_sha256` hash. A device that holds its `pin_seal_key` (answered at sign-in and re-key; an
 HMAC of the site's encryption key and the device id, never stored) sends `pin_seal=1` and gets
 `crenya_pin1$<key id>$<rounds>$<salt>$<HMAC of the PBKDF2 key>` (pos-core's sealed format): it checks
 a PIN by deriving the PBKDF2 key and comparing seals, and the PBKDF2 key never leaves the server.
-A device that starts asking for seals is sent every cashier again. Other devices get the raw hash
-only while `crenya_require_device_keys` is off. Capabilities `features.device_users` and
+A device that starts asking for seals is sent every cashier again. Only a call made with a person's key
+(an old till not yet re-keyed) gets the raw hash, and only while `crenya_require_device_keys` is off; a
+device user's key without `pin_seal` gets `pin_hash: null`. Capabilities `features.device_users` and
 `features.pin_seal` say the server does this.
+
+**Rollout of device users (in this order).**
+
+1. Before pairing or re-keying many devices, raise Frappe's new-user throttle in site_config.json,
+   for example `"throttle_user_limit": 500`. Frappe refuses more than 60 new users an hour
+   ("Throttled"), and every device makes one device user. Put it back afterwards.
+2. Deploy crenya_pos_api 0.12.0 and crenya_restaurant 0.15.6 together, then `bench migrate`.
+   `crenya_require_device_keys` stays off: every old till keeps selling on its person's key (a
+   device user's key gets the PIN seal or no PIN hash, never the raw hash, so an old till signed in
+   again offline-unlocks only after it is updated).
+3. Update every till (restaurant 0.7.4, retail 0.9.0, waiter phones). Each re-keys itself on its
+   next sync and deletes the person's key from its OS secret store. A branch master that registered
+   paired tills with the person's key re-registers them (a device user acts for its own device only).
+4. Watch the Error Log "a device is signed in with a person's API key" (one a day per device): when
+   none is left, every device holds a device key.
+5. Set `crenya_require_device_keys` to 1.
+6. Rotate the API keys of every person who ever signed in at a till (System Managers first):
+   the server never rotates them, and they still work until you do. Do it only after step 4.
+7. Lower `throttle_user_limit` back.
+
+A device user is never edited: `crenya_device_id` and `crenya_paired_by` are permlevel 1 (System
+Manager) and a User hook refuses a change from anyone but the pairing code or a System Manager in a
+browser session; it has no password (no password login, no reset), and pairing refuses (and
+deletes) a device user that holds any role beyond `Crenya POS Device`.
 
 #### What a till never pulls; what a cashier needs no desk role for (0.11.0)
 

@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import types
 
 import frappe
 
@@ -338,16 +339,16 @@ class TestDeviceUsers(SyncCase):
 		with self.assertRaises(DevicePermissionError):
 			self.as_user(first["device_user"], device_api.rekey_device, device_id=second_id)
 
-	def test_a_branch_master_keeps_the_devices_it_registered_with_a_persons_key(self):
-		# a hub registered a paired till with the person's key; after the hub re-keys, its device
-		# user still acts for that till
+	def test_a_device_user_acts_for_its_own_device_only(self):
+		# not for another device registered to the person who paired it, even while the rollout runs
 		till = new_id()
 		self.register(self.cashier, till)
 		hub = new_id()
 		self.register(self.cashier, hub)
 		answer = self.as_user(self.cashier, device_api.rekey_device, device_id=hub)
-		frappe.conf[device_user.REQUIRE_DEVICE_KEYS] = 1
-		self.assertEqual(self.pull(answer["device_user"], till)["entity"], "cashier")
+		self.assertEqual(self.pull(answer["device_user"], hub)["entity"], "cashier")
+		with self.assertRaises(DevicePermissionError):
+			self.pull(answer["device_user"], till)
 
 	# deactivating a device
 
@@ -475,24 +476,147 @@ class TestDeviceUsers(SyncCase):
 		self.assertIn(self.staff, names)
 		self.assertNotIn(answer["device_user"], names)
 
-	def test_an_old_till_gets_the_raw_hash_only_while_the_setting_is_off(self):
+	def test_only_a_persons_key_gets_the_raw_hash_and_only_while_the_setting_is_off(self):
 		device_id = new_id()
 		self.register(self.cashier, device_id)
 		raw = frappe.db.get_value("User", self.staff, "crenya_pos_pin_hash")
 		self.assertEqual(self.hash_of(self.pull(self.cashier, device_id), self.staff), raw)
-		frappe.conf[device_user.REQUIRE_DEVICE_KEYS] = 1
-		# a device user's key without the seal flag (an old till signed in again) has none
+		# a device user's key never gets the raw hash: the seal if it asks, else none, setting off too
 		device_id2, answer = self.pair()
 		self.register(answer["device_user"], device_id2)
 		self.assertIsNone(self.hash_of(self.pull(answer["device_user"], device_id2), self.staff))
-		# sealing devices still have it
 		sealed = self.hash_of(self.pull(answer["device_user"], device_id2, pin_seal=1), self.staff)
 		self.assertTrue(sealed.startswith("crenya_pin1$"))
+		# the person's key with the setting on has none
+		frappe.conf[device_user.REQUIRE_DEVICE_KEYS] = 1
+		with self.assertRaises(RekeyRequiredError):
+			self.pull(self.cashier, device_id)
 
 	def test_a_device_that_starts_asking_for_seals_is_sent_every_cashier_again(self):
+		device_id = new_id()
+		self.register(self.cashier, device_id)
+		first = self.pull(self.cashier, device_id)
+		self.assertTrue(self.hash_of(first, self.staff).startswith("pbkdf2_sha256$"))
+		second = self.pull(self.cashier, device_id, cursor=first["next_cursor"], pin_seal=1)
+		self.assertTrue(self.hash_of(second, self.staff).startswith("crenya_pin1$"))
+
+	# who a device user is, and what it cannot be
+
+	def test_a_device_user_cannot_rewrite_who_it_is(self):
+		device_id, answer = self.pair(self.boss)
+		other_id, other = self.pair(self.other)
+		name = answer["device_user"]
+		for field, value in (
+			(device_user.PAIRED_BY_FIELD, self.other),
+			(device_user.DEVICE_ID_FIELD, other_id),
+		):
+			frappe.set_user(name)
+			try:
+				own = frappe.get_doc("User", name)
+				own.set(field, value)
+				# permlevel 1: Frappe drops the change of a user who may not make it ...
+				own.save()
+				self.assertNotEqual(frappe.db.get_value("User", name, field), value)
+				# ... and the User hook refuses it where permissions are bypassed
+				own = frappe.get_doc("User", name)
+				own.set(field, value)
+				with self.assertRaises(frappe.PermissionError):
+					own.save(ignore_permissions=True)
+			finally:
+				frappe.set_user("Administrator")
+		self.assertEqual(frappe.db.get_value("User", name, device_user.PAIRED_BY_FIELD), self.boss)
+		self.assertEqual(device_user.acting_user(name), self.boss)
+		# a new user cannot be made one either, through the API
+		frappe.set_user(name)
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				frappe.get_doc(
+					{
+						"doctype": "User",
+						"email": "_test_crenya_dev_fake@example.com",
+						"first_name": "Fake",
+						device_user.DEVICE_ID_FIELD: new_id(),
+					}
+				).insert()
+		finally:
+			frappe.set_user("Administrator")
+		# a System Manager in a browser session still may
+		frappe.set_user(self.boss)
+		try:
+			doc = frappe.get_doc("User", other["device_user"])
+			doc.set(device_user.PAIRED_BY_FIELD, self.boss)
+			doc.save(ignore_permissions=True)
+		finally:
+			frappe.set_user("Administrator")
+		with fixtures.signed_with_key():
+			frappe.set_user(self.boss)
+			try:
+				doc = frappe.get_doc("User", other["device_user"])
+				doc.set(device_user.PAIRED_BY_FIELD, self.other)
+				with self.assertRaises(frappe.PermissionError):
+					doc.save(ignore_permissions=True)
+			finally:
+				frappe.set_user("Administrator")
+
+	def test_a_device_user_keeps_exactly_its_device_role(self):
+		from unittest import mock
+
+		device_id = new_id()
+		# another app's rule grants a role after the user is made: simulated in _create
+		original = device_user._create
+
+		def widened(*args, **kwargs):
+			name = original(*args, **kwargs)
+			frappe.get_doc("User", name).add_roles("Sales User")
+			return name
+
+		with mock.patch.object(device_user, "_create", widened), self.assertRaises(DevicePermissionError):
+			sign_in(self.cashier, PASSWORD, device_id)
+		self.assertFalse(frappe.db.exists("User", device_user.device_user_name(device_id)))
+		# an existing device user an administrator widened is refused too
+		device_id2, answer = self.pair()
+		frappe.get_doc("User", answer["device_user"]).add_roles("Sales User")
+		with self.assertRaises(DevicePermissionError):
+			sign_in(self.cashier, PASSWORD, device_id2)
+
+	def test_a_device_user_has_no_password_and_no_reset(self):
+		from crenya_pos_api.api import auth
+
+		device_id, answer = self.pair()
+		name = answer["device_user"]
+		doc = frappe.get_doc("User", name)
+		doc.new_password = "Some-Pass-2026!"
+		with self.assertRaises(frappe.PermissionError):
+			doc.save(ignore_permissions=True)
+		with self.assertRaises(frappe.PermissionError):
+			auth.reset_password(name)
+		# even a password set around the document (Frappe's update_password) opens no session
+		from frappe.utils.password import update_password
+
+		update_password(name, "Some-Pass-2026!")
+		with self.assertRaises(frappe.AuthenticationError):
+			sign_in(name, "Some-Pass-2026!")
+		with self.assertRaises(frappe.AuthenticationError):
+			device_user.refuse_login(types.SimpleNamespace(user=name))
+		device_user.refuse_login(types.SimpleNamespace(user=self.cashier))
+
+	def test_a_disabled_device_users_key_is_refused(self):
+		from frappe.auth import validate_api_key_secret
+
 		device_id, answer = self.pair()
 		self.register(answer["device_user"], device_id)
-		first = self.pull(answer["device_user"], device_id)
-		self.assertTrue(self.hash_of(first, self.staff).startswith("pbkdf2_sha256$"))
-		second = self.pull(answer["device_user"], device_id, cursor=first["next_cursor"], pin_seal=1)
-		self.assertTrue(self.hash_of(second, self.staff).startswith("crenya_pin1$"))
+		login_manager = getattr(frappe.local, "login_manager", None)
+		frappe.local.login_manager = types.SimpleNamespace(user="")
+		try:
+			validate_api_key_secret(answer["api_key"], answer["api_secret"])
+			self.assertEqual(frappe.session.user, answer["device_user"])
+			frappe.set_user("Administrator")
+			device = frappe.get_doc(DEVICE_DOCTYPE, device_id)
+			device.enabled = 0
+			device.save(ignore_permissions=True)
+			frappe.local.login_manager = types.SimpleNamespace(user="")
+			with self.assertRaises(frappe.AuthenticationError):
+				validate_api_key_secret(answer["api_key"], answer["api_secret"])
+		finally:
+			frappe.local.login_manager = login_manager
+			frappe.set_user("Administrator")

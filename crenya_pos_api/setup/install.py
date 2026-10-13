@@ -160,6 +160,8 @@ CUSTOM_FIELDS = {
 			"read_only": 1,
 			"no_copy": 1,
 			"search_index": 1,
+			# System Manager only (permlevel 1): a device user cannot rewrite who it is
+			"permlevel": 1,
 		},
 		{
 			"fieldname": "crenya_paired_by",
@@ -169,6 +171,7 @@ CUSTOM_FIELDS = {
 			"insert_after": "crenya_device_id",
 			"read_only": 1,
 			"no_copy": 1,
+			"permlevel": 1,
 		},
 	],
 	"Customer": [

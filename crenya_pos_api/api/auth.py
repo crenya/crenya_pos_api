@@ -56,6 +56,8 @@ def sign_in(usr, pwd, device_id=None, device_type=None):
 	manager = LoginManager.__new__(LoginManager)
 	manager.authenticate(user=usr, pwd=pwd)
 	user = manager.user
+	if device_user.is_device_user(user):
+		frappe.throw(_("A device user has no password login"), frappe.AuthenticationError)
 
 	from frappe.twofactor import should_run_2fa
 
@@ -100,3 +102,15 @@ def _check_pairing(person, device_id):
 		frappe.get_cached_doc("POS Profile", device.pos_profile), person
 	):
 		raise_api_error(DevicePermissionError, f"User {person} may not sign in device {name}")
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep
+def reset_password(user: str):
+	"""Frappe's forgot-password (hooked over it, `override_whitelisted_methods`): a device user has
+	no mailbox and no password, so nothing is sent or reset for it; everyone else goes on to Frappe's
+	own, rate limits included."""
+	if device_user.is_device_user(user):
+		frappe.throw(_("A device user has no password"), frappe.PermissionError)
+	from frappe.core.doctype.user.user import reset_password as frappe_reset_password
+
+	return frappe_reset_password(user=user)

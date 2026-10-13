@@ -111,6 +111,28 @@ class TestRefusedSales(SyncCase):
 		web_admin.retry_sale(theirs)
 		self.assertTrue(frappe.db.get_value(EVENT_DOCTYPE, theirs, "retry_requested_at"))
 
+	def test_retry_pending_until_the_till_pushes_again(self):
+		event = self.refused_event()
+
+		def row():
+			answer = web_admin.refused_sales(self.profile.name)
+			return next(r for r in answer["rows"] if r["name"] == event["event_id"])
+
+		frappe.set_user(MANAGER)
+		self.assertFalse(row()["retry_pending"])
+		web_admin.retry_sale(event["event_id"])
+		self.assertTrue(row()["retry_pending"])
+		# the till sends it again and it is refused again: Retry is offered again
+		frappe.set_user("Administrator")
+		result = sync_api.push_batch(device_id=self.device_id, events=[event])[0]
+		self.assertEqual(result["status"], "error")
+		frappe.set_user(MANAGER)
+		again = row()
+		self.assertFalse(again["retry_pending"])
+		self.assertEqual(again["attempts"], 2)
+		web_admin.retry_sale(event["event_id"])
+		self.assertTrue(row()["retry_pending"])
+
 	def test_retry_entity_not_required(self):
 		# Review Focus 1: a till that never pulls sync_retry pushes as before, retry asked or not
 		event = self.refused_event()

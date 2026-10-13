@@ -100,6 +100,17 @@ class TestRefusedSales(SyncCase):
 		self.assertIn(event["event_id"], again["tombstones"])
 		self.assertNotIn(event["event_id"], [r["event_id"] for r in again["records"]])
 
+	def test_retry_by_a_manager_of_another_shop_refused(self):
+		theirs = self.refused_event(self.other_device)["event_id"]
+		frappe.set_user(MANAGER)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.retry_sale(theirs)
+		self.assertIsNone(frappe.db.get_value(EVENT_DOCTYPE, theirs, "retry_requested_at"))
+		# its own manager may
+		frappe.set_user(SHOP2_MANAGER)
+		web_admin.retry_sale(theirs)
+		self.assertTrue(frappe.db.get_value(EVENT_DOCTYPE, theirs, "retry_requested_at"))
+
 	def test_retry_entity_not_required(self):
 		# Review Focus 1: a till that never pulls sync_retry pushes as before, retry asked or not
 		event = self.refused_event()

@@ -6,13 +6,15 @@ decimal string at the outlet currency's precision; every Z row has `kind` "money
 the Arabic labels come from `Z_LABELS` (the tax row says the company's own tax name).
 """
 
+from decimal import Decimal
+
 import frappe
 from frappe.utils import cint, flt, formatdate, getdate
 
 from crenya_pos_api.api.web_admin.scope import manage
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.shift import count_shift_invoices
-from crenya_pos_api.utils.decimal import format_money
+from crenya_pos_api.utils.decimal import as_decimal, format_money
 from crenya_pos_api.web.devices import SHIFT_DOCTYPE, full_names, wire
 from crenya_pos_api.web.reports import common, date_range
 
@@ -176,6 +178,11 @@ def _payments(shifts) -> dict:
 	return grouped
 
 
+def _total(payments, field) -> Decimal:
+	"""The sum of a payment field, in Decimal (no float drift before it is formatted)."""
+	return sum((as_decimal(p.get(field)) for p in payments), Decimal(0))
+
+
 def day_close_rows(shifts, payments, cash_modes, devices, names, precision) -> list[dict]:
 	"""The list rows of `shifts` (pure but for date formatting), latest first: the restaurant's
 	DayCloseRow; a shop has no service providers and sends no day close email."""
@@ -202,10 +209,10 @@ def day_close_rows(shifts, payments, cash_modes, devices, names, precision) -> l
 				"refunds_count": cint(shift.get("returns_count")),
 				"refunds": format_money(flt(shift.get("returns_total")), precision),
 				"net_total": format_money(flt(shift.get("net_total")), precision),
-				"cash_expected": format_money(sum(flt(p.get("expected")) for p in cash), precision),
-				"cash_counted": format_money(sum(flt(p.get("counted")) for p in cash), precision),
-				"cash_difference": format_money(sum(flt(p.get("difference")) for p in cash), precision),
-				"card_difference": format_money(sum(flt(p.get("difference")) for p in card), precision),
+				"cash_expected": format_money(_total(cash, "expected"), precision),
+				"cash_counted": format_money(_total(cash, "counted"), precision),
+				"cash_difference": format_money(_total(cash, "difference"), precision),
+				"card_difference": format_money(_total(card, "difference"), precision),
 				"provider_sales": format_money(0, precision),
 				"email_state": "",
 			}

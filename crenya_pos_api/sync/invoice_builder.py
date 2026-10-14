@@ -49,6 +49,7 @@ ORIGINAL_FIELDS = [
 	"currency",
 	"loyalty_program",
 	"loyalty_amount",
+	"outstanding_amount",
 ]
 
 LOYALTY_RETURN_MESSAGE = "Return this invoice from ERPNext: it was partly paid with loyalty points"
@@ -431,6 +432,21 @@ def assert_credit_offset_allowed(credit_offset, original, doc, precision):
 		)
 
 
+def credit_beyond_outstanding_note(credit_offset, original, precision):
+	"""The Sync Event note for a return whose credit to the account is more than the original
+	invoice still owes (a fully paid sale returned offline is credited whole, founder decision 3):
+	the customer is left in credit, and the owner can see it. None when the credit fits (pure)."""
+	owed = max(quantize(as_decimal(original.get("outstanding_amount") or 0), precision), as_decimal(0))
+	credit = quantize(as_decimal(credit_offset), precision)
+	if credit <= owed:
+		return None
+	return (
+		f"Credit {format_money(credit, precision)} is more than invoice {original.get('name')}'s outstanding "
+		f"{format_money(owed, precision)}: customer {original.get('customer')} is left in credit by "
+		f"{format_money(credit - owed, precision)}"
+	)
+
+
 def _apply_profile_accounts(doc, profile):
 	"""A POS invoice takes its rows' income and expense accounts and cost centre from the POS Profile
 	(`get_pos_profile_item_details`); a plain invoice, which a sale wholly on account is, takes
@@ -573,7 +589,11 @@ def build_invoice(ctx, data, notes):
 
 	check_grand_total(doc, data)
 	if credit_offset:
-		assert_credit_offset_allowed(credit_offset, original, doc, money_precision(doc.currency))
+		precision = money_precision(doc.currency)
+		assert_credit_offset_allowed(credit_offset, original, doc, precision)
+		note = credit_beyond_outstanding_note(credit_offset, original, precision)
+		if note:
+			notes.append(note)
 	reconcile_payments(doc, default_mode, notes, on_account=on_account, credit_offset=credit_offset)
 	doc.calculate_taxes_and_totals()
 	return doc

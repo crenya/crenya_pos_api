@@ -160,3 +160,29 @@ class TestApprovalsAndFields(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestCreditBeyondOutstanding(unittest.TestCase):
+	def note(self, offset, outstanding):
+		from crenya_pos_api.sync.invoice_builder import credit_beyond_outstanding_note
+
+		original = frappe._dict(name="ACC-SINV-1", customer="CUST-1", outstanding_amount=outstanding)
+		return credit_beyond_outstanding_note(Decimal(offset), original, 3)
+
+	def test_a_credit_the_invoice_still_owes_has_no_note(self):
+		self.assertIsNone(self.note("30.000", "60.000"))
+		self.assertIsNone(self.note("60.000", "60.000"))
+
+	def test_a_credit_beyond_the_outstanding_names_what_is_left_in_credit(self):
+		note = self.note("30.000", "10.000")
+		self.assertIn("more than invoice ACC-SINV-1's outstanding 10.000", note)
+		self.assertIn("customer CUST-1 is left in credit by 20.000", note)
+
+	def test_a_paid_invoice_owes_nothing(self):
+		self.assertIn("left in credit by 30.000", self.note("30.000", "0"))
+		# a negative outstanding (already in credit) counts as nothing owed
+		self.assertIn("left in credit by 5.000", self.note("5.000", "-2.000"))
+
+	def test_exact_at_three_decimals(self):
+		self.assertIsNone(self.note("0.001", "0.001"))
+		self.assertIn("left in credit by 0.001", self.note("0.002", "0.001"))

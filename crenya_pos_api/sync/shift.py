@@ -12,13 +12,18 @@ from frappe.utils import cint, flt, get_system_timezone
 from crenya_pos_api.sync.cashier import enabled_user
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
-from crenya_pos_api.sync.validation import STORE_CONTROL_AMOUNTS, STORE_CONTROL_COUNTS
+from crenya_pos_api.sync.validation import (
+	ON_ACCOUNT_AMOUNTS,
+	ON_ACCOUNT_COUNTS,
+	STORE_CONTROL_AMOUNTS,
+	STORE_CONTROL_COUNTS,
+)
 from crenya_pos_api.utils.dates import format_db_datetime, to_site_naive
 from crenya_pos_api.utils.decimal import quantize
 
 SHIFT_DOCTYPE = "Crenya POS Shift"
 SHIFT_MONEY_FIELDS = ("opening_float", "sales_total", "returns_total", "net_total", "tax_total")
-PAYMENT_MONEY_FIELDS = ("expected", "counted", "difference", "paid_out")
+PAYMENT_MONEY_FIELDS = ("expected", "counted", "difference", "paid_out", "received")
 
 
 def _money(value, precision):
@@ -50,6 +55,18 @@ def _set_store_controls(doc, controls, precision):
 		doc.set(f"{key}_amount", _money(amount, precision))
 	for key in STORE_CONTROL_COUNTS:
 		doc.set(f"{key}_count", controls[key])
+
+
+def _set_on_account(doc, summary, precision):
+	"""The shift's credit sales and receipts (validation.validate_on_account_summary): an amount
+	with more decimals than the currency's is refused."""
+	for key in ON_ACCOUNT_COUNTS:
+		doc.set(f"on_account_{key}", summary[key])
+	for key in ON_ACCOUNT_AMOUNTS:
+		amount = summary[key]
+		if quantize(amount, precision) != amount:
+			raise SyncError(VALIDATION, f"on_account.{key} {amount} has more than {precision} decimals")
+		doc.set(f"on_account_{key}", _money(amount, precision))
 
 
 def count_shift_invoices(shift_local_id):
@@ -99,7 +116,13 @@ def create_shift(ctx, data, notes):
 	for field in SHIFT_MONEY_FIELDS:
 		doc.set(field, _money(data[field], precision))
 	_set_store_controls(doc, data["store_controls"], precision)
+	_set_on_account(doc, data["on_account"], precision)
 	for row in data["payments"]:
+		if quantize(row["received"], precision) != row["received"]:
+			raise SyncError(
+				VALIDATION,
+				f"payments[{row['mode_of_payment']}].received {row['received']} has more than {precision} decimals",
+			)
 		values = {"mode_of_payment": row["mode_of_payment"]}
 		for field in PAYMENT_MONEY_FIELDS:
 			values[field] = _money(row[field], precision)

@@ -25,6 +25,7 @@ from crenya_pos_api.sync.context import (
 	money_precision,
 	profile_users,
 )
+from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, customer_credit_limits
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.promotions import rule_is_active
@@ -105,6 +106,8 @@ class EntitySpec:
 # the cursor scope of the item and price pulls since they leave out what a till cannot sell
 # (0.11.0): an older cursor restarts once, so a till drops what it already held
 SELLABLE_SCOPE = "sellable"
+# the cursor scope of the customer pull of an outlet that sells on account (0.13.0)
+CREDIT_SCOPE = "credit"
 
 
 class ItemSpec(EntitySpec):
@@ -330,7 +333,7 @@ class CustomerSpec(EntitySpec):
 
 	def build(self, rows, ctx):
 		has_gstin = frappe.get_meta("Customer").has_field(GSTIN_FIELD)
-		return [
+		records = [
 			{
 				"name": row.name,
 				"customer_name": row.customer_name,
@@ -345,6 +348,21 @@ class CustomerSpec(EntitySpec):
 			}
 			for row in rows
 		]
+		if cint(ctx.profile.get(CREDIT_SALES_FIELD)):
+			# an outlet that sells on account: the limit as ERPNext reads it (null: no limit); a limit
+			# edited on the Customer bumps its `modified`, one on the group or company does not (the
+			# online status corrects it at the next check)
+			precision = money_precision(ctx.currency)
+			limits = customer_credit_limits(rows, ctx.company)
+			for record in records:
+				limit = limits[record["name"]]
+				record["credit_limit"] = None if limit is None else format_money(limit, precision)
+		return records
+
+	def cursor_scope(self, ctx):
+		# the records carry `credit_limit` only while the outlet sells on account: switching it on (or
+		# off) sends every customer again once, so a till never keeps a customer without the limit
+		return CREDIT_SCOPE if cint(ctx.profile.get(CREDIT_SALES_FIELD)) else None
 
 
 class StockSpec(EntitySpec):

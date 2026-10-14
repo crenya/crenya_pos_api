@@ -34,6 +34,13 @@
   "column_break_store_controls",
   "no_sales_count",
   "approvals_count",
+  "on_account_section",
+  "on_account_sales_count",
+  "on_account_sales_amount",
+  "on_account_returned_amount",
+  "column_break_on_account",
+  "on_account_received_count",
+  "on_account_received_amount",
   "payments_section",
   "payments",
   "notes"
@@ -225,6 +232,48 @@
    "read_only": 1
   },
   {
+   "fieldname": "on_account_section",
+   "fieldtype": "Section Break",
+   "label": "On account"
+  },
+  {
+   "description": "Sales left unpaid on the customer's account",
+   "fieldname": "on_account_sales_count",
+   "fieldtype": "Int",
+   "label": "Credit Sales",
+   "read_only": 1
+  },
+  {
+   "fieldname": "on_account_sales_amount",
+   "fieldtype": "Currency",
+   "label": "Credit Sales Amount",
+   "read_only": 1
+  },
+  {
+   "description": "Returns credited to the customers' accounts, not refunded",
+   "fieldname": "on_account_returned_amount",
+   "fieldtype": "Currency",
+   "label": "Credited to Accounts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_on_account",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Payments received on account at the till",
+   "fieldname": "on_account_received_count",
+   "fieldtype": "Int",
+   "label": "Receipts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "on_account_received_amount",
+   "fieldtype": "Currency",
+   "label": "Received Amount",
+   "read_only": 1
+  },
+  {
    "fieldname": "payments_section",
    "fieldtype": "Section Break",
    "label": "Payments"
@@ -247,7 +296,7 @@
  "index_web_pages_for_search": 0,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-10-13 12:00:00.000000",
+ "modified": "2026-10-14 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya POS Shift",

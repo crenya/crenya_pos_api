@@ -4,7 +4,13 @@ import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 from crenya_pos_api.expenses.fields import EXPENSE_PROFILE_FIELDS
-from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE, MAX_DISCOUNT_FIELD
+from crenya_pos_api.sync.approvals import (
+	APPROVAL_ACTIONS,
+	APPROVAL_DEFAULT_OFF,
+	APPROVER_ROLE,
+	MAX_DISCOUNT_FIELD,
+)
+from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
 from crenya_pos_api.sync.tax_wording import (
 	DEFAULT_CREDIT_NOTE_TITLE,
 	DEFAULT_INVOICE_TITLE,
@@ -16,24 +22,32 @@ POS_USER_ROLE = "Crenya POS User"
 DEVICE_ROLE = "Crenya POS Device"
 
 # Read rights a device's user needs for ERPNext to accept a pushed sale (0.9.3). The push posts
-# for the authorised device (sync/invoice_builder.py, ignore_permissions), but two ERPNext checks
+# for the authorised device (sync/invoice_builder.py, ignore_permissions), but some ERPNext checks
 # test the session user's rights whatever the document's flags say (found by recording every
 # check a device-role-only user's push fails, 2026-10-12, v15 and v16):
 # - `erpnext.accounts.party.get_party_account` checks the party account. It runs from
 #   `_get_party_details` -> `set_account_and_due_date` on every Sales Invoice, even when debit_to
 #   is already set, so setting debit_to first does not avoid it;
-# - `erpnext.stock.get_item_details.get_item_details` checks each line's Item.
+# - `erpnext.stock.get_item_details.get_item_details` checks each line's Item;
+# - `erpnext.accounts.doctype.loyalty_program.loyalty_program.get_loyalty_program_details_with_points`
+#   checks `has_permission("Customer", doc=..., throw=True)` when a sale of a customer in a Loyalty
+#   Program is submitted (found by retail P1 Task 0, v15 and v16; 0.12.1);
+# - `erpnext.controllers.accounts_controller.get_taxes_and_charges` checks `select` on the Sales
+#   Taxes and Charges Template: a sale wholly on account is a plain (not POS) invoice, whose tax rows
+#   the builder reads with it (0.13.0).
 # {DocType: right}, read-only, never a write; granted to the roles of devices that post sales only
 # (`ensure_push_reads`).
-# Customer: ERPNext reads the customer under the pushing user's rights when a sale of a customer in a
-# Loyalty Program is submitted (`get_loyalty_program_details_with_points` -> `has_permission("Customer",
-# doc=..., throw=True)`, v15 and v16); the device role had none, so that sale was refused (0.12.1)
-PUSH_READS = {"Account": "select", "Item": "read", "Customer": "read"}
+PUSH_READS = {
+	"Account": "select",
+	"Item": "read",
+	"Customer": "read",
+	"Sales Taxes and Charges Template": "select",
+}
 
 
 def _store_control_fields():
 	"""POS Profile's *Store controls* section: the cashier's discount limit and one Check per
-	`APPROVAL_ACTIONS` row (on by default), in that order."""
+	`APPROVAL_ACTIONS` row (on by default, except `APPROVAL_DEFAULT_OFF`), in that order."""
 	fields = [
 		{
 			"fieldname": "crenya_store_controls_section",
@@ -56,14 +70,14 @@ def _store_control_fields():
 		},
 	]
 	previous = "crenya_store_controls_column"
-	for _key, fieldname, label, _label_ar in APPROVAL_ACTIONS:
+	for key, fieldname, label, _label_ar in APPROVAL_ACTIONS:
 		fields.append(
 			{
 				"fieldname": fieldname,
 				"fieldtype": "Check",
 				"label": label,
 				"description": "Needs a Crenya POS Manager's approval at the till",
-				"default": "1",
+				"default": "0" if key in APPROVAL_DEFAULT_OFF else "1",
 				"insert_after": previous,
 			}
 		)
@@ -72,6 +86,26 @@ def _store_control_fields():
 
 
 STORE_CONTROL_FIELDS = _store_control_fields()
+
+# POS Profile's *Credit sales* section (0.13.0), after the expense settings: one switch per outlet
+CREDIT_PROFILE_FIELDS = [
+	{
+		"fieldname": "crenya_credit_section",
+		"fieldtype": "Section Break",
+		"label": "Credit sales",
+		"collapsible": 1,
+		"insert_after": EXPENSE_PROFILE_FIELDS[-1]["fieldname"],
+	},
+	{
+		"fieldname": CREDIT_SALES_FIELD,
+		"fieldtype": "Check",
+		"label": "Sell on Account",
+		"default": "0",
+		"insert_after": "crenya_credit_section",
+		"description": "Cashiers sell on account to a named customer (never the default customer). "
+		"A customer's credit limit is set on the Customer; no limit means no limit.",
+	},
+]
 
 CUSTOM_FIELDS = {
 	"Sales Invoice": [
@@ -237,6 +271,21 @@ CUSTOM_FIELDS = {
 		*STORE_CONTROL_FIELDS,
 		# the outlet's expense settings, shared with the restaurant (expenses/fields.py)
 		*EXPENSE_PROFILE_FIELDS,
+		*CREDIT_PROFILE_FIELDS,
+	],
+	"Payment Entry": [
+		# the receipt of a customer's payment taken at the till (Customer Payment aggregate): its
+		# idempotency key
+		{
+			"fieldname": "crenya_local_id",
+			"fieldtype": "Data",
+			"label": "Crenya Local ID",
+			"insert_after": "reference_no",
+			"unique": 1,
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+		},
 	],
 	"Company": [
 		{

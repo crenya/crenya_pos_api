@@ -9,7 +9,12 @@ import frappe
 
 from crenya_pos_api.setup.install import CUSTOM_FIELDS
 from crenya_pos_api.sync import approvals
-from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE, RETAIL_PRIVILEGES
+from crenya_pos_api.sync.approvals import (
+	APPROVAL_ACTIONS,
+	APPROVAL_DEFAULT_OFF,
+	APPROVER_ROLE,
+	RETAIL_PRIVILEGES,
+)
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
 from crenya_pos_api.sync.validation import validate_store_controls
 
@@ -33,6 +38,8 @@ class TestApprovalActions(unittest.TestCase):
 				"no_sale",
 				"stock_mode",
 				"settings",
+				"credit_over_limit",
+				"credit_sale",
 			],
 		)
 		for key, field, label, label_ar in APPROVAL_ACTIONS:
@@ -46,9 +53,10 @@ class TestApprovalActions(unittest.TestCase):
 	def test_profile_fields_come_from_the_table(self):
 		fields = {field["fieldname"]: field for field in CUSTOM_FIELDS["POS Profile"]}
 		self.assertEqual(fields["crenya_max_discount_percent"]["fieldtype"], "Percent")
-		for _key, fieldname, label, _label_ar in APPROVAL_ACTIONS:
+		for key, fieldname, label, _label_ar in APPROVAL_ACTIONS:
 			self.assertEqual(fields[fieldname]["fieldtype"], "Check")
-			self.assertEqual(fields[fieldname]["default"], "1")
+			# every action starts on, except the ones the owner switches on himself
+			self.assertEqual(fields[fieldname]["default"], "0" if key in APPROVAL_DEFAULT_OFF else "1")
 			self.assertEqual(fields[fieldname]["label"], label)
 		self.assertEqual(fields["crenya_store_controls_section"]["fieldtype"], "Section Break")
 		self.assertEqual(fields["crenya_store_controls_section"]["label"], "Store controls")
@@ -70,6 +78,8 @@ class TestApprovalActions(unittest.TestCase):
 				"open_return",
 				"stock_mode",
 				"settings",
+				"credit_over_limit",
+				"credit_sale",
 			],
 		)
 		self.assertEqual(answer["approver_roles"], ["Crenya POS Manager"])

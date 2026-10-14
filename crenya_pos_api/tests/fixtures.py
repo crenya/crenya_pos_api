@@ -330,7 +330,14 @@ def ensure_pos_profile(company, customer, name=POS_PROFILE, payments=None):
 	return profile.insert(ignore_permissions=True, set_name=name)
 
 
+def lift_user_throttle():
+	"""Frappe refuses more than 60 new users an hour (`throttle_user_limit`, counted in the
+	database); the suites pair devices and make users, and run in one hour. A test site only."""
+	frappe.conf.throttle_user_limit = 10000
+
+
 def setup_fixtures():
+	lift_user_throttle()
 	company = ensure_company()
 	for date in (nowdate(), add_days(nowdate(), -1)):
 		ensure_fiscal_year(date)

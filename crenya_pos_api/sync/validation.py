@@ -338,6 +338,34 @@ def _validate_loyalty(value, is_return):
 	return {"points": points, "amount": amount}
 
 
+def _validate_on_account(value, is_return):
+	"""Optional `on_account`: the unpaid part of a sale, a decimal >= 0 (its decimals are checked
+	against the currency by the builder). A return carries none."""
+	amount = _decimal(value, "on_account", allow_none=True)
+	if amount is None:
+		return Decimal(0)
+	if amount < 0:
+		_fail("on_account must not be negative")
+	if amount and is_return:
+		_fail("on_account is only allowed on a sale")
+	return amount
+
+
+def _validate_credit_offset(value, is_return, original):
+	"""Optional `credit_offset`: the part of a return credited to the customer's account, a decimal
+	>= 0 on a return of an invoice (at most the return's total, checked by the builder)."""
+	amount = _decimal(value, "credit_offset", allow_none=True)
+	if amount is None:
+		return Decimal(0)
+	if amount < 0:
+		_fail("credit_offset must not be negative")
+	if amount and not is_return:
+		_fail("credit_offset is only allowed on a return")
+	if amount and not original:
+		_fail("credit_offset needs the invoice the return is against")
+	return amount
+
+
 def _validate_parent_lines(lines):
 	"""parent_line_no names another line of the invoice, and parents never loop."""
 	parents = {line["line_no"]: line["parent_line_no"] for line in lines}
@@ -407,6 +435,10 @@ def validate_invoice_payload(payload):
 	remarks = _optional_str(payload, "remarks", max_length=2000)
 	if is_return and not (return_against or return_against_local_id):
 		_validate_open_return(lines, remarks)
+	on_account = _validate_on_account(payload.get("on_account"), is_return)
+	credit_offset = _validate_credit_offset(
+		payload.get("credit_offset"), is_return, return_against or return_against_local_id
+	)
 
 	return {
 		"local_id": _required_str(payload, "local_id"),
@@ -432,6 +464,10 @@ def validate_invoice_payload(payload):
 		"client_totals": _validate_client_totals(payload.get("client_totals")),
 		# optional: tills without loyalty support omit the key
 		"loyalty": _validate_loyalty(payload.get("loyalty"), is_return),
+		# optional (0.13.0): the part of a sale left unpaid, on the customer's account; the part of
+		# a return credited to the customer's account. Absent (a till before crenya pos 0.10.0): 0
+		"on_account": on_account,
+		"credit_offset": credit_offset,
 		# optional (protocol 2): passed as is to crenya_pos_invoice_extenders
 		"extensions": _validate_extensions(payload.get("extensions")),
 	}
@@ -475,6 +511,12 @@ def _validate_shift_payments(payments):
 			paid_out = Decimal(0)
 		if paid_out < 0:
 			_fail(f"{label}.paid_out must not be negative")
+		# optional (0.13.0): money received on account in this mode; tills before crenya pos 0.10.0 send none
+		received = _decimal(row.get("received", 0), f"{label}.received", allow_none=True)
+		if received is None:
+			received = Decimal(0)
+		if received < 0:
+			_fail(f"{label}.received must not be negative")
 		rows.append(
 			{
 				"mode_of_payment": mode,
@@ -482,6 +524,7 @@ def _validate_shift_payments(payments):
 				"counted": counted,
 				"difference": difference,
 				"paid_out": paid_out,
+				"received": received,
 			}
 		)
 	return rows
@@ -541,6 +584,30 @@ def validate_store_controls(value):
 	return result
 
 
+ON_ACCOUNT_COUNTS = ("sales_count", "received_count")
+ON_ACCOUNT_AMOUNTS = ("sales_amount", "returned_amount", "received_amount")
+
+
+def validate_on_account_summary(value):
+	"""A shift's optional `on_account`: {sales_count, sales_amount, returned_amount, received_count,
+	received_amount}. Absent, or a missing key, is zero (a till before crenya pos 0.10.0 sends none).
+	Counts are whole numbers >= 0, amounts decimals >= 0 (their decimals are checked against the
+	currency by the shift builder)."""
+	if value is None:
+		value = {}
+	if not isinstance(value, dict):
+		_fail("on_account must be an object")
+	result = {}
+	for key in ON_ACCOUNT_COUNTS:
+		result[key] = _int(value.get(key, 0), f"on_account.{key}", minimum=0, allow_none=True) or 0
+	for key in ON_ACCOUNT_AMOUNTS:
+		amount = _decimal(value.get(key, 0), f"on_account.{key}", allow_none=True) or Decimal(0)
+		if amount < 0:
+			_fail(f"on_account.{key} must not be negative")
+		result[key] = amount
+	return result
+
+
 def validate_shift_payload(payload):
 	"""Validate a closed Crenya POS Shift payload; returns a normalized dict.
 
@@ -579,4 +646,6 @@ def validate_shift_payload(payload):
 		"notes": _optional_str(payload, "notes", max_length=MAX_NOTES_LENGTH),
 		# optional since 0.11.0: tills before crenya pos 0.9.0 (e.g. 0.8.0) send no store_controls (zeros)
 		"store_controls": validate_store_controls(payload.get("store_controls")),
+		# optional since 0.13.0: credit sales and receipts of the shift (zeros when absent)
+		"on_account": validate_on_account_summary(payload.get("on_account")),
 	}

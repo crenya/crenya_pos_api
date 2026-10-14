@@ -23,6 +23,7 @@ from crenya_pos_api.sync.context import (
 	require_device_role,
 	user_can_use_profile,
 )
+from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
 from crenya_pos_api.sync.entitlement import device_rows, get_entitlement, registration_refusal
 from crenya_pos_api.sync.errors import (
 	DeviceNotRegisteredError,
@@ -495,5 +496,8 @@ def bootstrap(ctx):
 	if ctx.device_type == DEFAULT_DEVICE_TYPE:
 		# store controls of a retail till (0.11.0; older tills ignore the key)
 		doc["approvals"] = approvals_bootstrap(profile)
+		# credit sales (0.13.0): the capability and the outlet's switch; a restaurant till gets none
+		doc.setdefault("features", {})["credit_sales"] = 1
+		doc["credit"] = {"enabled": bool(cint(profile.get(CREDIT_SALES_FIELD)))}
 	# other apps' crenya_pos_bootstrap hooks: fn(ctx, doc), adding their own keys
 	return extend_bootstrap(ctx, doc)

@@ -4,6 +4,7 @@ import copy
 import unittest
 
 from crenya_pos_api import extension
+from crenya_pos_api.expenses.sync import ExpenseAggregate
 from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.aggregates import CustomerHandler, SalesInvoiceHandler, ShiftHandler
 from crenya_pos_api.sync.errors import ExtensionHookError, SyncError
@@ -65,8 +66,13 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		self.assertIsInstance(handlers["Customer"], CustomerHandler)
 		self.assertIsInstance(handlers["Sales Invoice"], SalesInvoiceHandler)
 		self.assertIsInstance(handlers["Crenya POS Shift"], ShiftHandler)
+		self.assertIsInstance(handlers["POS Expense"], ExpenseAggregate)
 		for handler in handlers.values():
-			self.assertEqual(handler.operations, ("submit",))
+			# an expense is added, amended and cancelled; every other built-in only submits
+			expected = (
+				("submit", "amend", "cancel") if handler.aggregate_type == "POS Expense" else ("submit",)
+			)
+			self.assertEqual(handler.operations, expected)
 			self.assertIsNone(handler.retention_days)
 			self.assertEqual(handler.result_doctype, handler.aggregate_type)
 		self.assertEqual(handlers["Sales Invoice"].local_id_field, "crenya_local_id")
@@ -97,7 +103,8 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		with self.assertRaises(SyncError) as ctx:
 			validate_envelope(make_event(SALE, aggregate_type="Crenya Order"))
 		self.assertEqual(
-			ctx.exception.message, "aggregate_type must be one of Customer, Sales Invoice, Crenya POS Shift"
+			ctx.exception.message,
+			"aggregate_type must be one of Customer, Sales Invoice, Crenya POS Shift, POS Expense",
 		)
 		with self.assertRaises(SyncError) as ctx:
 			validate_envelope(make_event(SALE, operation="create"))

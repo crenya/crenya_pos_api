@@ -16,6 +16,8 @@ from datetime import timedelta
 import frappe
 from frappe.utils import cint, get_datetime, getdate, now_datetime, nowdate
 
+from crenya_pos_api.expenses import booking as expenses_booking
+from crenya_pos_api.expenses.product import RETAIL, product_for
 from crenya_pos_api.sync.batches import batch_quantities, batches_of_bundles, build_batch_records
 from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, device_roles_of, pin_hash_for
 from crenya_pos_api.sync.context import (
@@ -691,6 +693,93 @@ class SyncRetrySpec(EntitySpec):
 		]
 
 
+# the till's expense pulls (moved down from crenya_restaurant, 0.13.0). Both refuse on a site without
+# erptrue_app's POS Expense. A retail outlet whose Expenses switch is off gets none (the records come
+# back, once, when it is switched on: the cursor scope changes); a restaurant outlet's pulls are what
+# they were.
+EXPENSE_OFF_SCOPE = "off"
+
+
+def _require_expenses():
+	if not expenses_booking.expenses_supported():
+		frappe.throw(expenses_booking.UNSUPPORTED)
+
+
+def _retail_off(ctx):
+	"""A retail outlet that has not switched Expenses on: it is sent no category or supplier."""
+	return product_for(ctx.device_type) == RETAIL and not cint(
+		ctx.profile.get(expenses_booking.ENABLED_FIELD)
+	)
+
+
+class ExpenseCategorySpec(EntitySpec):
+	"""The site's expense categories (erptrue_app POS Expense Category): {id, name, name_ar,
+	active}. An inactive one stays in the pull with `active` 0 (an expense may still name it)."""
+
+	doctype = expenses_booking.CATEGORY
+	fields = ("name", "category_name", "category_name_ar", "is_active")
+
+	def filters(self, table, ctx):
+		_require_expenses()
+		return [table.name == ""] if _retail_off(ctx) else []
+
+	def build(self, rows, ctx):
+		return [
+			{
+				"id": row.name,
+				"name": row.category_name or row.name,
+				"name_ar": row.category_name_ar or None,
+				"active": 1 if cint(row.is_active) else 0,
+				"modified": format_db_datetime(row.modified),
+			}
+			for row in rows
+		]
+
+	def cursor_scope(self, ctx):
+		return EXPENSE_OFF_SCOPE if _retail_off(ctx) else None
+
+
+class ExpenseSupplierSpec(EntitySpec):
+	"""The outlet's expense suppliers: the enabled Suppliers of its supplier group, and its Cash
+	Supplier: {id, name, is_cash_supplier}. When the outlet's group or Cash Supplier changes, the
+	device gets every record again (`cursor_scope`)."""
+
+	doctype = "Supplier"
+	fields = ("name", "supplier_name")
+
+	def filters(self, table, ctx):
+		_require_expenses()
+		if _retail_off(ctx):
+			return [table.name == ""]
+		group = ctx.profile.get(expenses_booking.SUPPLIER_GROUP_FIELD)
+		cash = ctx.profile.get(expenses_booking.CASH_SUPPLIER_FIELD) or ""
+		condition = table.name == cash
+		if group:
+			condition = condition | (table.supplier_group == group)
+		return [condition, table.disabled == 0]
+
+	def build(self, rows, ctx):
+		cash = ctx.profile.get(expenses_booking.CASH_SUPPLIER_FIELD)
+		return [
+			{
+				"id": row.name,
+				"name": row.supplier_name or row.name,
+				"is_cash_supplier": 1 if row.name == cash else 0,
+				"modified": format_db_datetime(row.modified),
+			}
+			for row in rows
+		]
+
+	def cursor_scope(self, ctx):
+		key = "|".join(
+			ctx.profile.get(field) or ""
+			for field in (expenses_booking.SUPPLIER_GROUP_FIELD, expenses_booking.CASH_SUPPLIER_FIELD)
+		)
+		if _retail_off(ctx):
+			key = f"{EXPENSE_OFF_SCOPE}|{key}"
+		return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
 # built-in entities; crenya_pos_api.sync.registry.entities() adds those of other apps
 ENTITIES = {
 	"item": ItemSpec(),
@@ -703,6 +792,9 @@ ENTITIES = {
 	"batch": BatchSpec(),
 	"uom": UomSpec(),
 	RETRY_ENTITY: SyncRetrySpec(),
+	# 0.13.0: the till's expense categories and the outlet's expense suppliers
+	"expense_category": ExpenseCategorySpec(),
+	"expense_supplier": ExpenseSupplierSpec(),
 }
 
 

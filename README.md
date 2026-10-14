@@ -273,6 +273,19 @@ outlet's `crenya_expense*` POS Profile fields and their check), `expenses/report
 capability, the settings page named in messages, the approver roles). The engine names no product;
 crenya_restaurant registers its own with `register_product`.
 
+The retail till pushes expenses through the same handler (`expenses/sync.py`, aggregate `POS Expense`,
+operations `submit`, `amend`, `cancel`, built in): the device's type picks the product. Retail tills
+also pull `expense_category` and `expense_supplier` (empty while the outlet's Expenses switch is off),
+send the bill photo to `crenya_pos_api.api.expenses.attach_photo`, and read the bootstrap's `expenses`
+block with `features.retail_expenses`, all only on a site with erptrue_app's POS Expense. A retail
+outlet's approvers are the holders of Crenya POS Manager on the POS Profile's *Applicable for Users*
+(empty: every holder).
+
+crenya_restaurant before 0.15.7 still hooks `POS Expense`, `expense_category` and `expense_supplier`.
+A hook entry that repeats one of these built-ins is ignored and logged once, so this release can be
+deployed first: the restaurant tills keep working through the built-in handler (the restaurant's
+approver roles are read from the installed crenya_restaurant until it registers its product).
+
 #### Device ids
 
 A device id is the device's UUID. Ids that differ only in case are the same
@@ -1290,7 +1303,7 @@ bench --site <test-site> set-config allow_tests true
 bench --site <test-site> run-tests --app crenya_pos_api
 ```
 
-The expenses booking tests (`tests/test_integration_expenses_booking`) need erptrue_app's POS Expense
+The expenses booking tests (`tests/test_integration_expenses_booking`, `test_integration_expenses_retail`) need erptrue_app's POS Expense
 (this app reaches it by DocType name and never depends on it); without it they skip and
 `TestExpensesOff` runs. CI's `expenses` job installs erptrue_app over SSH with a read-only deploy key
 kept in the repository secret `ERPTRUE_APP_DEPLOY_KEY` (the same key as crenya_restaurant's); without

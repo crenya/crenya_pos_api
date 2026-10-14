@@ -5,8 +5,13 @@ The restaurant's tests of these parts moved here with the code; the wording test
 products.
 """
 
+import sys
+import types
 import unittest
 from decimal import Decimal
+from unittest.mock import patch
+
+import frappe
 
 from crenya_pos_api.expenses import booking
 from crenya_pos_api.expenses.fields import EXPENSE_PROFILE_FIELDS
@@ -186,13 +191,31 @@ class TestProducts(unittest.TestCase):
 		self.assertEqual(product_for("restaurant_pos"), RESTAURANT)
 
 
-class TestPlaceholderRestaurant(unittest.TestCase):
-	def test_the_unregistered_restaurant_product_does_not_answer_with_the_retail_rule(self):
-		with self.assertRaises(RuntimeError):
-			RESTAURANT.approver_roles(None)
-		with self.assertRaises(RuntimeError):
-			RESTAURANT.outlet_users(None)
+class TestUnregisteredRestaurant(unittest.TestCase):
+	"""Until crenya_restaurant registers its product (0.15.7) the restaurant's approver roles are read
+	from the installed app, so a restaurant 0.15.6 keeps working; without it nobody can ask."""
+
+	def test_without_crenya_restaurant_the_roles_fail_loudly_not_with_the_retail_rule(self):
+		with patch.dict(sys.modules, {"crenya_restaurant": None, "crenya_restaurant.constants": None}):
+			with self.assertRaises(RuntimeError):
+				RESTAURANT.approver_roles(None)
 		self.assertEqual(RETAIL.approver_roles(None), ("Crenya POS Manager",))
+
+	def test_with_crenya_restaurant_the_roles_are_its_void_approvers(self):
+		fake = types.ModuleType("crenya_restaurant.constants")
+		fake.VOID_APPROVER_ROLES = ("Restaurant Manager", "System Manager")
+		with patch.dict(
+			sys.modules,
+			{"crenya_restaurant": types.ModuleType("crenya_restaurant"), "crenya_restaurant.constants": fake},
+		):
+			self.assertEqual(RESTAURANT.approver_roles(None), ("Restaurant Manager", "System Manager"))
+
+	def test_the_outlet_rule_is_the_profiles_applicable_users_for_both_products(self):
+		profile = frappe._dict(
+			applicable_for_users=[frappe._dict(user="a@example.com"), frappe._dict(user="")]
+		)
+		self.assertEqual(RESTAURANT.outlet_users(profile), {"a@example.com"})
+		self.assertEqual(RETAIL.outlet_users(profile), {"a@example.com"})
 
 
 class TestOmrDecimals(unittest.TestCase):

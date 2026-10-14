@@ -65,6 +65,7 @@ ADD_PIN_FIELD = "crenya_expense_add_needs_pin"
 # the bill photo: the till scales it to this longest side; the server takes a JPEG of at most the
 # item-image size
 PHOTO_MAX_SIDE = 1600
+PHOTO_MAX_BYTES = 1024 * 1024
 
 UNSUPPORTED = "Expenses need crenya erp's Expenses module on this workspace"
 BOOKING_SAVEPOINT = "crenya_expense_booking"
@@ -134,6 +135,50 @@ def cash_supplier(profile):
 	if name and frappe.db.get_value("Supplier", name, "disabled") == 0:
 		return name
 	return None
+
+
+def settings_block(product: ExpenseProduct, profile):
+	"""The bootstrap block of the outlet under `product.bootstrap_key`: {enabled, reason,
+	needs_pin_to_add, cash_supplier, tax, photo}. `reason` says why `enabled` is false (null when it
+	is true), in English like the sync protocol's messages."""
+	photo = {"max_side": PHOTO_MAX_SIDE, "max_bytes": PHOTO_MAX_BYTES}
+	needs_pin = bool(cint(profile.get(ADD_PIN_FIELD)))
+	if not expenses_supported():
+		return {
+			"enabled": False,
+			"reason": UNSUPPORTED,
+			"needs_pin_to_add": needs_pin,
+			"cash_supplier": None,
+			"tax": None,
+			"photo": photo,
+		}
+	supplier = cash_supplier(profile)
+	rows = template_rows(profile.get(TAX_TEMPLATE_FIELD), profile.get("company"))
+	reason = None
+	if not cint(profile.get(ENABLED_FIELD)):
+		reason = off_reason(product)
+	elif not supplier:
+		reason = f"Set this outlet's Cash Supplier ({product.settings_hint})"
+	return {
+		"enabled": reason is None,
+		"reason": reason,
+		"needs_pin_to_add": needs_pin,
+		"cash_supplier": supplier,
+		"tax": {
+			"template": profile.get(TAX_TEMPLATE_FIELD),
+			"rows": [
+				{
+					"account_head": row.account_head,
+					"description": row.description or row.account_head,
+					"rate": format_number(row.rate or 0),
+				}
+				for row in rows
+			],
+		}
+		if rows
+		else None,
+		"photo": photo,
+	}
 
 
 # the till's amounts (pure)

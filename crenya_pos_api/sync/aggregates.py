@@ -143,8 +143,12 @@ class ShiftHandler(AggregateHandler):
 
 
 def builtin_handlers():
-	"""The aggregates every till speaks, in protocol order."""
+	"""The aggregates every till speaks, in protocol order. `POS Expense` (0.13.0, moved down from
+	crenya_restaurant) is built in for both products; the device's type picks the product."""
+	# the expenses handler extends AggregateHandler: imported when asked, not at import
+	from crenya_pos_api.expenses.sync import ExpenseAggregate
+
 	return {
 		handler.aggregate_type: handler
-		for handler in (CustomerHandler(), SalesInvoiceHandler(), ShiftHandler())
+		for handler in (CustomerHandler(), SalesInvoiceHandler(), ShiftHandler(), ExpenseAggregate())
 	}

@@ -8,7 +8,12 @@ import frappe
 from frappe.utils import add_to_date
 
 from crenya_pos_api.api import device as device_api
-from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE, approvals_bootstrap
+from crenya_pos_api.sync.approvals import (
+	APPROVAL_ACTIONS,
+	APPROVAL_DEFAULT_OFF,
+	APPROVER_ROLE,
+	approvals_bootstrap,
+)
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.sync_case import SyncCase, new_id
 
@@ -132,8 +137,11 @@ class TestApprovalsBootstrap(SyncCase):
 		stored = frappe.db.get_value(
 			"POS Profile", created.name, [f for _k, f, *_ in APPROVAL_ACTIONS], as_dict=True
 		)
-		self.assertEqual(set(stored.values()), {1})
+		# every action starts on, except those the owner switches on himself (credit_sale)
+		self.assertEqual(
+			stored, {field: 0 if key in APPROVAL_DEFAULT_OFF else 1 for key, field, *_ in APPROVAL_ACTIONS}
+		)
 		self.assertEqual(
 			approvals_bootstrap(frappe.get_doc("POS Profile", created.name))["required"],
-			[key for key, *_ in APPROVAL_ACTIONS],
+			[key for key, *_ in APPROVAL_ACTIONS if key not in APPROVAL_DEFAULT_OFF],
 		)

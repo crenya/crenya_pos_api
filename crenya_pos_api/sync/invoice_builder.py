@@ -9,6 +9,7 @@ document's flags need read rights instead (setup/install.py PUSH_READS).
 """
 
 import json
+from decimal import Decimal
 
 import frappe
 from frappe.utils import cint, flt
@@ -21,6 +22,12 @@ from crenya_pos_api.sync.context import (
 	is_rounded_total_disabled,
 	money_precision,
 	qty_precision,
+)
+from crenya_pos_api.sync.credit import (
+	CREDIT_SALES_FIELD,
+	credit_limit_waived,
+	credit_status,
+	over_limit_note,
 )
 from crenya_pos_api.sync.errors import DEPENDENCY_MISSING, TOTAL_MISMATCH, VALIDATION, SyncError
 from crenya_pos_api.sync.loyalty import apply_redemption, customer_program
@@ -280,6 +287,10 @@ def restore_pricing_rules(doc, method=None):
 			row.pricing_rules = value
 
 
+def _pays_anything(payments):
+	return any(payment["amount"] > 0 for payment in payments)
+
+
 def _payable_total(doc):
 	if doc.is_rounded_total_disabled():
 		return doc.grand_total
@@ -334,20 +345,34 @@ def _ensure_account(doc, row):
 		row.account = mode_of_payment_account(row.mode_of_payment, doc.company)
 
 
-def reconcile_payments(doc, default_mode, notes):
+def reconcile_payments(doc, default_mode, notes, on_account=0, credit_offset=0):
 	"""Payments must equal the payable total (less any loyalty redemption); a difference within
-	tolerance goes to the default/cash row."""
+	tolerance goes to the default/cash row.
+
+	A sale left partly on account: payments + `on_account` = payable; a return partly credited to the
+	customer's account: payments = payable + `credit_offset` (both negative in the return's
+	signs). Those two are exact, to the minor unit, with no tolerance and nothing absorbed: a
+	corrupt till cannot move money into the account."""
 	precision = money_precision(doc.currency)
 	tolerance = get_total_tolerance(precision)
 	payable = quantize(_payments_due(doc), precision)
+	on_account = as_decimal(on_account)
+	credit_offset = as_decimal(credit_offset)
+	exact = bool(on_account or credit_offset)
+	target = payable - on_account + credit_offset
 	paid = sum((quantize(row.amount, precision) for row in doc.get("payments") or []), as_decimal(0))
-	difference = payable - paid
+	difference = target - paid
 
 	if difference:
-		if abs(difference) > as_decimal(tolerance):
+		if exact or abs(difference) > as_decimal(tolerance):
+			split = ""
+			if on_account:
+				split = f" and {format_money(on_account, precision)} on account"
+			elif credit_offset:
+				split = f" and {format_money(credit_offset, precision)} credited to the account"
 			raise SyncError(
 				TOTAL_MISMATCH,
-				f"Payments {format_money(paid, precision)} do not match payable total "
+				f"Payments {format_money(paid, precision)}{split} do not match payable total "
 				f"{format_money(payable, precision)}",
 			)
 		row = _absorb_row(doc, default_mode)
@@ -372,6 +397,42 @@ def reconcile_payments(doc, default_mode, notes):
 	for row in list(doc.get("payments") or []):
 		if id(row) not in kept:
 			doc.remove(row)
+
+
+def assert_on_account_allowed(ctx, customer, on_account, precision):
+	"""A sale on account needs the outlet's switch, a named customer and an amount in the
+	currency's decimals. (A limit is not required, and the over-limit check is the till's
+	approval: the server never refuses a sale already made, `credit_limit_waived`.)"""
+	if not cint(ctx.profile.get(CREDIT_SALES_FIELD)):
+		raise SyncError(VALIDATION, f"Sales on account are switched off for POS Profile {ctx.profile.name}")
+	if customer == ctx.profile.customer:
+		raise SyncError(
+			VALIDATION, "A sale on account needs a named customer, not the POS Profile's default customer"
+		)
+	if quantize(on_account, precision) != on_account:
+		raise SyncError(VALIDATION, f"on_account {on_account} has more than {precision} decimals")
+
+
+def assert_credit_offset_allowed(credit_offset, original, doc, precision):
+	"""The part of a return credited to the account: for a return against an invoice, in the
+	currency's decimals, at most the return's total."""
+	if not original:
+		raise SyncError(VALIDATION, "credit_offset needs the invoice the return is against")
+	if quantize(credit_offset, precision) != credit_offset:
+		raise SyncError(VALIDATION, f"credit_offset {credit_offset} has more than {precision} decimals")
+	if credit_offset > abs(quantize(_payments_due(doc), precision)):
+		raise SyncError(
+			VALIDATION,
+			f"credit_offset {format_money(credit_offset, precision)} is more than the return's total "
+			f"{format_money(abs(_payments_due(doc)), precision)}",
+		)
+
+
+def _due_date(doc, ctx):
+	"""The due date of a sale on account: the customer's payment terms, else the posting date."""
+	from erpnext.accounts.party import get_due_date
+
+	return get_due_date(doc.posting_date, "Customer", doc.customer, ctx.company) or doc.posting_date
 
 
 def build_invoice(ctx, data, notes):
@@ -415,13 +476,21 @@ def build_invoice(ctx, data, notes):
 			notes.append(f"Customer {customer} replaced by original invoice customer {original.customer}")
 			customer = original.customer
 
+	on_account = data.get("on_account") or Decimal(0)
+	credit_offset = data.get("credit_offset") or Decimal(0)
+	if on_account:
+		assert_on_account_allowed(ctx, customer, on_account, money_precision(ctx.currency))
+	# a sale wholly on account is no POS payment: no payment rows, ERPNext's plain invoice shape
+	# (Task 0: outstanding = the whole total). Redeeming points keeps the POS shape.
+	credit_only = bool(on_account) and not data.get("loyalty") and not _pays_anything(data["payments"])
+
 	doc = frappe.new_doc("Sales Invoice")
 	# posted for the authorised device (module docstring): from set_missing_values to submit
 	doc.flags.ignore_permissions = True
 	doc.update(
 		{
 			"company": ctx.company,
-			"is_pos": 1,
+			"is_pos": 0 if credit_only else 1,
 			"pos_profile": profile.name,
 			"customer": customer,
 			"posting_date": data["posting_date"],
@@ -447,6 +516,12 @@ def build_invoice(ctx, data, notes):
 	)
 	if profile.get("cost_center"):
 		doc.cost_center = profile.cost_center
+	if on_account:
+		doc.due_date = _due_date(doc, ctx)
+	if credit_offset:
+		# the credit note reduces the original's outstanding by the credited part only; the refunded
+		# part is paid back in the payment rows (Task 0, step 4)
+		doc.update_outstanding_for_self = 0
 
 	check_line_batches([line for line in data["items"] if line["line_no"] not in batch_plan])
 	if open_return:
@@ -480,7 +555,9 @@ def build_invoice(ctx, data, notes):
 		doc.calculate_taxes_and_totals()
 
 	check_grand_total(doc, data)
-	reconcile_payments(doc, default_mode, notes)
+	if credit_offset:
+		assert_credit_offset_allowed(credit_offset, original, doc, money_precision(doc.currency))
+	reconcile_payments(doc, default_mode, notes, on_account=on_account, credit_offset=credit_offset)
 	doc.calculate_taxes_and_totals()
 	return doc
 
@@ -489,10 +566,18 @@ def submit_invoice(ctx, data, notes):
 	doc = build_invoice(ctx, data, notes)
 	# other apps' crenya_pos_invoice_extenders: fn(ctx, doc, data, notes), before the insert
 	extend_invoice(ctx, doc, data, notes)
-	doc.insert()
-	# validate() recomputed everything; the till total must still hold before posting
-	check_grand_total(doc, data)
-	doc.submit()
+	# ERPNext's credit limit check is waived for this request: the till made the sale (with a
+	# manager's PIN over the limit) and the server never refuses it; a cash sale to an already
+	# over-limit customer is posted the same way
+	with credit_limit_waived():
+		doc.insert()
+		# validate() recomputed everything; the till total must still hold before posting
+		check_grand_total(doc, data)
+		doc.submit()
+	if data.get("on_account"):
+		note = over_limit_note(credit_status(doc.customer, ctx.company))
+		if note:
+			notes.append(note)
 	return doc
 
 

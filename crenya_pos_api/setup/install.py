@@ -4,7 +4,13 @@ import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 from crenya_pos_api.expenses.fields import EXPENSE_PROFILE_FIELDS
-from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE, MAX_DISCOUNT_FIELD
+from crenya_pos_api.sync.approvals import (
+	APPROVAL_ACTIONS,
+	APPROVAL_DEFAULT_OFF,
+	APPROVER_ROLE,
+	MAX_DISCOUNT_FIELD,
+)
+from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
 from crenya_pos_api.sync.tax_wording import (
 	DEFAULT_CREDIT_NOTE_TITLE,
 	DEFAULT_INVOICE_TITLE,
@@ -33,7 +39,7 @@ PUSH_READS = {"Account": "select", "Item": "read", "Customer": "read"}
 
 def _store_control_fields():
 	"""POS Profile's *Store controls* section: the cashier's discount limit and one Check per
-	`APPROVAL_ACTIONS` row (on by default), in that order."""
+	`APPROVAL_ACTIONS` row (on by default, except `APPROVAL_DEFAULT_OFF`), in that order."""
 	fields = [
 		{
 			"fieldname": "crenya_store_controls_section",
@@ -56,14 +62,14 @@ def _store_control_fields():
 		},
 	]
 	previous = "crenya_store_controls_column"
-	for _key, fieldname, label, _label_ar in APPROVAL_ACTIONS:
+	for key, fieldname, label, _label_ar in APPROVAL_ACTIONS:
 		fields.append(
 			{
 				"fieldname": fieldname,
 				"fieldtype": "Check",
 				"label": label,
 				"description": "Needs a Crenya POS Manager's approval at the till",
-				"default": "1",
+				"default": "0" if key in APPROVAL_DEFAULT_OFF else "1",
 				"insert_after": previous,
 			}
 		)
@@ -72,6 +78,26 @@ def _store_control_fields():
 
 
 STORE_CONTROL_FIELDS = _store_control_fields()
+
+# POS Profile's *Credit sales* section (0.13.0), after the expense settings: one switch per outlet
+CREDIT_PROFILE_FIELDS = [
+	{
+		"fieldname": "crenya_credit_section",
+		"fieldtype": "Section Break",
+		"label": "Credit sales",
+		"collapsible": 1,
+		"insert_after": EXPENSE_PROFILE_FIELDS[-1]["fieldname"],
+	},
+	{
+		"fieldname": CREDIT_SALES_FIELD,
+		"fieldtype": "Check",
+		"label": "Sell on Account",
+		"default": "0",
+		"insert_after": "crenya_credit_section",
+		"description": "Cashiers sell on account to a named customer (never the default customer). "
+		"A customer's credit limit is set on the Customer; no limit means no limit.",
+	},
+]
 
 CUSTOM_FIELDS = {
 	"Sales Invoice": [
@@ -237,6 +263,21 @@ CUSTOM_FIELDS = {
 		*STORE_CONTROL_FIELDS,
 		# the outlet's expense settings, shared with the restaurant (expenses/fields.py)
 		*EXPENSE_PROFILE_FIELDS,
+		*CREDIT_PROFILE_FIELDS,
+	],
+	"Payment Entry": [
+		# the receipt of a customer's payment taken at the till (Customer Payment aggregate): its
+		# idempotency key
+		{
+			"fieldname": "crenya_local_id",
+			"fieldtype": "Data",
+			"label": "Crenya Local ID",
+			"insert_after": "reference_no",
+			"unique": 1,
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+		},
 	],
 	"Company": [
 		{

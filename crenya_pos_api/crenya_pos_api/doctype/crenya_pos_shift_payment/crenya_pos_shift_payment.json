@@ -10,7 +10,8 @@
   "expected",
   "counted",
   "difference",
-  "paid_out"
+  "paid_out",
+  "received"
  ],
  "fields": [
   {
@@ -50,12 +51,19 @@
    "fieldtype": "Currency",
    "label": "Paid Out",
    "read_only": 1
+  },
+  {
+   "description": "Cash received on account (customers' payments); already added to Expected",
+   "fieldname": "received",
+   "fieldtype": "Currency",
+   "label": "Received",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-09-29 12:00:00.000000",
+ "modified": "2026-10-14 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya POS Shift Payment",

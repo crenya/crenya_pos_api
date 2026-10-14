@@ -82,6 +82,7 @@ class TestShiftPayload(unittest.TestCase):
 				"counted": Decimal("511.800"),
 				"difference": Decimal("-0.500"),
 				"paid_out": Decimal(0),
+				"received": Decimal(0),
 			},
 		)
 		self.assertEqual(data["invoice_local_ids"], ["inv-1", "inv-2"])

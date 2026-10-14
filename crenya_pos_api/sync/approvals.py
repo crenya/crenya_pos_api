@@ -25,7 +25,18 @@ APPROVAL_ACTIONS = (
 	("no_sale", "crenya_approve_no_sale", "Open the drawer (no sale)", "فتح الدرج بدون بيع"),
 	("stock_mode", "crenya_approve_stock_mode", "Change the stock check", "تغيير فحص المخزون"),
 	("settings", "crenya_approve_settings", "Till settings and reset", "إعدادات الجهاز وإعادة الضبط"),
+	# credit sales (0.13.0): selling on account over the customer's limit needs a manager (on by
+	# default); selling on account at all can be made to need one too (off by default)
+	(
+		"credit_over_limit",
+		"crenya_approve_credit_over_limit",
+		"Sell on account over the limit",
+		"بيع آجل فوق الحد",
+	),
+	("credit_sale", "crenya_approve_credit_sale", "Sell on account", "بيع بالآجل"),
 )
+# the actions whose Check starts off on a new POS Profile (every other action starts on)
+APPROVAL_DEFAULT_OFF = frozenset({"credit_sale"})
 # the privileges the retail staff screen offers and the roles each one gives
 RETAIL_PRIVILEGES = {"cashier": (POS_USER_ROLE,), "manager": (POS_USER_ROLE, APPROVER_ROLE)}
 # their labels (English, Arabic), in RETAIL_PRIVILEGES order: the web's staff screen offers these

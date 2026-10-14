@@ -77,6 +77,41 @@ def customer_credit_limits(rows, company):
 	return out
 
 
+def payable_of(row, precision):
+	"""What an invoice row (grand_total, rounded_total, disable_rounded_total) is payable for, as
+	ERPNext decides it: the grand total when rounding is off, else the rounded total (Decimal)."""
+	if cint(row.get("disable_rounded_total")):
+		return quantize(row.get("grand_total") or 0, precision)
+	return quantize(row.get("rounded_total") or row.get("grand_total") or 0, precision)
+
+
+def on_account_part(invoice, payments, precision):
+	"""What a sale put on the customer's account when it was sold (pure, Decimal >= 0): its payable
+	total less the payment rows and any loyalty points it redeemed. A sale paid in full has none."""
+	paid = sum((as_decimal(p.get("amount")) for p in payments or []), Decimal(0))
+	loyalty = as_decimal(invoice.get("loyalty_amount") or 0)
+	return max(
+		payable_of(invoice, precision) - quantize(paid, precision) - quantize(loyalty, precision), Decimal(0)
+	)
+
+
+def credited_to_account(returns, payments_by_return, precision):
+	"""What returns of an invoice credited to the customer's account (pure, Decimal >= 0): for each
+	return that does not reduce its own outstanding (`update_outstanding_for_self` 0, the shape a
+	credited return posts), its total less the money refunded in its payment rows. A plain refund
+	credits nothing."""
+	total = Decimal(0)
+	for ret in returns or []:
+		if cint(ret.get("update_outstanding_for_self", 1)):
+			continue
+		refunded = sum(
+			(abs(as_decimal(p.get("amount"))) for p in (payments_by_return or {}).get(ret.get("name"), [])),
+			Decimal(0),
+		)
+		total += max(abs(payable_of(ret, precision)) - quantize(refunded, precision), Decimal(0))
+	return quantize(total, precision)
+
+
 def credit_status(customer, company):
 	"""{customer, credit_limit, outstanding, available, over_limit, as_of} (money as decimal strings
 	at the currency's precision). `credit_limit` and `available` are null for a customer with no

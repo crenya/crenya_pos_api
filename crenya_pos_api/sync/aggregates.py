@@ -72,6 +72,18 @@ class AggregateHandler:
 		from its own data; `event_id` idempotency always applies."""
 		return None
 
+	def find_for_device(self, ctx, local_id):
+		"""`find_by_local_id` for the device pushing (default: the same answer for every device);
+		a handler whose documents record their device answers only for its own."""
+		return self.find_by_local_id(local_id)
+
+	def lock_key(self, payload):
+		"""What events of this aggregate must not process at the same time, as a string (default
+		None: no lock). The events with the same key run one after another, each reading the
+		database only after the previous one is committed. Called with the raw payload before the
+		event is validated: return None when the key cannot be told."""
+		return None
+
 	def result_fields(self, doc):
 		"""Fields merged into the push result for the document (`doctype`, `name`,
 		`docstatus`, `modified`, `totals`, `fawtara_status`)."""

@@ -1,6 +1,6 @@
-"""A shop's refused sales on app.crenya.com: what its tills pushed and ERPNext refused (a Crenya
-Sync Event with status `error`), with a hint in the reader's language, and Retry, which asks the
-till to send the sale again at its next sync (`sync/retry.py`). For the shop's managers
+"""A shop's refused items on app.crenya.com (sales, returns, customer payments, expenses): what its
+tills pushed and ERPNext refused (a Crenya Sync Event with status `error`), with a hint in the reader's language, and Retry, which asks the
+till to send it again at its next sync (`sync/retry.py`). For the shop's managers
 (`scope.manage`).
 
 The hint is chosen by the event's error code and, for a validation error, by what the message
@@ -29,15 +29,15 @@ from crenya_pos_api.utils.dates import format_db_datetime
 from crenya_pos_api.web.devices import wire
 
 MAX_REFUSED = 200
-# {hint key: (English, Arabic)}: what the owner can do about a refused sale
+# {hint key: (English, Arabic)}: what the owner can do about a refused item
 HINTS = {
 	"stock": (
 		"Not enough stock in the outlet's warehouse. Receive the stock, then retry.",
 		"لا يوجد مخزون كافٍ في مستودع المتجر. استلم المخزون ثم أعد المحاولة.",
 	),
 	"price_list": (
-		"A price list of the sale is missing or not in the outlet's currency. Fix the outlet's price list, then retry.",
-		"قائمة أسعار البيع مفقودة أو بعملة أخرى. صحّح قائمة أسعار المتجر ثم أعد المحاولة.",
+		"A price list it needs is missing or not in the outlet's currency. Fix the outlet's price list, then retry.",
+		"قائمة الأسعار المطلوبة مفقودة أو بعملة أخرى. صحّح قائمة أسعار المتجر ثم أعد المحاولة.",
 	),
 	"account": (
 		"An account is missing for the company (a payment method, write-off or tax account). Add it, then retry.",
@@ -52,7 +52,7 @@ HINTS = {
 		"إجمالي الجهاز يختلف عن إجمالي النظام (تغيّر سعر أو ضريبة أو تقريب). راجع إعدادات المتجر ثم أعد المحاولة.",
 	),
 	DEPENDENCY_MISSING: (
-		"Something the sale needs has not reached the server yet (a customer or the original bill). The till retries by itself.",
+		"Something it needs has not reached the server yet (a customer or the original bill). The till retries by itself.",
 		"شيء تحتاجه العملية لم يصل إلى الخادم بعد (عميل أو الفاتورة الأصلية). سيعيد الجهاز المحاولة تلقائياً.",
 	),
 	UNSUPPORTED_TAX: (
@@ -60,8 +60,8 @@ HINTS = {
 		"قالب الضريبة يحتوي ضريبة لا يحسبها الجهاز. اختر قالباً بضرائب 'على صافي الإجمالي' ثم أعد المحاولة.",
 	),
 	PAYLOAD_CONFLICT: (
-		"The till sent this sale twice with different contents. Contact support before retrying.",
-		"أرسل الجهاز هذه العملية مرتين بمحتوى مختلف. تواصل مع الدعم قبل إعادة المحاولة.",
+		"The till sent this twice with different contents. Contact support before retrying.",
+		"أرسل الجهاز هذا الطلب مرتين بمحتوى مختلف. تواصل مع الدعم قبل إعادة المحاولة.",
 	),
 	"generic": (
 		"Read the reason below, fix it, then retry.",
@@ -139,7 +139,7 @@ def _refused(ctx) -> dict:
 
 @frappe.whitelist(methods=["GET", "POST"])
 def refused_sales(outlet: str) -> dict:
-	"""The sales the shop's tills pushed that are still refused, newest first (at most
+	"""The items (sales, returns, payments, expenses) the shop's tills pushed that are still refused, newest first (at most
 	MAX_REFUSED)."""
 	return _refused(manage(outlet))
 
@@ -159,7 +159,7 @@ def retry_sale(name: str) -> dict:
 		raise frappe.PermissionError
 	ctx = manage(outlet)
 	if row.status != STATUS_ERROR:
-		frappe.throw(_("This sale is no longer refused"), frappe.ValidationError)
+		frappe.throw(_("This is no longer refused"), frappe.ValidationError)
 	doc = frappe.get_doc(EVENT_DOCTYPE, row.name)
 	doc.set(RETRY_FIELD, format_db_datetime(now_datetime()))
 	doc.save(ignore_permissions=True)

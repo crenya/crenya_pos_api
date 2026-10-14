@@ -176,3 +176,17 @@ class TestCreditInvoiceReturns(CreditCase):
 		self.post(self.give_back(_sale, 3, "30.000"))
 		after = credit_api.get_invoice_outstanding(device_id=self.device_id, invoice=sold["name"])
 		self.assertEqual(after["outstanding"], "30.000")
+
+
+class TestCreditOffsetOnTheDefaultCustomer(CreditCase):
+	def test_a_return_of_a_walk_in_sale_cannot_be_credited_to_an_account(self):
+		sale = self.sale_payload(lines=[(fixtures.MILK, "2", "10.000")])
+		self.post(sale)
+		ret = self.return_payload(sale, [(fixtures.MILK, "-1", "10.000", 1)], credit_offset="10.000")
+		ret["payments"] = []
+		result = self.push_one(self.event(ret))
+		self.assertError(result, "validation", False)
+		self.assertIn("default customer", result["error"]["message"])
+		# refunded as always
+		plain = self.return_payload(sale, [(fixtures.MILK, "-1", "10.000", 1)])
+		self.assertOk(self.push_one(self.event(plain)))

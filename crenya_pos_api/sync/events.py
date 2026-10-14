@@ -6,6 +6,7 @@ or is rolled back to its savepoint and leaves only an `error` Sync Event (with
 once (DEADLOCK_ATTEMPTS, within DEADLOCK_BUDGET_SECONDS) before it becomes such an error.
 """
 
+import hashlib
 import random
 import time
 
@@ -15,6 +16,7 @@ from frappe.utils import cint, now
 from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.context import EVENT_DOCTYPE
 from crenya_pos_api.sync.errors import (
+	INTERNAL,
 	PAYLOAD_CONFLICT,
 	ExtensionHookError,
 	SyncError,
@@ -39,6 +41,8 @@ MAX_NOTE_LENGTH = 2000
 DEADLOCK_ATTEMPTS = 3
 DEADLOCK_PAUSE_SECONDS = (0.05, 0.25)
 DEADLOCK_BUDGET_SECONDS = 20
+# how long an event waits for the lock of its handler's `lock_key`
+LOCK_WAIT_SECONDS = 25
 
 
 def empty_result(event_id, doctype=None):
@@ -181,7 +185,7 @@ def _idempotent_result(ctx, env):
 			)
 			return result, existing
 
-	name = handler.find_by_local_id(env["local_id"])
+	name = handler.find_for_device(ctx, env["local_id"])
 	if name:
 		# the document exists but the till never saw the response
 		doctype = handler.result_doctype
@@ -231,7 +235,55 @@ def _forget_request_error():
 		pass
 
 
+def _lock_name(raw_event):
+	"""The database lock name an event runs under, or None. A handler may declare a `lock_key` (what
+	its work must not do twice at once, e.g. the customer a payment is allocated for); the lookup
+	never fails the event: a handler that cannot say simply runs without the lock."""
+	try:
+		aggregate_type = raw_event.get("aggregate_type")
+		payload = raw_event.get("payload")
+		handler = registry.handler(aggregate_type) if isinstance(aggregate_type, str) else None
+		key = handler.lock_key(payload) if handler is not None and isinstance(payload, dict) else None
+	except Exception:
+		return None
+	return f"crenya_pos:{hashlib.sha1(key.encode()).hexdigest()}" if key else None
+
+
+def _acquire_lock(name):
+	"""Take the named lock (waiting up to LOCK_WAIT_SECONDS) after ending the transaction, so the
+	event's snapshot starts after the lock is held: under MariaDB's REPEATABLE READ a read taken
+	before the wait would still be the old one when the lock comes."""
+	frappe.db.commit()  # nosemgrep
+	row = frappe.db.sql("select get_lock(%s, %s)", (name, LOCK_WAIT_SECONDS))
+	return bool(row and row[0][0] == 1)
+
+
+def _release_lock(name):
+	try:
+		frappe.db.sql("select release_lock(%s)", (name,))
+	except Exception:
+		# the connection is gone: its locks went with it
+		pass
+
+
 def process_event(ctx, raw_event, index=0):
+	"""One event, under its handler's lock when it declares one (see `_lock_name`)."""
+	name = _lock_name(raw_event) if isinstance(raw_event, dict) else None
+	if not name:
+		return _process_event(ctx, raw_event, index)
+	event_id = raw_event.get("event_id")
+	if not _acquire_lock(name):
+		error = error_dict(INTERNAL, "Another event of the same customer is being booked: retry", True)
+		return error_result(
+			event_id if isinstance(event_id, str) else None, error, raw_event.get("aggregate_type")
+		)
+	try:
+		return _process_event(ctx, raw_event, index)
+	finally:
+		_release_lock(name)
+
+
+def _process_event(ctx, raw_event, index=0):
 	event_id = raw_event.get("event_id") if isinstance(raw_event, dict) else None
 	aggregate_type = raw_event.get("aggregate_type") if isinstance(raw_event, dict) else None
 

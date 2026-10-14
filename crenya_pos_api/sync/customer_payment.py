@@ -93,9 +93,9 @@ def allocate(amount, invoices, precision):
 
 def open_invoices(customer, company):
 	"""The customer's submitted Sales Invoices of the company with something outstanding, oldest
-	first. The customer's row is locked until the entry is booked, so two receipts of one customer
-	never take the same debt."""
-	frappe.db.get_value("Customer", customer, "name", for_update=True)
+	first. Two receipts of one customer never read this at once: the handler's `lock_key` makes
+	`events.process_event` run them one after another, each starting its snapshot after the previous
+	commit (under REPEATABLE READ a lock taken after a plain read would still see the old balances)."""
 	rows = frappe.get_all(
 		"Sales Invoice",
 		filters={
@@ -119,16 +119,27 @@ def open_invoices(customer, company):
 	]
 
 
-def payment_for_local_id(local_id):
+def payment_for_local_id(local_id, device_id=None):
 	"""The name of the Payment Entry that holds a till's `local_id`, or None (an empty id matches
-	nothing: entries not made at a till keep NULL)."""
+	nothing: entries not made at a till keep NULL). With `device_id`, only an entry that device made
+	(its remarks open with the till's id): another device's entry with the same id is not this
+	device's payment, and booking it again meets the unique key instead of answering as a duplicate."""
 	if not local_id:
 		return None
-	return frappe.db.get_value(PAYMENT_ENTRY, {LOCAL_ID_FIELD: local_id}, "name")
+	row = frappe.db.get_value(PAYMENT_ENTRY, {LOCAL_ID_FIELD: local_id}, ["name", "remarks"], as_dict=True)
+	if not row:
+		return None
+	if device_id and not (row.remarks or "").startswith(_remarks_start(device_id)):
+		return None
+	return row.name
+
+
+def _remarks_start(device_id):
+	return f"Received at the till {device_id} "
 
 
 def _remarks(ctx, data, cashier):
-	parts = [f"Received at the till {ctx.device_id} by {cashier}"]
+	parts = [f"{_remarks_start(ctx.device_id)}by {cashier}"]
 	if data["shift_local_id"]:
 		parts.append(f"shift {data['shift_local_id']}")
 	if data["reference"]:
@@ -161,6 +172,11 @@ def book_payment(ctx, data, notes):
 
 	# waits (retryable) when the till made the customer and the customer event has not arrived
 	customer = resolve_customer(ctx, data)
+	if customer == ctx.profile.customer:
+		raise SyncError(
+			VALIDATION,
+			"A payment on account needs a named customer, not the POS Profile's default customer",
+		)
 	if not customer_in_outlet(ctx, customer):
 		raise SyncError(VALIDATION, f"Customer {customer} is not a customer of outlet {ctx.profile.name}")
 
@@ -251,7 +267,7 @@ class CustomerPaymentHandler(AggregateHandler):
 
 	def apply(self, ctx, operation, data, notes):
 		# before anything is booked: a resend (under a new event_id) answers the entry it made
-		existing = payment_for_local_id(data["local_id"])
+		existing = payment_for_local_id(data["local_id"], ctx.device_id)
 		if existing:
 			notes.append(f"Matched existing Payment Entry {existing} by {LOCAL_ID_FIELD}")
 			return frappe.get_doc(PAYMENT_ENTRY, existing)
@@ -259,6 +275,21 @@ class CustomerPaymentHandler(AggregateHandler):
 
 	def find_by_local_id(self, local_id):
 		return payment_for_local_id(local_id)
+
+	def find_for_device(self, ctx, local_id):
+		return payment_for_local_id(local_id, ctx.device_id)
+
+	def lock_key(self, payload):
+		"""Receipts of one customer run one after another: each allocates to the invoices the
+		previous one left. The customer by name, or by the till's local id for one it made (resolved
+		to the name once it exists, so both ways of naming it share a lock)."""
+		customer = payload.get("customer")
+		local_id = payload.get("customer_local_id")
+		if local_id and isinstance(local_id, str):
+			customer = frappe.db.get_value("Customer", {"crenya_local_id": local_id}, "name") or customer
+			if not customer:
+				return f"customer-local:{local_id}"
+		return f"customer:{customer}" if customer and isinstance(customer, str) else None
 
 	def result_fields(self, doc):
 		return {

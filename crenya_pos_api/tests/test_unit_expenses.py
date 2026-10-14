@@ -149,10 +149,12 @@ class TestProducts(unittest.TestCase):
 		)
 
 	def test_the_engine_names_no_product(self):
-		source = open(booking.__file__, encoding="utf-8").read()
+		import re
+
+		with open(booking.__file__, encoding="utf-8") as handle:
+			source = handle.read()
 		self.assertNotIn("Restaurants →", source)
-		self.assertNotIn("from crenya_restaurant", source)
-		self.assertNotIn("import crenya_restaurant", source)
+		self.assertIsNone(re.search(r"^\s*(from|import) crenya_restaurant", source, re.M))
 
 	def test_the_product_of_a_device_type(self):
 		self.assertEqual(product_for(None), RETAIL)

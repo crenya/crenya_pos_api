@@ -18,6 +18,8 @@ company, say) is a refused sync event with a hint on the Refused page; the cash 
 drawer and the till's Z report counts it, and Retry books it once the account exists.
 """
 
+from contextlib import contextmanager
+
 import frappe
 from frappe.utils import cint, flt
 
@@ -149,6 +151,18 @@ def _remarks(ctx, data, cashier):
 	return "; ".join(parts)
 
 
+@contextmanager
+def _as_administrator():
+	"""The session is Administrator inside the block and the user it was before after it, however
+	the block ends."""
+	user = frappe.session.user
+	frappe.set_user("Administrator")  # nosemgrep  # the booking only: restored in `finally`
+	try:
+		yield
+	finally:
+		frappe.set_user(user)  # nosemgrep  # back to the device user
+
+
 def book_payment(ctx, data, notes):
 	"""The submitted Payment Entry of a till's payment."""
 	if ctx.device_type != DEFAULT_DEVICE_TYPE:
@@ -242,16 +256,19 @@ def book_payment(ctx, data, notes):
 	# The device was authorised by get_device_context and a till posts only through this handler.
 	# ERPNext's Payment Entry code checks the session user's own right on the doctype in places no flag
 	# reaches (`get_account_details`), and a device key must not be given that right (it would list
-	# every payment): the entry is posted as Administrator for the length of the booking. The
-	# remarks name the device and the cashier.
+	# every payment): the entry is posted as Administrator for the length of the booking, then its
+	# owner is put back to the device user so the trail shows who booked it. The remarks name the
+	# device and the cashier.
 	doc.flags.ignore_permissions = True
 	user = frappe.session.user
-	frappe.set_user("Administrator")  # nosemgrep  # the booking only: restored in `finally`
-	try:
+	with _as_administrator():
 		doc.insert(ignore_permissions=True)
 		doc.submit()
-	finally:
-		frappe.set_user(user)  # nosemgrep  # back to the device user
+	if user != "Administrator":
+		frappe.db.set_value(
+			PAYMENT_ENTRY, doc.name, {"owner": user, "modified_by": user}, update_modified=False
+		)
+		doc.owner = doc.modified_by = user
 	return doc
 
 

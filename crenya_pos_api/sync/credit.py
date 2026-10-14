@@ -169,11 +169,11 @@ def _require_till(ctx):
 NOT_FOUND = "Not found"
 
 
-def _require_credit(ctx):
-	"""Credit answers go to a till of an outlet that sells on account."""
-	_require_till(ctx)
-	if not cint(ctx.profile.get(CREDIT_SALES_FIELD)):
-		raise_api_error(InvalidRequestError, "Credit sales are switched off for this outlet")
+SWITCHED_OFF = "Credit sales are switched off for this outlet"
+
+
+def _credit_on(ctx):
+	return bool(cint(ctx.profile.get(CREDIT_SALES_FIELD)))
 
 
 def customer_in_outlet(ctx, customer):
@@ -193,17 +193,23 @@ def customer_in_outlet(ctx, customer):
 def status_for(ctx, customer):
 	"""`credit_status` for a customer of the device's outlet (an existing customer inside its customer
 	groups, when it limits them). One answer for a customer that is not there and one that is not the
-	outlet's, so the call tells nothing about other customers."""
-	_require_credit(ctx)
+	outlet's, so the call tells nothing about other customers. An outlet that no longer sells on
+	account still answers for a customer who owes (they can pay, and an old on-account invoice can be
+	returned); for any other it answers that credit is switched off."""
+	_require_till(ctx)
 	if not customer_in_outlet(ctx, customer):
 		raise_api_error(InvalidRequestError, NOT_FOUND)
-	return credit_status(customer, ctx.company)
+	status = credit_status(customer, ctx.company)
+	if not _credit_on(ctx) and quantize(status["outstanding"], money_precision()) <= 0:
+		raise_api_error(InvalidRequestError, SWITCHED_OFF)
+	return status
 
 
 def invoice_outstanding_for(ctx, invoice):
 	"""{name, grand_total, outstanding, as_of} of a submitted sale of this outlet (by name or by the
-	till's local id): what a return of it can credit to the account."""
-	_require_credit(ctx)
+	till's local id): what a return of it can credit to the account. Answered whatever the outlet's
+	credit switch says: invoices sold on account while it was on are returned after it is off."""
+	_require_till(ctx)
 	if not invoice or not isinstance(invoice, str):
 		raise_api_error(InvalidRequestError, NOT_FOUND)
 	fields = ["name", "docstatus", "is_return", "company", "pos_profile", "grand_total", "outstanding_amount"]

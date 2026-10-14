@@ -5,7 +5,7 @@ till-admin pages differ only by the API path. Each submodule holds one page's me
 re-exported here so `crenya_pos_api.api.web_admin.<name>` resolves. Who manages a shop: `scope`.
 """
 
-from crenya_pos_api.api.web_admin.credit import credit_customers, save_credit_limit
+from crenya_pos_api.api.web_admin.credit import credit_customers, credit_shops, save_credit_limit
 from crenya_pos_api.api.web_admin.day_close import day_close, day_closes
 from crenya_pos_api.api.web_admin.expenses import (
 	ensure_cash_supplier,
@@ -34,6 +34,7 @@ from crenya_pos_api.api.web_admin.staff import staff_clear_pin, staff_get, staff
 __all__ = [
 	"company_wording",
 	"credit_customers",
+	"credit_shops",
 	"day_close",
 	"day_closes",
 	"denominations",

@@ -192,6 +192,117 @@ class TestCreditCustomers(WebCreditCase):
 			frappe.db.commit()  # nosemgrep
 
 
+class TestCreditPageForAccountants(WebCreditCase):
+	"""A System Manager or an Accounts Manager opens the Credit page of the shops of the companies they
+	may use, without being a Crenya POS Manager of the shop; nothing else of the shop opens to them."""
+
+	def allow_company(self, user, company):
+		doc = frappe.get_doc(
+			{"doctype": "User Permission", "user": user, "allow": "Company", "for_value": company}
+		)
+		doc.flags.ignore_links = True
+		doc.insert(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep
+		self.addCleanup(self.drop_permissions, user)
+
+	def drop_permissions(self, user):
+		frappe.set_user("Administrator")
+		for name in frappe.get_all(
+			"User Permission", filters={"user": user, "allow": "Company"}, pluck="name"
+		):
+			frappe.delete_doc("User Permission", name, ignore_permissions=True, force=True)
+		frappe.db.commit()  # nosemgrep
+
+	def test_an_accounts_manager_reads_credit_without_being_a_till_manager(self):
+		customer = make_customer("acctread", limit=100)
+		self.sell(customer, "150.000")
+		frappe.set_user(ACCOUNTS)
+		self.assertNotIn(APPROVER_ROLE, frappe.get_roles())
+		answer = web_admin.credit_customers(self.profile.name)
+		self.assertEqual(answer["outlet"], self.profile.name)
+		self.assertIs(answer["can_edit"], True)
+		row = rows_by_customer(answer)[customer]
+		self.assertEqual(
+			(row["credit_limit"], row["outstanding"], row["over_limit"]), ("100.000", "150.000", True)
+		)
+		# the lists a shop manager opens stay closed: manage() still refuses
+		for call in (
+			lambda: web_admin.outlet_settings(self.profile.name),
+			lambda: web_admin.devices(self.profile.name),
+			lambda: web_admin.refused_sales(self.profile.name),
+			lambda: web_admin.expenses_not_booked(self.profile.name),
+			lambda: web_admin.day_closes("2026-10-01", "2026-10-02", self.profile.name),
+			lambda: web_admin.terminals(self.profile.name),
+		):
+			with self.assertRaises(frappe.PermissionError):
+				call()
+		self.assertEqual(web_admin.outlets()["outlets"], [])
+
+	def test_the_company_is_the_boundary(self):
+		self.allow_company(ACCOUNTS, "_Test Crenya Other Company")
+		frappe.set_user(ACCOUNTS)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.credit_customers(self.profile.name)
+		self.assertEqual(web_admin.credit_shops(), {"shops": []})
+		frappe.set_user("Administrator")
+		self.allow_company(ACCOUNTS, fixtures.COMPANY)
+		frappe.set_user(ACCOUNTS)
+		self.assertEqual(web_admin.credit_customers(self.profile.name)["outlet"], self.profile.name)
+		self.assertIn(self.profile.name, [shop["name"] for shop in web_admin.credit_shops()["shops"]])
+
+	def test_credit_shops_lists_what_each_user_may_open(self):
+		names = lambda answer: [shop["name"] for shop in answer["shops"]]  # noqa: E731
+		frappe.set_user(ACCOUNTS)
+		answer = web_admin.credit_shops()
+		self.assertLessEqual({self.profile.name, SHOP2}, set(names(answer)))
+		shop = next(s for s in answer["shops"] if s["name"] == self.profile.name)
+		self.assertEqual(
+			(shop["credit_view"], shop["can_edit"], shop["company"], shop["currency"]),
+			(True, True, fixtures.COMPANY, fixtures.CURRENCY),
+		)
+		self.assertIsInstance(shop["credit_enabled"], bool)
+		self.assertEqual(shop["outlet_name"], self.profile.name)
+		# a shop manager: the shops they manage, read only (shop 2 lists its own users)
+		self.as_manager()
+		answer = web_admin.credit_shops()
+		self.assertIn(self.profile.name, names(answer))
+		self.assertNotIn(SHOP2, names(answer))
+		self.assertTrue(all(s["can_edit"] is False for s in answer["shops"]))
+		# a System Manager sees them all and edits
+		frappe.set_user("Administrator")
+		answer = web_admin.credit_shops()
+		self.assertLessEqual({self.profile.name, SHOP2}, set(names(answer)))
+		self.assertTrue(all(s["can_edit"] for s in answer["shops"]))
+		# a cashier none
+		frappe.set_user(CASHIER)
+		self.assertEqual(web_admin.credit_shops(), {"shops": []})
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.credit_customers(self.profile.name)
+
+	def test_an_accounts_manager_reads_loyalty_only_for_a_company_they_may_use(self):
+		self.allow_company(ACCOUNTS, "_Test Crenya Other Company")
+		frappe.set_user(ACCOUNTS)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.loyalty_programs(self.profile.name)
+		frappe.set_user("Administrator")
+		self.allow_company(ACCOUNTS, fixtures.COMPANY)
+		frappe.set_user(ACCOUNTS)
+		self.assertIn("rows", web_admin.loyalty_programs(self.profile.name))
+
+	def test_a_restaurant_outlet_is_not_a_shop(self):
+		frappe.set_user(ACCOUNTS)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.credit_customers("No such outlet")
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.credit_customers("")
+
+	def test_credit_shops_needs_a_session(self):
+		frappe.set_user(ACCOUNTS)
+		with mock.patch("crenya_pos_api.web.context.request_uses_api_key", return_value=True):
+			with self.assertRaises(frappe.PermissionError):
+				web_admin.credit_shops()
+
+
 class TestEveryShopsMethodNeedsASession(WebCreditCase):
 	def dummy_arguments(self, function):
 		kwargs = {}
@@ -305,12 +416,8 @@ class TestSaveCreditLimit(WebCreditCase):
 		frappe.set_user(ACCOUNTS)
 		row = web_admin.save_credit_limit(self.profile.name, customer, "90", modified)
 		self.assertEqual(row["credit_limit"], "90.000")
-		# not a manager of the till: the read stays the managers'
-		with self.assertRaises(frappe.PermissionError):
-			web_admin.credit_customers(self.profile.name)
-		# and shop 2 lists its own users, who do not include this accounts manager
-		with self.assertRaises(frappe.PermissionError):
-			web_admin.save_credit_limit(SHOP2, customer, "90", row["modified"])
+		# and opens the Credit page without being a till manager
+		self.assertEqual(web_admin.credit_customers(self.profile.name)["can_edit"], True)
 
 	def test_clearing_an_own_limit_shows_the_group_limit_that_applies(self):
 		customer = make_customer("webclear", limit=75)

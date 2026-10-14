@@ -132,6 +132,23 @@ class SalesInvoiceHandler(AggregateHandler):
 	def find_by_local_id(self, local_id):
 		return frappe.db.get_value(AGGREGATE_SALES_INVOICE, {"crenya_local_id": local_id}, "name")
 
+	def lock_key(self, payload):
+		"""A return that credits the customer's account lowers the original's outstanding amount, which
+		a receipt of the same customer allocates against: the two take the same lock (the key of a
+		receipt, `customer_payment.CustomerPaymentHandler.lock_key`). Sales and other returns take
+		none."""
+		offset = payload.get("credit_offset")
+		if not payload.get("is_return") or not offset or str(offset).strip() in ("0", "0.0", "0.00", "0.000"):
+			return None
+		if payload.get("return_against"):
+			filters = {"name": payload["return_against"]}
+		elif payload.get("return_against_local_id"):
+			filters = {"crenya_local_id": payload["return_against_local_id"]}
+		else:
+			return None
+		customer = frappe.db.get_value(AGGREGATE_SALES_INVOICE, filters, "customer")
+		return f"customer:{customer}" if customer else None
+
 	def result_fields(self, doc):
 		return invoice_result_fields(doc)
 

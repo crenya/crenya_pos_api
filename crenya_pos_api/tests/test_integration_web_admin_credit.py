@@ -213,6 +213,18 @@ class TestEveryShopsMethodNeedsASession(WebCreditCase):
 				kwargs[name] = "x"
 		return kwargs
 
+	def test_the_loop_covers_every_whitelisted_shops_method(self):
+		"""`__all__` is kept by hand: a whitelisted method of a web_admin module that is left out of it
+		would escape the loop below. The set Frappe registered must be exactly `__all__`."""
+		registered = {
+			function.__name__
+			for function in frappe.whitelisted
+			if getattr(function, "__module__", "").startswith("crenya_pos_api.api.web_admin.")
+		}
+		self.assertEqual(registered, set(web_admin.__all__))
+		for name in web_admin.__all__:
+			self.assertTrue(callable(getattr(web_admin, name)), name)
+
 	def test_an_api_key_reaches_no_shops_method(self):
 		customer = make_customer("webloop", limit=100)
 		names = sorted(web_admin.__all__)

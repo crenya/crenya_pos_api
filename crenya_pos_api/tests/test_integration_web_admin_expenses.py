@@ -198,6 +198,25 @@ class TestWebAdminExpenses(RetailExpenseCase):
 			1,
 		)
 
+	def test_a_second_retry_of_a_booked_expense_books_nothing_new(self):
+		"""At the engine: a retry of what is already booked returns early, the same invoice, no new one."""
+		doc, mode = self.not_booked()
+		self.add_account(mode)
+		self.assertEqual(booking.retry(doc, product=RETAIL), booking.BOOKED)
+		doc.reload()
+		invoice = doc.purchase_invoice
+		self.assertTrue(invoice)
+		self.assertEqual(booking.retry(doc, product=RETAIL), booking.BOOKED)
+		doc.reload()
+		self.assertEqual(doc.purchase_invoice, invoice)
+		self.assertEqual(
+			frappe.db.count(
+				"Purchase Invoice", {"remarks": ["like", f"%POS Expense {doc.name}%"], "docstatus": 1}
+			),
+			1,
+		)
+		self.assertEqual(frappe.db.count("Purchase Invoice", {"amended_from": invoice}), 0)
+
 	def test_a_manager_does_not_enable_a_disabled_cash_supplier(self):
 		saved = frappe.db.get_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD)
 		supplier = f"_Test Crenya Disabled Cash {uuid.uuid4().hex[:6]}"

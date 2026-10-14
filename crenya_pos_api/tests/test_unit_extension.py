@@ -7,6 +7,7 @@ from crenya_pos_api import extension
 from crenya_pos_api.expenses.sync import ExpenseAggregate
 from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.aggregates import CustomerHandler, SalesInvoiceHandler, ShiftHandler
+from crenya_pos_api.sync.customer_payment import CustomerPaymentHandler
 from crenya_pos_api.sync.errors import ExtensionHookError, SyncError
 from crenya_pos_api.sync.hashing import payload_hash
 from crenya_pos_api.sync.pull import ENTITIES
@@ -67,6 +68,7 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		self.assertIsInstance(handlers["Sales Invoice"], SalesInvoiceHandler)
 		self.assertIsInstance(handlers["Crenya POS Shift"], ShiftHandler)
 		self.assertIsInstance(handlers["POS Expense"], ExpenseAggregate)
+		self.assertIsInstance(handlers["Customer Payment"], CustomerPaymentHandler)
 		for handler in handlers.values():
 			# an expense is added, amended and cancelled; every other built-in only submits
 			expected = (
@@ -74,7 +76,11 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 			)
 			self.assertEqual(handler.operations, expected)
 			self.assertIsNone(handler.retention_days)
-			self.assertEqual(handler.result_doctype, handler.aggregate_type)
+			# a customer's payment is booked as a Payment Entry
+			doctype = (
+				"Payment Entry" if handler.aggregate_type == "Customer Payment" else handler.aggregate_type
+			)
+			self.assertEqual(handler.result_doctype, doctype)
 		self.assertEqual(handlers["Sales Invoice"].local_id_field, "crenya_local_id")
 		self.assertEqual(handlers["Crenya POS Shift"].local_id_field, "local_id")
 		self.assertIsNone(registry.handler("Crenya Order"))
@@ -104,7 +110,7 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 			validate_envelope(make_event(SALE, aggregate_type="Crenya Order"))
 		self.assertEqual(
 			ctx.exception.message,
-			"aggregate_type must be one of Customer, Sales Invoice, Crenya POS Shift, POS Expense",
+			"aggregate_type must be one of Customer, Sales Invoice, Crenya POS Shift, POS Expense, Customer Payment",
 		)
 		with self.assertRaises(SyncError) as ctx:
 			validate_envelope(make_event(SALE, operation="create"))

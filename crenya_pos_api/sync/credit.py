@@ -123,20 +123,27 @@ def _require_credit(ctx):
 		raise_api_error(InvalidRequestError, "Credit sales are switched off for this outlet")
 
 
-def status_for(ctx, customer):
-	"""`credit_status` for a customer of the device's outlet (an existing customer inside its customer
-	groups, when it limits them). One answer for a customer that is not there and one that is not the
-	outlet's, so the call tells nothing about other customers."""
-	_require_credit(ctx)
+def customer_in_outlet(ctx, customer):
+	"""Whether `customer` exists and lies inside the outlet's customer groups (any, when it limits
+	none)."""
 	if not customer or not isinstance(customer, str) or not frappe.db.exists("Customer", customer):
-		raise_api_error(InvalidRequestError, NOT_FOUND)
+		return False
 	roots = [row.customer_group for row in ctx.profile.get("customer_groups") or []]
 	if roots:
 		from crenya_pos_api.sync.pull import _descendants
 
 		group = frappe.db.get_value("Customer", customer, "customer_group")
-		if group not in _descendants("Customer Group", roots):
-			raise_api_error(InvalidRequestError, NOT_FOUND)
+		return group in _descendants("Customer Group", roots)
+	return True
+
+
+def status_for(ctx, customer):
+	"""`credit_status` for a customer of the device's outlet (an existing customer inside its customer
+	groups, when it limits them). One answer for a customer that is not there and one that is not the
+	outlet's, so the call tells nothing about other customers."""
+	_require_credit(ctx)
+	if not customer_in_outlet(ctx, customer):
+		raise_api_error(InvalidRequestError, NOT_FOUND)
 	return credit_status(customer, ctx.company)
 
 

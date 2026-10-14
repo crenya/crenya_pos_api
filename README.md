@@ -286,6 +286,18 @@ A hook entry that repeats one of these built-ins is ignored and logged once, so 
 deployed first: the restaurant tills keep working through the built-in handler (the restaurant's
 approver roles are read from the installed crenya_restaurant until it registers its product).
 
+#### Customer payments (credit sales, 0.13.0)
+
+A till takes a customer's payment on account as the push aggregate `Customer Payment` (`sync/customer_payment.py`),
+booked as one submitted Payment Entry (Receive) of the till's company: allocated to the customer's
+outstanding Sales Invoices oldest first (`posting_date`, then `creation`), each up to its outstanding amount, the
+remainder unallocated (an advance). The result adds `payment` {allocated, unallocated, invoices}. A resend is
+idempotent by `event_id` and by the till's `local_id`, kept in the Payment Entry's unique `crenya_local_id`
+(NULL on every entry made elsewhere, never an empty string; looked up before anything is booked). A payment
+that cannot be booked (a mode of payment without an account for the company, a customer outside the outlet) is a
+refused sync event: it shows on app.crenya.com's Refused page with the account hint and Retry books it once.
+The outlet's credit switch only governs new credit sales; a receipt is taken whatever it says.
+
 #### Device ids
 
 A device id is the device's UUID. Ids that differ only in case are the same

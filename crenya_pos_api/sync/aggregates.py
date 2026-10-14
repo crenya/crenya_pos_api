@@ -147,8 +147,15 @@ def builtin_handlers():
 	crenya_restaurant) is built in for both products; the device's type picks the product."""
 	# the expenses handler extends AggregateHandler: imported when asked, not at import
 	from crenya_pos_api.expenses.sync import ExpenseAggregate
+	from crenya_pos_api.sync.customer_payment import CustomerPaymentHandler
 
 	return {
 		handler.aggregate_type: handler
-		for handler in (CustomerHandler(), SalesInvoiceHandler(), ShiftHandler(), ExpenseAggregate())
+		for handler in (
+			CustomerHandler(),
+			SalesInvoiceHandler(),
+			ShiftHandler(),
+			ExpenseAggregate(),
+			CustomerPaymentHandler(),
+		)
 	}

@@ -93,8 +93,9 @@ def off_reason(product: ExpenseProduct):
 
 
 def no_cash_supplier_reason(product: ExpenseProduct):
-	"""The sentence that asks for the outlet's Cash Supplier."""
-	return f"Set this outlet's Cash Supplier ({product.settings_hint})"
+	"""The sentence that asks for the outlet's Cash Supplier (translated like the message the
+	booking raises)."""
+	return _("Set this outlet's Cash Supplier ({0})").format(product.settings_hint)
 
 
 # settings
@@ -339,15 +340,25 @@ def _taxes(expense, template, precision):
 	]
 
 
+def resolve_product(expense, product=None):
+	"""The product that words an expense's messages: the caller's (the actor's device context or the
+	web request; callers pass it), else the one of the expense's own device. Never a guess: an
+	expense that has neither is a programming error."""
+	product = product or product_of_expense(expense)
+	if product is None:
+		raise ValueError(f"POS Expense {expense.get('name')} has no device of a known product: pass product=")
+	return product
+
+
 def build_purchase_invoice(expense, profile, notes=None, amended_from=None, product=None):
 	"""The unsaved paid Purchase Invoice of a POS Expense (see the module docstring). `product`
 	(default: the product of the expense's device) words the messages."""
-	product = product or product_of_expense(expense)
+	product = resolve_product(expense, product)
 	company = expense.company
 	precision = currency_precision(expense.currency or None)
 	supplier = expense.supplier or cash_supplier(profile)
 	if not supplier:
-		raise BookingError(_(no_cash_supplier_reason(product)))
+		raise BookingError(_("Set this outlet's Cash Supplier ({0})").format(product.settings_hint))
 	account = cash_account(expense.mode_of_payment, company)
 	if not account:
 		raise BookingError(
@@ -467,7 +478,7 @@ def _cancel_pi(name):
 		pi.cancel()
 
 
-def _post(expense, notes, cancel_first=None, amended_from=None):
+def _post(expense, notes, cancel_first=None, amended_from=None, product=None):
 	"""Cancel `cancel_first` (when given) and submit the expense's new Purchase Invoice, in one
 	savepoint. Returns the PI's name; BookingError (or ERPNext's error) when it fails, with every
 	write of the attempt undone."""
@@ -476,7 +487,7 @@ def _post(expense, notes, cancel_first=None, amended_from=None):
 		if cancel_first:
 			_cancel_pi(cancel_first)
 		profile = frappe.get_doc("POS Profile", expense.outlet)
-		pi = build_purchase_invoice(expense, profile, notes, amended_from=amended_from)
+		pi = build_purchase_invoice(expense, profile, notes, amended_from=amended_from, product=product)
 		precision = currency_precision(expense.currency or None)
 		pi.insert()
 		check_total(pi, expense, precision)
@@ -522,14 +533,14 @@ def invoice_submitted(name):
 	return bool(name) and frappe.db.get_value(PURCHASE_INVOICE, name, "docstatus") == 1
 
 
-def book(expense, notes=None):
+def book(expense, notes=None, product=None):
 	"""Book an expense that has no submitted Purchase Invoice: a new one (amending the cancelled one
 	it had, when it had one). A failure keeps it `Not booked` with its error. Returns the status."""
 	if invoice_submitted(expense.purchase_invoice):
 		return expense.status
 	old = expense.purchase_invoice or None
 	try:
-		name = _post(expense, notes, amended_from=old)
+		name = _post(expense, notes, amended_from=old, product=product)
 	except Exception as e:
 		if transient(e):
 			raise
@@ -539,14 +550,14 @@ def book(expense, notes=None):
 	return expense.status
 
 
-def rebook(expense, notes=None):
+def rebook(expense, notes=None, product=None):
 	"""Book an edited expense: cancel its Purchase Invoice and submit the amended one, together. A
 	failure keeps the old invoice, and the expense `Not booked` until a retry."""
 	old = expense.purchase_invoice or None
 	if not invoice_submitted(old):
-		return book(expense, notes)
+		return book(expense, notes, product)
 	try:
-		name = _post(expense, notes, cancel_first=old, amended_from=old)
+		name = _post(expense, notes, cancel_first=old, amended_from=old, product=product)
 	except Exception as e:
 		if transient(e):
 			raise
@@ -580,14 +591,14 @@ def unbook(expense, notes=None):
 	return expense.status
 
 
-def retry(expense, notes=None):
+def retry(expense, notes=None, product=None):
 	"""Finish what the last till action needed (app.crenya.com's Retry booking): a delete cancels
 	the invoice, an edit reposts it, an add books it."""
 	if last_change(expense) == DELETE:
 		return unbook(expense, notes)
 	if invoice_submitted(expense.purchase_invoice):
-		return rebook(expense, notes)
-	return book(expense, notes)
+		return rebook(expense, notes, product)
+	return book(expense, notes, product)
 
 
 # the outlet's Cash Supplier (app.crenya.com)

@@ -20,12 +20,13 @@ import frappe
 from frappe.model.base_document import get_controller
 from frappe.utils import flt, nowdate
 
+from crenya_pos_api.api import device as device_api
 from crenya_pos_api.expenses import booking, reports
 from crenya_pos_api.expenses.product import RESTAURANT, RETAIL, product_of_expense
 from crenya_pos_api.sync import device as device_sync
 from crenya_pos_api.sync import entitlement as entitlement_module
 from crenya_pos_api.tests import fixtures as core
-from crenya_pos_api.tests.sync_case import SyncCase, money
+from crenya_pos_api.tests.sync_case import SyncCase, money, new_id
 
 ABBR = core.ABBR
 EXPENSE_ACCOUNT = f"_Test Crenya Outlet Expenses - {ABBR}"
@@ -378,6 +379,39 @@ class TestExpenseBooking(ExpenseCase):
 				"POS Profile", self.profile.name, "crenya_expense_cash_supplier", CASH_SUPPLIER
 			)
 			frappe.clear_document_cache("POS Profile", self.profile.name)
+
+	def test_a_restaurant_device_words_its_own_settings_page(self):
+		restaurant_device = new_id()
+		device_api.register_device(
+			device_id=restaurant_device,
+			device_name="Restaurant till",
+			pos_profile=self.profile.name,
+			app_version="0.7.0",
+			platform="linux",
+			device_type="restaurant_pos",
+		)
+		self.outlet().db_set("crenya_expense_cash_supplier", None)
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		try:
+			doc = self.make_expense(device=restaurant_device)
+			self.assertIs(product_of_expense(doc), RESTAURANT)
+			with self.assertRaises(booking.BookingError) as caught:
+				booking.build_purchase_invoice(doc, self.outlet())
+			self.assertIn("Restaurants → Settings → Expenses", str(caught.exception))
+			self.assertEqual(booking.book(doc), booking.NOT_BOOKED)
+			self.assertIn("Restaurants → Settings → Expenses", doc.posting_error)
+		finally:
+			frappe.db.set_value(
+				"POS Profile", self.profile.name, "crenya_expense_cash_supplier", CASH_SUPPLIER
+			)
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+
+	def test_an_expense_without_a_device_needs_the_product_passed(self):
+		doc = self.make_expense(device=None)
+		self.assertIsNone(product_of_expense(doc))
+		with self.assertRaises(ValueError):
+			booking.build_purchase_invoice(doc, self.outlet())
+		self.assertEqual(booking.book(doc, product=RETAIL), booking.BOOKED)
 
 	def test_duplicate_bill_no_books_with_remark(self):
 		field = "check_supplier_invoice_uniqueness"

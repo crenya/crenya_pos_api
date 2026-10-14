@@ -25,6 +25,10 @@ class ExpenseProduct(NamedTuple):
 	outlet_users: Callable[[Any], set[str]]  # fn(POS Profile): who may approve at this outlet
 
 
+def _unregistered(*_args):
+	raise RuntimeError("The restaurant product is not registered: crenya_restaurant registers it")
+
+
 def manager_roles(_ctx=None):
 	"""The approver roles of a retail till: Crenya POS Manager."""
 	return (APPROVER_ROLE,)
@@ -45,16 +49,17 @@ RETAIL = ExpenseProduct(
 	outlet_users=applicable_users,
 )
 
-# the restaurant's wording and keys; its approvers are the restaurant's own roles, which
-# crenya_restaurant registers over this entry (`register_product`)
+# the restaurant's wording and keys; its approvers are the restaurant's own roles and outlet rule,
+# which crenya_restaurant registers over this entry (`register_product`). Until it does, asking this
+# entry who approves fails loudly rather than answering with the retail rule.
 RESTAURANT = ExpenseProduct(
 	key="restaurant",
 	device_types=("restaurant_pos",),
 	bootstrap_key="restaurant.expenses",
 	capability="restaurant_expenses",
 	settings_hint="Restaurants → Settings → Expenses",
-	approver_roles=manager_roles,
-	outlet_users=applicable_users,
+	approver_roles=_unregistered,
+	outlet_users=_unregistered,
 )
 
 _PRODUCTS = {RETAIL.key: RETAIL, RESTAURANT.key: RESTAURANT}
@@ -75,11 +80,12 @@ def product_for(device_type: str | None) -> ExpenseProduct | None:
 	return None
 
 
-def product_of_expense(expense) -> ExpenseProduct:
-	"""The product of a POS Expense: by the type of the device that made it, else the retail
-	till's (an expense always has a device; the fallback is the neutral wording)."""
+def product_of_expense(expense) -> ExpenseProduct | None:
+	"""The product of a POS Expense by the type of the device that made it, or None (no device, a
+	deleted one, or a type no product owns). Callers that know the product pass it instead."""
 	import frappe
 
 	device = expense.get("device")
-	device_type = frappe.db.get_value("Crenya POS Device", device, "device_type") if device else None
-	return product_for(device_type) or RETAIL
+	if not device or not frappe.db.exists("Crenya POS Device", device):
+		return None
+	return product_for(frappe.db.get_value("Crenya POS Device", device, "device_type"))

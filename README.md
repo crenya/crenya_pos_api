@@ -1219,8 +1219,12 @@ class OrderAggregate(AggregateHandler):
 	def apply(self, ctx, operation, data, notes):
 		if operation == "create":
 			order = frappe.get_doc(
-				{"doctype": "Restaurant Order", "local_id": data["local_id"],
-				 "table": data["table"], "device": ctx.device_id}
+				{
+					"doctype": "Restaurant Order",
+					"local_id": data["local_id"],
+					"table": data["table"],
+					"device": ctx.device_id,
+				}
 			)
 			order.insert(ignore_permissions=True)
 			return order
@@ -1290,7 +1294,7 @@ The expenses booking tests (`tests/test_integration_expenses_booking`) need erpt
 (this app reaches it by DocType name and never depends on it); without it they skip and
 `TestExpensesOff` runs. CI's `expenses` job installs erptrue_app over SSH with a read-only deploy key
 kept in the repository secret `ERPTRUE_APP_DEPLOY_KEY` (the same key as crenya_restaurant's); without
-the secret the job warns and skips.
+the secret the job fails (only a fork's pull request, which gets no secrets, skips).
 
 #### Contributing
 

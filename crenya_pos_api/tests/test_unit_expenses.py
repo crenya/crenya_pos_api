@@ -186,6 +186,64 @@ class TestProducts(unittest.TestCase):
 		self.assertEqual(product_for("restaurant_pos"), RESTAURANT)
 
 
+class TestPlaceholderRestaurant(unittest.TestCase):
+	def test_the_unregistered_restaurant_product_does_not_answer_with_the_retail_rule(self):
+		with self.assertRaises(RuntimeError):
+			RESTAURANT.approver_roles(None)
+		with self.assertRaises(RuntimeError):
+			RESTAURANT.outlet_users(None)
+		self.assertEqual(RETAIL.approver_roles(None), ("Crenya POS Manager",))
+
+
+class TestOmrDecimals(unittest.TestCase):
+	"""The engine uses pos_api's decimal helpers; for the 3-decimal amounts a till sends they give
+	the strings the restaurant's own helpers gave (amounts are already at the currency's decimals,
+	so no tie is ever rounded)."""
+
+	def test_snapshot_strings_omr(self):
+		shot = booking.snapshot(
+			{
+				"supplier": None,
+				"payee_name": "Gas man",
+				"bill_no": None,
+				"bill_date": None,
+				"mode_of_payment": "Cash",
+				"lines": [{"category": "Gas", "description": None, "amount": Decimal("7.350")}],
+				"tax_template": "T",
+				"taxes": [{"account_head": VAT, "rate": Decimal("5.0"), "amount": Decimal("0.350")}],
+				"net": Decimal("7.000"),
+				"tax": Decimal("0.350"),
+				"total": Decimal("7.350"),
+			},
+			3,
+		)
+		self.assertEqual((shot["net"], shot["tax"], shot["total"]), ("7.000", "0.350", "7.350"))
+		self.assertEqual(shot["lines"][0]["amount"], "7.350")
+		self.assertEqual(shot["taxes"][0]["rate"], "5")
+		zero = booking.snapshot(
+			{
+				**data(),
+				"mode_of_payment": "Cash",
+				"lines": [],
+				"taxes": [],
+				"net": Decimal("0"),
+				"tax": Decimal("0"),
+				"total": Decimal("-0.000"),
+			},
+			3,
+		)
+		self.assertEqual(zero["total"], "0.000")
+
+	def test_quantize_and_as_decimal(self):
+		from crenya_pos_api.utils.decimal import as_decimal, quantize
+
+		self.assertEqual(quantize(as_decimal(0.1 + 0.2), 3), Decimal("0.300"))
+		self.assertEqual(quantize(as_decimal(10.5), 3), Decimal("10.500"))
+		self.assertEqual(quantize(Decimal("7.350"), 3), Decimal("7.350"))
+		self.assertEqual(quantize(Decimal("10.0001"), 3) == Decimal("10.0001"), False)
+		self.assertEqual(as_decimal(None), Decimal(0))
+
+
 class TestZRows(unittest.TestCase):
 	def test_expense_label(self):
 		row = {"payee": "Gas man", "bill_no": "B-17", "categories": "Gas", "is_cash": True}

@@ -273,6 +273,31 @@ outlet's `crenya_expense*` POS Profile fields and their check), `expenses/report
 capability, the settings page named in messages, the approver roles). The engine names no product;
 crenya_restaurant registers its own with `register_product`.
 
+The retail till pushes expenses through the same handler (`expenses/sync.py`, aggregate `POS Expense`,
+operations `submit`, `amend`, `cancel`, built in): the device's type picks the product. Retail tills
+also pull `expense_category` and `expense_supplier` (empty while the outlet's Expenses switch is off),
+send the bill photo to `crenya_pos_api.api.expenses.attach_photo`, and read the bootstrap's `expenses`
+block with `features.retail_expenses`, all only on a site with erptrue_app's POS Expense. A retail
+outlet's approvers are the holders of Crenya POS Manager on the POS Profile's *Applicable for Users*
+(empty: every holder).
+
+crenya_restaurant before 0.15.7 still hooks `POS Expense`, `expense_category` and `expense_supplier`.
+A hook entry that repeats one of these built-ins is ignored and logged once, so this release can be
+deployed first: the restaurant tills keep working through the built-in handler (the restaurant's
+approver roles are read from the installed crenya_restaurant until it registers its product).
+
+#### Customer payments (credit sales, 0.13.0)
+
+A till takes a customer's payment on account as the push aggregate `Customer Payment` (`sync/customer_payment.py`),
+booked as one submitted Payment Entry (Receive) of the till's company: allocated to the customer's
+outstanding Sales Invoices oldest first (`posting_date`, then `creation`), each up to its outstanding amount, the
+remainder unallocated (an advance). The result adds `payment` {allocated, unallocated, invoices}. A resend is
+idempotent by `event_id` and by the till's `local_id`, kept in the Payment Entry's unique `crenya_local_id`
+(NULL on every entry made elsewhere, never an empty string; looked up before anything is booked). A payment
+that cannot be booked (a mode of payment without an account for the company, a customer outside the outlet) is a
+refused sync event: it shows on app.crenya.com's Refused page with the account hint and Retry books it once.
+The outlet's credit switch only governs new credit sales; a receipt is taken whatever it says.
+
 #### Device ids
 
 A device id is the device's UUID. Ids that differ only in case are the same
@@ -1031,8 +1056,12 @@ in as a System Manager.
 | `staff_get(user)`, `staff_save(user, privilege, pin, outlets)`, `staff_clear_pin(user)` | a user's shop till privilege (`cashier`: Crenya POS User; `manager`: also Crenya POS Manager), 6-digit PIN and shops; System Manager only, never Administrator or Guest, never System Manager given; the answer lists the `privileges` offered |
 | `day_closes(from_date, to_date, outlet)`, `day_close(shift)` | the shop's shifts (Z reports): sections `sales`, `payments` (per mode: expected, counted, difference), `returns`, `store_controls`, `paid_out`; every row has `kind` money or count, money as strings at the currency's decimals |
 | `refused_sales(outlet)`, `retry_sale(name)` | what the shop's tills pushed and ERPNext refused (newest 200), with a hint in English and Arabic; Retry asks the till to send it again (`retry_pending` until the till has, so Retry is offered again once a re-push is refused) |
+| `credit_customers(outlet)`, `save_credit_limit(outlet, customer, credit_limit, modified)` | the shop's customers with a credit limit or a balance (`credit_limit` / `available` null = "No limit"; `limit_source` says whether the limit is the customer's own, its group's or the company's; over the limit first; at most 200, `more` says it was cut); read by the shop's managers. The edit is a System Manager's or an Accounts Manager's only (a shop manager approves at the till, he does not set the limit): it writes the Customer's own *Credit Limit* row for the shop's company (0 or blank clears it, a bypass flag on the row is kept; clearing it is not "no limit" when the group or the company has one), comments old and new value and the web user |
+| `ensure_cash_supplier(outlet)`, `expenses_not_booked(outlet?)`, `till_expense(name)`, `retry_expense_booking(name)` | the shop's till expenses: the Cash Supplier button, the Not booked list scoped to the shops the user manages, one expense with its lines and log, and Retry (the engine is told the product); a manager needs no POS Expense right |
 | `promotions(outlet)`, `save_promotion(outlet, promotion)`, `set_promotion_enabled(outlet, name, enabled, modified)` | the shop's promotions: Pricing Rules of its company for its price list (or for every price list, a System Manager's), only the shapes a till evaluates (item code / group / brand; % or amount off, a rate, or buy X get Y, optionally repeating; min / max qty, dates, priority); coupons refused |
 | `loyalty_programs(outlet)`, `save_loyalty_program(outlet, program)` | ERPNext Loyalty Programs of the shop's company with their tiers; created and changed here, never deleted or renamed (end one with its To Date) |
+
+Every Shops method needs a browser session (`require_web_session`, taken in `scope.manage` / `managed_shops`): a till's or a person's API key is refused; the credit and expense methods also need the user to be permitted the shop's company (a User Permission on Company is honoured). The settings form also carries the *Expenses* and *Credit sales* sections (the Cash Supplier, supplier group and expense VAT links are a System Manager's), `expense_setup_checks` and `credit_setup_checks` beside `setup_checks`; the Z report gains an `on_account` section (when the shift sold or received on account) and an `expenses` section (one row each, then the total).
 
 The settings form is ERPNext's own POS Profile fields (read from its meta: price list,
 customer, discount and rate changes, warehouse, taxes, cost center, rounding, write-off and the
@@ -1290,7 +1319,7 @@ bench --site <test-site> set-config allow_tests true
 bench --site <test-site> run-tests --app crenya_pos_api
 ```
 
-The expenses booking tests (`tests/test_integration_expenses_booking`) need erptrue_app's POS Expense
+The expenses booking tests (`tests/test_integration_expenses_booking`, `test_integration_expenses_retail`) need erptrue_app's POS Expense
 (this app reaches it by DocType name and never depends on it); without it they skip and
 `TestExpensesOff` runs. CI's `expenses` job installs erptrue_app over SSH with a read-only deploy key
 kept in the repository secret `ERPTRUE_APP_DEPLOY_KEY` (the same key as crenya_restaurant's); without

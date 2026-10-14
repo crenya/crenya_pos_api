@@ -158,5 +158,89 @@ class TestApprovalsAndFields(unittest.TestCase):
 		self.assertEqual((field["unique"], field["read_only"]), (1, 1))
 
 
+class TestCreditBeyondOutstanding(unittest.TestCase):
+	def note(self, offset, outstanding):
+		from crenya_pos_api.sync.invoice_builder import credit_beyond_outstanding_note
+
+		original = frappe._dict(name="ACC-SINV-1", customer="CUST-1", outstanding_amount=outstanding)
+		return credit_beyond_outstanding_note(Decimal(offset), original, 3)
+
+	def test_a_credit_the_invoice_still_owes_has_no_note(self):
+		self.assertIsNone(self.note("30.000", "60.000"))
+		self.assertIsNone(self.note("60.000", "60.000"))
+
+	def test_a_credit_beyond_the_outstanding_names_what_is_left_in_credit(self):
+		note = self.note("30.000", "10.000")
+		self.assertIn("more than invoice ACC-SINV-1's outstanding 10.000", note)
+		self.assertIn("customer CUST-1 is left in credit by 20.000", note)
+
+	def test_a_paid_invoice_owes_nothing(self):
+		self.assertIn("left in credit by 30.000", self.note("30.000", "0"))
+		# a negative outstanding (already in credit) counts as nothing owed
+		self.assertIn("left in credit by 5.000", self.note("5.000", "-2.000"))
+
+	def test_exact_at_three_decimals(self):
+		self.assertIsNone(self.note("0.001", "0.001"))
+		self.assertIn("left in credit by 0.001", self.note("0.002", "0.001"))
+
+
+class TestOnAccountAndCredited(unittest.TestCase):
+	"""The lookup for a return from another till says what a sale put on account and what earlier
+	returns credited there (OMR)."""
+
+	def test_a_part_paid_sale_put_the_rest_on_account(self):
+		from crenya_pos_api.sync.credit import on_account_part
+
+		invoice = {"grand_total": "100.000", "rounded_total": 0, "disable_rounded_total": 1}
+		self.assertEqual(on_account_part(invoice, [{"amount": "40.000"}], 3), Decimal("60.000"))
+		self.assertEqual(on_account_part(invoice, [], 3), Decimal("100.000"))
+		self.assertEqual(on_account_part(invoice, [{"amount": "100.000"}], 3), Decimal("0.000"))
+
+	def test_points_count_as_paid_and_the_rounded_total_is_what_is_payable(self):
+		from crenya_pos_api.sync.credit import on_account_part
+
+		invoice = {
+			"grand_total": "99.960",
+			"rounded_total": "100.000",
+			"disable_rounded_total": 0,
+			"loyalty_amount": "1.000",
+		}
+		self.assertEqual(on_account_part(invoice, [{"amount": "40.000"}], 3), Decimal("59.000"))
+		# never negative
+		self.assertEqual(on_account_part(invoice, [{"amount": "150.000"}], 3), Decimal("0.000"))
+
+	def test_only_a_credited_return_credits_the_account(self):
+		from crenya_pos_api.sync.credit import credited_to_account
+
+		returns = [
+			{
+				"name": "R1",
+				"grand_total": "-30.000",
+				"rounded_total": 0,
+				"disable_rounded_total": 1,
+				"update_outstanding_for_self": 0,
+			},
+			{
+				"name": "R2",
+				"grand_total": "-30.000",
+				"rounded_total": 0,
+				"disable_rounded_total": 1,
+				"update_outstanding_for_self": 0,
+			},
+			{
+				"name": "R3",
+				"grand_total": "-20.000",
+				"rounded_total": 0,
+				"disable_rounded_total": 1,
+				"update_outstanding_for_self": 1,
+			},
+		]
+		payments = {"R2": [{"amount": "-10.000"}], "R3": [{"amount": "-20.000"}]}
+		# R1 all credited (30.000), R2 credited 20.000 and refunded 10.000, R3 a plain refund
+		self.assertEqual(credited_to_account(returns, payments, 3), Decimal("50.000"))
+		self.assertEqual(credited_to_account([], {}, 3), Decimal("0.000"))
+		self.assertEqual(credited_to_account(None, None, 3), Decimal("0.000"))
+
+
 if __name__ == "__main__":
 	unittest.main()

@@ -8,6 +8,8 @@ products.
 import unittest
 from decimal import Decimal
 
+import frappe
+
 from crenya_pos_api.expenses import booking
 from crenya_pos_api.expenses.fields import EXPENSE_PROFILE_FIELDS
 from crenya_pos_api.expenses.product import (
@@ -19,6 +21,7 @@ from crenya_pos_api.expenses.product import (
 )
 from crenya_pos_api.expenses.reports import expense_label
 from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS
+from crenya_pos_api.tests.stubs import restaurant_constants, stub_modules
 
 VAT = "VAT 5% - _TCP"
 CGST = "CGST - _TCP"
@@ -186,13 +189,26 @@ class TestProducts(unittest.TestCase):
 		self.assertEqual(product_for("restaurant_pos"), RESTAURANT)
 
 
-class TestPlaceholderRestaurant(unittest.TestCase):
-	def test_the_unregistered_restaurant_product_does_not_answer_with_the_retail_rule(self):
-		with self.assertRaises(RuntimeError):
-			RESTAURANT.approver_roles(None)
-		with self.assertRaises(RuntimeError):
-			RESTAURANT.outlet_users(None)
+class TestUnregisteredRestaurant(unittest.TestCase):
+	"""Until crenya_restaurant registers its product (0.15.7) the restaurant's approver roles are read
+	from the installed app, so a restaurant 0.15.6 keeps working; without it nobody can ask."""
+
+	def test_without_crenya_restaurant_the_roles_fail_loudly_not_with_the_retail_rule(self):
+		with stub_modules({"crenya_restaurant": None, "crenya_restaurant.constants": None}):
+			with self.assertRaises(RuntimeError):
+				RESTAURANT.approver_roles(None)
 		self.assertEqual(RETAIL.approver_roles(None), ("Crenya POS Manager",))
+
+	def test_with_crenya_restaurant_the_roles_are_its_void_approvers(self):
+		with stub_modules(restaurant_constants(("Restaurant Manager", "System Manager"))):
+			self.assertEqual(RESTAURANT.approver_roles(None), ("Restaurant Manager", "System Manager"))
+
+	def test_the_outlet_rule_is_the_profiles_applicable_users_for_both_products(self):
+		profile = frappe._dict(
+			applicable_for_users=[frappe._dict(user="a@example.com"), frappe._dict(user="")]
+		)
+		self.assertEqual(RESTAURANT.outlet_users(profile), {"a@example.com"})
+		self.assertEqual(RETAIL.outlet_users(profile), {"a@example.com"})
 
 
 class TestOmrDecimals(unittest.TestCase):

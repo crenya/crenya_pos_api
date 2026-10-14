@@ -12,7 +12,10 @@ Other Frappe apps plug into the till protocol from their `hooks.py`:
         crenya_pos_entitlement = "<dotted path of fn() -> dict>"       # the plan's caps, last app wins
 
 Built-ins always come first and cannot be replaced; hook entries follow in app install
-order. When two apps register the same entity or aggregate name the later app wins (as
+order. A hook entry that only repeats a built-in the app used to register itself (crenya_restaurant
+before 0.15.7 hooks `POS Expense`, `expense_category` and `expense_supplier`, which moved here in
+0.13.0) is ignored and logged once: the built-in answers, so the older app keeps working until it
+is updated. When two apps register the same entity or aggregate name the later app wins (as
 Frappe does for its own override hooks). Hooks are read once per request. A hook that
 cannot be imported, or that does not have the expected shape, raises
 `ExtensionHookError` (code `internal`, retryable) naming the hook and the path.
@@ -37,6 +40,11 @@ INVOICE_EXTENDER_HOOK = "crenya_pos_invoice_extenders"
 DEVICE_ROLE_HOOK = "crenya_pos_device_roles"
 PROFILE_FLAG_HOOK = "crenya_pos_profile_flags"
 ENTITLEMENT_HOOK = "crenya_pos_entitlement"
+
+# the hook entries of other apps that repeat a built-in this release took over: ignored, not an error
+MOVED_ENTITIES = frozenset({"expense_category", "expense_supplier"})
+MOVED_AGGREGATES = frozenset({"POS Expense"})
+_logged_duplicates = set()
 
 _CACHE_ATTR = "crenya_pos_registry"
 _ENTITY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -138,6 +146,21 @@ def _instance(obj, base, hook, key, path):
 	_fail(f"{hook}[{key!r}]: {path} is not an {base.__name__} subclass or instance")
 
 
+def _ignored_duplicate(hook, name, path):
+	"""Log once per process that a hook entry repeating a moved built-in is ignored."""
+	key = (hook, name, path)
+	if key in _logged_duplicates:
+		return
+	_logged_duplicates.add(key)
+	try:
+		frappe.logger("crenya_pos_api").warning(
+			f"{hook}: {name!r} ({path}) repeats a built-in that moved into crenya_pos_api; the hook entry is ignored"
+		)
+	except Exception:
+		# no site (plain unit tests): nothing to log to
+		pass
+
+
 def entitlement_hook_path():
 	"""Dotted path of the `crenya_pos_entitlement` hook (the last app's), or None. Loaded and
 	called by sync.entitlement, which never fails a request over it."""
@@ -158,6 +181,9 @@ def _load_entities():
 		path = _last_path(value)
 		if not isinstance(name, str) or not _ENTITY_NAME_RE.match(name):
 			_fail(f"{ENTITY_HOOK}: entity name {name!r} must be lower case letters, digits and _")
+		if name in ENTITIES and name in MOVED_ENTITIES:
+			_ignored_duplicate(ENTITY_HOOK, name, path)
+			continue
 		if name in ENTITIES:
 			_fail(f"{ENTITY_HOOK}: {name!r} is a built-in entity and cannot be replaced ({path})")
 		spec = _instance(load_object(path, ENTITY_HOOK), EntitySpec, ENTITY_HOOK, name, path)
@@ -223,6 +249,9 @@ def _load_aggregates():
 			or len(aggregate_type) > MAX_AGGREGATE_TYPE_LENGTH
 		):
 			_fail(f"{AGGREGATE_HOOK}: aggregate_type {aggregate_type!r} is not a valid name")
+		if aggregate_type in builtins and aggregate_type in MOVED_AGGREGATES:
+			_ignored_duplicate(AGGREGATE_HOOK, aggregate_type, path)
+			continue
 		if aggregate_type in builtins:
 			_fail(f"{AGGREGATE_HOOK}: {aggregate_type!r} is a built-in aggregate and cannot be replaced")
 		handler = _instance(

@@ -23,6 +23,7 @@ from crenya_pos_api.sync import errors, registry
 from crenya_pos_api.sync.cashier import PIN_FIELD, verify_pin
 from crenya_pos_api.sync.context import get_device_context
 from crenya_pos_api.sync.hashing import payload_hash
+from crenya_pos_api.sync.validation import AGGREGATE_TYPES
 from crenya_pos_api.tests import extension_dummy as dummy
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests import test_integration_sync as sync_tests
@@ -653,9 +654,7 @@ class TestCrenyaExtensions(FrappeTestCase):
 		for name in kept:
 			self.assertTrue(frappe.db.exists(EVENT, name), name)
 		# full batches are followed by another one; the custom type uses its own 30 days
-		builtin_calls = [
-			count for types, count in calls if types == ("Customer", "Sales Invoice", "Crenya POS Shift")
-		]
+		builtin_calls = [count for types, count in calls if types == AGGREGATE_TYPES]
 		self.assertGreaterEqual(len(builtin_calls), 2)
 		self.assertEqual(builtin_calls[0], 2)
 		self.assertIn((dummy.TASK_AGGREGATE,), [types for types, _count in calls])

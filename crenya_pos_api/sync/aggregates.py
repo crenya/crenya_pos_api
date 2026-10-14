@@ -72,6 +72,18 @@ class AggregateHandler:
 		from its own data; `event_id` idempotency always applies."""
 		return None
 
+	def find_for_device(self, ctx, local_id):
+		"""`find_by_local_id` for the device pushing (default: the same answer for every device);
+		a handler whose documents record their device answers only for its own."""
+		return self.find_by_local_id(local_id)
+
+	def lock_key(self, payload):
+		"""What events of this aggregate must not process at the same time, as a string (default
+		None: no lock). The events with the same key run one after another, each reading the
+		database only after the previous one is committed. Called with the raw payload before the
+		event is validated: return None when the key cannot be told."""
+		return None
+
 	def result_fields(self, doc):
 		"""Fields merged into the push result for the document (`doctype`, `name`,
 		`docstatus`, `modified`, `totals`, `fawtara_status`)."""
@@ -120,6 +132,23 @@ class SalesInvoiceHandler(AggregateHandler):
 	def find_by_local_id(self, local_id):
 		return frappe.db.get_value(AGGREGATE_SALES_INVOICE, {"crenya_local_id": local_id}, "name")
 
+	def lock_key(self, payload):
+		"""A return that credits the customer's account lowers the original's outstanding amount, which
+		a receipt of the same customer allocates against: the two take the same lock (the key of a
+		receipt, `customer_payment.CustomerPaymentHandler.lock_key`). Sales and other returns take
+		none."""
+		offset = payload.get("credit_offset")
+		if not payload.get("is_return") or not offset or str(offset).strip() in ("0", "0.0", "0.00", "0.000"):
+			return None
+		if payload.get("return_against"):
+			filters = {"name": payload["return_against"]}
+		elif payload.get("return_against_local_id"):
+			filters = {"crenya_local_id": payload["return_against_local_id"]}
+		else:
+			return None
+		customer = frappe.db.get_value(AGGREGATE_SALES_INVOICE, filters, "customer")
+		return f"customer:{customer}" if customer else None
+
 	def result_fields(self, doc):
 		return invoice_result_fields(doc)
 
@@ -143,8 +172,19 @@ class ShiftHandler(AggregateHandler):
 
 
 def builtin_handlers():
-	"""The aggregates every till speaks, in protocol order."""
+	"""The aggregates every till speaks, in protocol order. `POS Expense` (0.13.0, moved down from
+	crenya_restaurant) is built in for both products; the device's type picks the product."""
+	# the expenses handler extends AggregateHandler: imported when asked, not at import
+	from crenya_pos_api.expenses.sync import ExpenseAggregate
+	from crenya_pos_api.sync.customer_payment import CustomerPaymentHandler
+
 	return {
 		handler.aggregate_type: handler
-		for handler in (CustomerHandler(), SalesInvoiceHandler(), ShiftHandler())
+		for handler in (
+			CustomerHandler(),
+			SalesInvoiceHandler(),
+			ShiftHandler(),
+			ExpenseAggregate(),
+			CustomerPaymentHandler(),
+		)
 	}

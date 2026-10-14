@@ -5,6 +5,7 @@ from frappe.utils import cint, flt
 
 from crenya_pos_api.sync.batches import batch_expiry_dates, row_batches, single_batch
 from crenya_pos_api.sync.context import money_precision, qty_precision
+from crenya_pos_api.sync.credit import credited_to_account, on_account_part
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.utils.dates import format_date
 from crenya_pos_api.utils.decimal import format_money, format_number
@@ -23,6 +24,8 @@ INVOICE_FIELDS = [
 	"crenya_offline_number",
 	"taxes_and_charges",
 	"loyalty_amount",
+	"rounded_total",
+	"disable_rounded_total",
 ]
 
 
@@ -133,6 +136,24 @@ def get_invoice_for_return(ctx, invoice):
 	)
 
 	items = []
+	credit_returns = frappe.get_all(
+		"Sales Invoice",
+		filters={"return_against": header.name, "docstatus": 1, "is_return": 1},
+		fields=[
+			"name",
+			"grand_total",
+			"rounded_total",
+			"disable_rounded_total",
+			"update_outstanding_for_self",
+		],
+	)
+	return_payments = {}
+	for payment in frappe.get_all(
+		"Sales Invoice Payment",
+		filters={"parent": ["in", [r.name for r in credit_returns] or [""]], "parenttype": "Sales Invoice"},
+		fields=["parent", "amount"],
+	):
+		return_payments.setdefault(payment.parent, []).append(payment)
 	for row in rows:
 		returned_qty = flt(returned.get(row.name), q_precision)
 		batch_no = batch_of_row.get(row.name)
@@ -168,6 +189,10 @@ def get_invoice_for_return(ctx, invoice):
 		"taxes_and_charges": header.taxes_and_charges or None,
 		# tills refuse to return an invoice partly paid with points (so does push_batch)
 		"loyalty_amount": format_money(header.loyalty_amount or 0, precision),
+		# what the sale put on the customer's account, and what returns of it already credited there:
+		# a return from another till credits at most the first less the second ("0.000" when none)
+		"on_account": format_money(on_account_part(header, payments, precision), precision),
+		"credited": format_money(credited_to_account(credit_returns, return_payments, precision), precision),
 		"items": items,
 		"payments": [
 			{"mode_of_payment": row.mode_of_payment, "amount": format_money(row.amount, precision)}

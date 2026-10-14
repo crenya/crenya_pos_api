@@ -103,7 +103,8 @@ CREDIT_PROFILE_FIELDS = [
 		"default": "0",
 		"insert_after": "crenya_credit_section",
 		"description": "Cashiers sell on account to a named customer (never the default customer). "
-		"A customer's credit limit is set on the Customer; no limit means no limit.",
+		"A customer's credit limit is the customer's own, else its customer group's, else the company's "
+		"(a System Manager or an Accounts Manager sets them); a customer with none has no limit.",
 	},
 ]
 

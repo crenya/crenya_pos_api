@@ -40,10 +40,14 @@ def customer_credit_limit(customer, company):
 	return limit if limit > 0 else None
 
 
-def customer_credit_limits(rows, company):
-	"""{customer name: credit limit as a Decimal or None} for the pull's customer `rows` (name,
-	customer_group), in three queries for the page: ERPNext's `get_credit_limit` order, the
-	customer's own row, else its group's, else the company's; 0 or none is no limit."""
+LIMIT_SOURCES = ("customer", "group", "company")
+
+
+def customer_credit_limit_sources(rows, company):
+	"""{customer name: (credit limit as a Decimal or None, where it comes from)} for the customer
+	`rows` (name, customer_group), in three queries for the page: ERPNext's `get_credit_limit`
+	order, the customer's own row ("customer"), else its group's ("group"), else the company's
+	("company"); 0 or none is no limit (None, None)."""
 	names = [row.name for row in rows]
 	groups = list({row.customer_group for row in rows if row.customer_group})
 
@@ -71,10 +75,59 @@ def customer_credit_limits(rows, company):
 	company_limit = frappe.get_cached_value("Company", company, "credit_limit")
 	out = {}
 	for row in rows:
-		value = own.get(row.name) or by_group.get(row.customer_group) or company_limit
-		limit = as_decimal(value)
-		out[row.name] = limit if limit > 0 else None
+		for source, value in (
+			("customer", own.get(row.name)),
+			("group", by_group.get(row.customer_group)),
+			("company", company_limit),
+		):
+			if value:
+				limit = as_decimal(value)
+				out[row.name] = (limit, source) if limit > 0 else (None, None)
+				break
+		else:
+			out[row.name] = (None, None)
 	return out
+
+
+def customer_credit_limits(rows, company):
+	"""{customer name: credit limit as a Decimal or None} for the pull's customer `rows`
+	(`customer_credit_limit_sources` without the source); 0 or none is no limit."""
+	return {name: limit for name, (limit, _source) in customer_credit_limit_sources(rows, company).items()}
+
+
+def payable_of(row, precision):
+	"""What an invoice row (grand_total, rounded_total, disable_rounded_total) is payable for, as
+	ERPNext decides it: the grand total when rounding is off, else the rounded total (Decimal)."""
+	if cint(row.get("disable_rounded_total")):
+		return quantize(row.get("grand_total") or 0, precision)
+	return quantize(row.get("rounded_total") or row.get("grand_total") or 0, precision)
+
+
+def on_account_part(invoice, payments, precision):
+	"""What a sale put on the customer's account when it was sold (pure, Decimal >= 0): its payable
+	total less the payment rows and any loyalty points it redeemed. A sale paid in full has none."""
+	paid = sum((as_decimal(p.get("amount")) for p in payments or []), Decimal(0))
+	loyalty = as_decimal(invoice.get("loyalty_amount") or 0)
+	return max(
+		payable_of(invoice, precision) - quantize(paid, precision) - quantize(loyalty, precision), Decimal(0)
+	)
+
+
+def credited_to_account(returns, payments_by_return, precision):
+	"""What returns of an invoice credited to the customer's account (pure, Decimal >= 0): for each
+	return that does not reduce its own outstanding (`update_outstanding_for_self` 0, the shape a
+	credited return posts), its total less the money refunded in its payment rows. A plain refund
+	credits nothing."""
+	total = Decimal(0)
+	for ret in returns or []:
+		if cint(ret.get("update_outstanding_for_self", 1)):
+			continue
+		refunded = sum(
+			(abs(as_decimal(p.get("amount"))) for p in (payments_by_return or {}).get(ret.get("name"), [])),
+			Decimal(0),
+		)
+		total += max(abs(payable_of(ret, precision)) - quantize(refunded, precision), Decimal(0))
+	return quantize(total, precision)
 
 
 def credit_status(customer, company):
@@ -123,20 +176,27 @@ def _require_credit(ctx):
 		raise_api_error(InvalidRequestError, "Credit sales are switched off for this outlet")
 
 
-def status_for(ctx, customer):
-	"""`credit_status` for a customer of the device's outlet (an existing customer inside its customer
-	groups, when it limits them). One answer for a customer that is not there and one that is not the
-	outlet's, so the call tells nothing about other customers."""
-	_require_credit(ctx)
+def customer_in_outlet(ctx, customer):
+	"""Whether `customer` exists and lies inside the outlet's customer groups (any, when it limits
+	none)."""
 	if not customer or not isinstance(customer, str) or not frappe.db.exists("Customer", customer):
-		raise_api_error(InvalidRequestError, NOT_FOUND)
+		return False
 	roots = [row.customer_group for row in ctx.profile.get("customer_groups") or []]
 	if roots:
 		from crenya_pos_api.sync.pull import _descendants
 
 		group = frappe.db.get_value("Customer", customer, "customer_group")
-		if group not in _descendants("Customer Group", roots):
-			raise_api_error(InvalidRequestError, NOT_FOUND)
+		return group in _descendants("Customer Group", roots)
+	return True
+
+
+def status_for(ctx, customer):
+	"""`credit_status` for a customer of the device's outlet (an existing customer inside its customer
+	groups, when it limits them). One answer for a customer that is not there and one that is not the
+	outlet's, so the call tells nothing about other customers."""
+	_require_credit(ctx)
+	if not customer_in_outlet(ctx, customer):
+		raise_api_error(InvalidRequestError, NOT_FOUND)
 	return credit_status(customer, ctx.company)
 
 

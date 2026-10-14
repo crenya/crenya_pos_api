@@ -65,6 +65,7 @@ ADD_PIN_FIELD = "crenya_expense_add_needs_pin"
 # the bill photo: the till scales it to this longest side; the server takes a JPEG of at most the
 # item-image size
 PHOTO_MAX_SIDE = 1600
+PHOTO_MAX_BYTES = 1024 * 1024
 
 UNSUPPORTED = "Expenses need crenya erp's Expenses module on this workspace"
 BOOKING_SAVEPOINT = "crenya_expense_booking"
@@ -134,6 +135,50 @@ def cash_supplier(profile):
 	if name and frappe.db.get_value("Supplier", name, "disabled") == 0:
 		return name
 	return None
+
+
+def settings_block(product: ExpenseProduct, profile):
+	"""The bootstrap block of the outlet under `product.bootstrap_key`: {enabled, reason,
+	needs_pin_to_add, cash_supplier, tax, photo}. `reason` says why `enabled` is false (null when it
+	is true), in English like the sync protocol's messages."""
+	photo = {"max_side": PHOTO_MAX_SIDE, "max_bytes": PHOTO_MAX_BYTES}
+	needs_pin = bool(cint(profile.get(ADD_PIN_FIELD)))
+	if not expenses_supported():
+		return {
+			"enabled": False,
+			"reason": UNSUPPORTED,
+			"needs_pin_to_add": needs_pin,
+			"cash_supplier": None,
+			"tax": None,
+			"photo": photo,
+		}
+	supplier = cash_supplier(profile)
+	rows = template_rows(profile.get(TAX_TEMPLATE_FIELD), profile.get("company"))
+	reason = None
+	if not cint(profile.get(ENABLED_FIELD)):
+		reason = off_reason(product)
+	elif not supplier:
+		reason = f"Set this outlet's Cash Supplier ({product.settings_hint})"
+	return {
+		"enabled": reason is None,
+		"reason": reason,
+		"needs_pin_to_add": needs_pin,
+		"cash_supplier": supplier,
+		"tax": {
+			"template": profile.get(TAX_TEMPLATE_FIELD),
+			"rows": [
+				{
+					"account_head": row.account_head,
+					"description": row.description or row.account_head,
+					"rate": format_number(row.rate or 0),
+				}
+				for row in rows
+			],
+		}
+		if rows
+		else None,
+		"photo": photo,
+	}
 
 
 # the till's amounts (pure)
@@ -616,26 +661,48 @@ def supplier_group_of(profile):
 	)
 
 
-def _enabled(supplier):
+def _enabled(supplier, may_enable=True):
 	"""`supplier` enabled again when it was disabled (the outlet's own Cash Supplier: a till cannot
-	book without it); None when there is no such Supplier."""
+	book without it); None when there is no such Supplier. With `may_enable` false a disabled one is
+	left alone and the caller is told (frappe.ValidationError): an owner may have disabled it on
+	purpose."""
 	if not supplier or not frappe.db.exists("Supplier", supplier):
 		return None
 	if cint(frappe.db.get_value("Supplier", supplier, "disabled")):
+		if not may_enable:
+			frappe.throw(
+				_(
+					"Supplier {0} is disabled: ask the owner to enable it, or to choose another Cash Supplier"
+				).format(supplier),
+				frappe.ValidationError,
+			)
 		doc = frappe.get_doc("Supplier", supplier)
 		doc.disabled = 0
 		doc.save(ignore_permissions=True)
 	return supplier
 
 
-def ensure_cash_supplier(profile):
+def ensure_cash_supplier(profile, may_enable=True):
 	"""The outlet's enabled Cash Supplier, made (and set on the outlet) when it has none:
-	(name, created). A disabled one is enabled again."""
-	current = _enabled(profile.get(CASH_SUPPLIER_FIELD))
+	(name, created). A disabled one is enabled again when `may_enable`, else the caller is told
+	(frappe.ValidationError). A supplier that already has the name the outlet's would get is adopted
+	only when it is in the outlet's expense supplier group."""
+	current = _enabled(profile.get(CASH_SUPPLIER_FIELD), may_enable)
 	if current:
 		return current, False
 	supplier_name = _("Cash Purchases - {0}").format(profile.name)
-	name = _enabled(frappe.db.get_value("Supplier", {"supplier_name": supplier_name}, "name"))
+	group = supplier_group_of(profile)
+	existing = frappe.db.get_value(
+		"Supplier", {"supplier_name": supplier_name}, ["name", "supplier_group"], as_dict=True
+	)
+	if existing and existing.supplier_group != group:
+		frappe.throw(
+			_(
+				"Supplier {0} already exists in the group {1}, not in this outlet's expense supplier group {2}"
+			).format(existing.name, existing.supplier_group, group),
+			frappe.ValidationError,
+		)
+	name = _enabled(existing.name if existing else None, may_enable)
 	created = False
 	if not name:
 		name = (
@@ -643,7 +710,7 @@ def ensure_cash_supplier(profile):
 				{
 					"doctype": "Supplier",
 					"supplier_name": supplier_name,
-					"supplier_group": supplier_group_of(profile),
+					"supplier_group": group,
 					"supplier_type": "Individual",
 				}
 			)

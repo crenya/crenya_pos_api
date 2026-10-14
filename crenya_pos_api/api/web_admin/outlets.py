@@ -8,6 +8,7 @@ from crenya_pos_api.api.web_admin.scope import manage, managed_shops
 from crenya_pos_api.sync import central
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, is_system_manager, require_login
 from crenya_pos_api.web import devices as web_devices
+from crenya_pos_api.web.context import require_web_session
 
 # the device types a shop has, in the list's order, with their labels (English, Arabic); a
 # device of another type (an app's own) is listed after them under its type name
@@ -59,6 +60,7 @@ def downloads() -> dict:
 	pub_date, notes, installers: [{platform, label, label_ar, url, sha256, size}]}, or
 	{installers: []}. For a System Manager or a manager of a shop."""
 	require_login()
+	require_web_session()
 	if not is_system_manager() and not managed_shops():
 		raise frappe.PermissionError
 	return central.downloads(central.RETAIL)

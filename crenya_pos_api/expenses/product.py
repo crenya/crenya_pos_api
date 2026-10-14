@@ -25,6 +25,17 @@ class ExpenseProduct(NamedTuple):
 	outlet_users: Callable[[Any], set[str]]  # fn(POS Profile): who may approve at this outlet
 
 
+def _restaurant_roles(_ctx=None):
+	"""The approver roles of a restaurant till until crenya_restaurant registers its own product
+	(release 0.15.7): its `VOID_APPROVER_ROLES`, read from the installed app (0.15.6 and later keep
+	them in `constants`). Without crenya_restaurant nobody can ask: that is a programming error."""
+	try:
+		from crenya_restaurant.constants import VOID_APPROVER_ROLES
+	except ImportError:
+		raise RuntimeError("The restaurant product is not registered: crenya_restaurant registers it")
+	return tuple(VOID_APPROVER_ROLES)
+
+
 def _unregistered(*_args):
 	raise RuntimeError("The restaurant product is not registered: crenya_restaurant registers it")
 
@@ -49,17 +60,19 @@ RETAIL = ExpenseProduct(
 	outlet_users=applicable_users,
 )
 
-# the restaurant's wording and keys; its approvers are the restaurant's own roles and outlet rule,
-# which crenya_restaurant registers over this entry (`register_product`). Until it does, asking this
-# entry who approves fails loudly rather than answering with the retail rule.
+# the restaurant's wording and keys. Its approver roles are the restaurant's own (crenya_restaurant
+# registers its product over this entry with `register_product`; until it does, the roles are read
+# from the installed crenya_restaurant, so a restaurant 0.15.6 whose hook entries this app ignores
+# keeps working, and asking without crenya_restaurant fails loudly rather than answering with the
+# retail rule). The outlet rule is the same table on both: the profile's Applicable for Users.
 RESTAURANT = ExpenseProduct(
 	key="restaurant",
 	device_types=("restaurant_pos",),
 	bootstrap_key="restaurant.expenses",
 	capability="restaurant_expenses",
 	settings_hint="Restaurants → Settings → Expenses",
-	approver_roles=_unregistered,
-	outlet_users=_unregistered,
+	approver_roles=_restaurant_roles,
+	outlet_users=applicable_users,
 )
 
 _PRODUCTS = {RETAIL.key: RETAIL, RESTAURANT.key: RESTAURANT}

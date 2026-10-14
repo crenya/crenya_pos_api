@@ -18,7 +18,13 @@ from crenya_pos_api.api.web_admin.scope import manage, shop_profiles
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.utils.dates import format_date, format_db_datetime
 from crenya_pos_api.utils.decimal import format_money, format_number
-from crenya_pos_api.web.context import WebAdminContext, check_modified, invalid, refuse
+from crenya_pos_api.web.context import (
+	WebAdminContext,
+	check_modified,
+	invalid,
+	refuse,
+	require_web_session,
+)
 from crenya_pos_api.web.loyalty_shape import PLAIN_FIELDS, loyalty_problem, to_loyalty_program
 from crenya_pos_api.web.reports import money_view
 
@@ -36,7 +42,8 @@ def _can_edit() -> bool:
 
 def _context(outlet):
 	"""The shop's WebAdminContext for a manager of it (`manage`) or an Accounts Manager of any shop;
-	frappe.PermissionError otherwise."""
+	frappe.PermissionError otherwise. From a browser session only."""
+	require_web_session()
 	if "Accounts Manager" in frappe.get_roles() and isinstance(outlet, str) and shop_profiles(outlet):
 		return WebAdminContext(frappe.session.user, outlet)
 	return manage(outlet)

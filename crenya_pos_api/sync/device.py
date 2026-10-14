@@ -5,6 +5,8 @@ import re
 import frappe
 from frappe.utils import cint, get_system_timezone, now
 
+from crenya_pos_api.expenses.booking import expenses_supported, settings_block
+from crenya_pos_api.expenses.product import RETAIL
 from crenya_pos_api.sync import device_user
 from crenya_pos_api.sync.approvals import approvals_bootstrap
 from crenya_pos_api.sync.context import (
@@ -499,5 +501,10 @@ def bootstrap(ctx):
 		# credit sales (0.13.0): the capability and the outlet's switch; a restaurant till gets none
 		doc.setdefault("features", {})["credit_sales"] = 1
 		doc["credit"] = {"enabled": bool(cint(profile.get(CREDIT_SALES_FIELD)))}
+		# expenses paid out of the drawer (0.13.0): only on a site with erptrue_app's POS Expense, so
+		# the till hides Expenses everywhere else
+		if expenses_supported():
+			doc["features"][RETAIL.capability] = 1
+			doc[RETAIL.bootstrap_key] = settings_block(RETAIL, profile)
 	# other apps' crenya_pos_bootstrap hooks: fn(ctx, doc), adding their own keys
 	return extend_bootstrap(ctx, doc)

@@ -49,6 +49,7 @@ ORIGINAL_FIELDS = [
 	"currency",
 	"loyalty_program",
 	"loyalty_amount",
+	"outstanding_amount",
 ]
 
 LOYALTY_RETURN_MESSAGE = "Return this invoice from ERPNext: it was partly paid with loyalty points"
@@ -416,11 +417,18 @@ def assert_on_account_allowed(ctx, customer, on_account, precision, notes):
 		raise SyncError(VALIDATION, f"on_account {on_account} has more than {precision} decimals")
 
 
-def assert_credit_offset_allowed(credit_offset, original, doc, precision):
-	"""The part of a return credited to the account: for a return against an invoice, in the
-	currency's decimals, at most the return's total."""
+def assert_credit_offset_allowed(credit_offset, original, doc, precision, default_customer=None):
+	"""The part of a return credited to the account: for a return against an invoice of a named
+	customer, in the currency's decimals, at most the return's total. The POS Profile's default
+	(walk-in) customer has no account anyone can collect, so nothing is credited to it. (A fully paid
+	invoice of a named customer may still be credited: an offline till does not know.)"""
 	if not original:
 		raise SyncError(VALIDATION, "credit_offset needs the invoice the return is against")
+	if default_customer and original.get("customer") == default_customer:
+		raise SyncError(
+			VALIDATION,
+			"A return of a sale to the POS Profile's default customer is refunded, not credited to an account",
+		)
 	if quantize(credit_offset, precision) != credit_offset:
 		raise SyncError(VALIDATION, f"credit_offset {credit_offset} has more than {precision} decimals")
 	if credit_offset > abs(quantize(_payments_due(doc), precision)):
@@ -429,6 +437,21 @@ def assert_credit_offset_allowed(credit_offset, original, doc, precision):
 			f"credit_offset {format_money(credit_offset, precision)} is more than the return's total "
 			f"{format_money(abs(_payments_due(doc)), precision)}",
 		)
+
+
+def credit_beyond_outstanding_note(credit_offset, original, precision):
+	"""The Sync Event note for a return whose credit to the account is more than the original
+	invoice still owes (a fully paid sale returned offline is credited whole, founder decision 3):
+	the customer is left in credit, and the owner can see it. None when the credit fits (pure)."""
+	owed = max(quantize(as_decimal(original.get("outstanding_amount") or 0), precision), as_decimal(0))
+	credit = quantize(as_decimal(credit_offset), precision)
+	if credit <= owed:
+		return None
+	return (
+		f"Credit {format_money(credit, precision)} is more than invoice {original.get('name')}'s outstanding "
+		f"{format_money(owed, precision)}: customer {original.get('customer')} is left in credit by "
+		f"{format_money(credit - owed, precision)}"
+	)
 
 
 def _apply_profile_accounts(doc, profile):
@@ -573,7 +596,11 @@ def build_invoice(ctx, data, notes):
 
 	check_grand_total(doc, data)
 	if credit_offset:
-		assert_credit_offset_allowed(credit_offset, original, doc, money_precision(doc.currency))
+		precision = money_precision(doc.currency)
+		assert_credit_offset_allowed(credit_offset, original, doc, precision, profile.get("customer"))
+		note = credit_beyond_outstanding_note(credit_offset, original, precision)
+		if note:
+			notes.append(note)
 	reconcile_payments(doc, default_mode, notes, on_account=on_account, credit_offset=credit_offset)
 	doc.calculate_taxes_and_totals()
 	return doc

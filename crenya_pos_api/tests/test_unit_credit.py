@@ -67,6 +67,7 @@ class TestOnAccountPayload(Refusing):
 		open_return = make_return()
 		open_return["return_against_local_id"] = None
 		open_return["remarks"] = "Damaged"
+		open_return["items"][0]["against_line_no"] = None
 		open_return["credit_offset"] = "0.600"
 		self.refused(open_return, "credit_offset")
 

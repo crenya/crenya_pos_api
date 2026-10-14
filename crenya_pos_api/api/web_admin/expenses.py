@@ -151,9 +151,11 @@ def expenses_not_booked(outlet: str | None = None) -> dict:
 	newest business date first: read here for its managers, who need no POS Expense right. Each one
 	`can_retry`. {"rows", "more"}."""
 	require_web_session()
+	# who may ask is settled first, on a site with the Expenses module or without it
+	outlets = _managed_outlets(outlet)
 	if not booking.expenses_supported():
 		return {"rows": [], "more": False}
-	return not_booked_rows(_managed_outlets(outlet))
+	return not_booked_rows(outlets)
 
 
 @frappe.whitelist(methods=["GET", "POST"])

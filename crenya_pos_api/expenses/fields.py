@@ -73,7 +73,7 @@ EXPENSE_PROFILE_FIELDS = [
 ]
 
 
-def validate_expenses(doc):
+def validate_expenses(doc, method=None):
 	"""The expense VAT template is one of the outlet's company (its rows decide the till's VAT)."""
 	template = doc.get("crenya_expense_tax_template")
 	if template:

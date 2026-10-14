@@ -220,6 +220,44 @@ class TestCreditStatus(CreditCase):
 			with self.assertRaises(InvalidRequestError) as caught:
 				ask()
 			messages.add(str(caught.exception))
+		# a customer outside the outlet's groups, and another outlet's invoice, answer the same
+		outside = fixtures.make_customer(f"_TC outside {new_id()[:6]}")
+		saved_groups = [row.customer_group for row in self.profile.customer_groups]
+		other_group = "_Test Crenya Other Customers"
+		if not frappe.db.exists("Customer Group", other_group):
+			from frappe.utils.nestedset import get_root_of
+
+			fixtures._insert(
+				{
+					"doctype": "Customer Group",
+					"customer_group_name": other_group,
+					"parent_customer_group": get_root_of("Customer Group"),
+				}
+			)
+
+		def set_groups(groups):
+			profile = frappe.get_doc("POS Profile", self.profile.name)
+			profile.set("customer_groups", [{"customer_group": g} for g in groups])
+			profile.flags.ignore_validate = True
+			profile.save(ignore_permissions=True)
+			frappe.db.commit()  # nosemgrep
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+
+		set_groups([other_group])
+		try:
+			with self.assertRaises(InvalidRequestError) as caught:
+				credit_api.get_status(device_id=self.device_id, customer=outside)
+			messages.add(str(caught.exception))
+		finally:
+			set_groups(saved_groups)
+		sold = self.post(self.sale_payload(lines=[(fixtures.MILK, "2", "0.600")]))
+		frappe.db.set_value("Sales Invoice", sold["name"], "pos_profile", "_Test Crenya Another Outlet")
+		try:
+			with self.assertRaises(InvalidRequestError) as caught:
+				credit_api.get_invoice_outstanding(device_id=self.device_id, invoice=sold["name"])
+			messages.add(str(caught.exception))
+		finally:
+			frappe.db.set_value("Sales Invoice", sold["name"], "pos_profile", self.profile.name)
 		self.assertEqual(len(messages), 1)
 		# an outlet that does not sell on account answers no credit question
 		self.set_switch(0)
@@ -447,10 +485,25 @@ class TestOnAccountPosting(CreditCase):
 						"account_currency": fixtures.CURRENCY,
 					}
 				)
-		fields = ("income_account", "expense_account")
+		# a branch cost centre of its own, so a missing copy shows in the GL
+		branch = "_Test Crenya Branch CC - _TCP"
+		if not frappe.db.exists("Cost Center", branch):
+			fixtures._insert(
+				{
+					"doctype": "Cost Center",
+					"cost_center_name": "_Test Crenya Branch CC",
+					"company": fixtures.COMPANY,
+					"parent_cost_center": frappe.db.get_value(
+						"Cost Center", {"company": fixtures.COMPANY, "is_group": 1}, "name"
+					),
+				}
+			)
+		fields = ("income_account", "expense_account", "cost_center")
 		saved = frappe.db.get_value("POS Profile", self.profile.name, list(fields), as_dict=True)
 		frappe.db.set_value(
-			"POS Profile", self.profile.name, {"income_account": income, "expense_account": expense}
+			"POS Profile",
+			self.profile.name,
+			{"income_account": income, "expense_account": expense, "cost_center": branch},
 		)
 		frappe.clear_document_cache("POS Profile", self.profile.name)
 		self.addCleanup(frappe.clear_document_cache, "POS Profile", self.profile.name)
@@ -479,6 +532,8 @@ class TestOnAccountPosting(CreditCase):
 
 		self.assertEqual(lines(credit), lines(cash))
 		self.assertTrue(any(row[0] == income for row in lines(cash)), "the profile's income account is used")
+		self.assertTrue(any(row[3] == branch for row in lines(cash)), "the profile's cost centre is used")
+		self.assertTrue(any(row[3] == branch for row in lines(credit)))
 
 	def test_credit_with_a_loyalty_redemption_keeps_the_pos_shape(self):
 		"""credit_only with a loyalty redemption keeps the POS shape: points pay part, the rest is
@@ -657,20 +712,33 @@ class TestCreditSync(CreditCase):
 		group_doc = frappe.get_doc("Customer Group", group)
 		saved_rows = [(r.company, r.credit_limit) for r in group_doc.credit_limits]
 		try:
-			for company_limit, group_limit in ((0, None), (700, None), (700, 300)):
+			for company_limit, group_limit, bypass in (
+				(0, None, 0),
+				(700, None, 0),
+				(700, 300, 0),
+				(700, 300, 1),
+				(0, 300, 1),
+			):
 				frappe.db.set_value("Company", fixtures.COMPANY, "credit_limit", company_limit)
 				frappe.clear_document_cache("Company", fixtures.COMPANY)
 				group_doc.reload()
 				group_doc.set("credit_limits", [])
 				if group_limit:
 					group_doc.append(
-						"credit_limits", {"company": fixtures.COMPANY, "credit_limit": group_limit}
+						"credit_limits",
+						{
+							"company": fixtures.COMPANY,
+							"credit_limit": group_limit,
+							"bypass_credit_limit_check": bypass,
+						},
 					)
 				group_doc.save(ignore_permissions=True)
 				batch = credit_service.customer_credit_limits(rows, fixtures.COMPANY)
 				for name in customers:
 					erpnext = flt(get_credit_limit(name, fixtures.COMPANY))
-					self.assertEqual(flt(batch[name] or 0), erpnext, (name, company_limit, group_limit))
+					self.assertEqual(
+						flt(batch[name] or 0), erpnext, (name, company_limit, group_limit, bypass)
+					)
 		finally:
 			group_doc.reload()
 			group_doc.set("credit_limits", [])

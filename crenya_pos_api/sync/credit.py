@@ -53,12 +53,17 @@ def customer_credit_limits(rows, company):
 		found = frappe.get_all(
 			"Customer Credit Limit",
 			filters={"parent": ["in", parents], "parenttype": parenttype, "company": company},
-			fields=["parent", "credit_limit"],
+			fields=["parent", "credit_limit", "bypass_credit_limit_check"],
 			order_by="idx asc",
 		)
 		result = {}
 		for row in found:
-			result.setdefault(row.parent, row.credit_limit)
+			if row.parent in result:
+				continue
+			# ERPNext's `get_credit_limit` ignores a Customer Group row that bypasses the check
+			# (v15 and v16) and falls to the company's limit
+			bypass = parenttype == "Customer Group" and row.bypass_credit_limit_check
+			result[row.parent] = None if bypass else row.credit_limit
 		return result
 
 	own = limits("Customer", names)

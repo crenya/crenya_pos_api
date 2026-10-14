@@ -85,6 +85,27 @@ class TestPayload(unittest.TestCase):
 		self.assertIsNone(handler.find_by_local_id(None))
 
 
+class TestLockKey(unittest.TestCase):
+	def test_receipts_of_one_customer_share_a_lock(self):
+		handler = CustomerPaymentHandler()
+		self.assertEqual(handler.lock_key({"customer": "CUST-1"}), "customer:CUST-1")
+		self.assertEqual(handler.lock_key({"customer": "CUST-1", "amount": "5.000"}), "customer:CUST-1")
+		self.assertNotEqual(
+			handler.lock_key({"customer": "CUST-2"}), handler.lock_key({"customer": "CUST-1"})
+		)
+
+	def test_no_customer_no_lock(self):
+		handler = CustomerPaymentHandler()
+		self.assertIsNone(handler.lock_key({}))
+		self.assertIsNone(handler.lock_key({"customer": 5}))
+
+	def test_the_other_aggregates_take_no_lock(self):
+		from crenya_pos_api.sync.aggregates import CustomerHandler, SalesInvoiceHandler, ShiftHandler
+
+		for handler in (CustomerHandler(), SalesInvoiceHandler(), ShiftHandler()):
+			self.assertIsNone(handler.lock_key({"customer": "CUST-1"}))
+
+
 def debts(*amounts):
 	return [
 		{"name": f"INV-{index}", "total": amount, "outstanding": amount, "due_date": None}

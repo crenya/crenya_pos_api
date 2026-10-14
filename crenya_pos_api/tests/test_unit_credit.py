@@ -184,5 +184,63 @@ class TestCreditBeyondOutstanding(unittest.TestCase):
 		self.assertIn("left in credit by 0.001", self.note("0.002", "0.001"))
 
 
+class TestOnAccountAndCredited(unittest.TestCase):
+	"""The lookup for a return from another till says what a sale put on account and what earlier
+	returns credited there (OMR)."""
+
+	def test_a_part_paid_sale_put_the_rest_on_account(self):
+		from crenya_pos_api.sync.credit import on_account_part
+
+		invoice = {"grand_total": "100.000", "rounded_total": 0, "disable_rounded_total": 1}
+		self.assertEqual(on_account_part(invoice, [{"amount": "40.000"}], 3), Decimal("60.000"))
+		self.assertEqual(on_account_part(invoice, [], 3), Decimal("100.000"))
+		self.assertEqual(on_account_part(invoice, [{"amount": "100.000"}], 3), Decimal("0.000"))
+
+	def test_points_count_as_paid_and_the_rounded_total_is_what_is_payable(self):
+		from crenya_pos_api.sync.credit import on_account_part
+
+		invoice = {
+			"grand_total": "99.960",
+			"rounded_total": "100.000",
+			"disable_rounded_total": 0,
+			"loyalty_amount": "1.000",
+		}
+		self.assertEqual(on_account_part(invoice, [{"amount": "40.000"}], 3), Decimal("59.000"))
+		# never negative
+		self.assertEqual(on_account_part(invoice, [{"amount": "150.000"}], 3), Decimal("0.000"))
+
+	def test_only_a_credited_return_credits_the_account(self):
+		from crenya_pos_api.sync.credit import credited_to_account
+
+		returns = [
+			{
+				"name": "R1",
+				"grand_total": "-30.000",
+				"rounded_total": 0,
+				"disable_rounded_total": 1,
+				"update_outstanding_for_self": 0,
+			},
+			{
+				"name": "R2",
+				"grand_total": "-30.000",
+				"rounded_total": 0,
+				"disable_rounded_total": 1,
+				"update_outstanding_for_self": 0,
+			},
+			{
+				"name": "R3",
+				"grand_total": "-20.000",
+				"rounded_total": 0,
+				"disable_rounded_total": 1,
+				"update_outstanding_for_self": 1,
+			},
+		]
+		payments = {"R2": [{"amount": "-10.000"}], "R3": [{"amount": "-20.000"}]}
+		# R1 all credited (30.000), R2 credited 20.000 and refunded 10.000, R3 a plain refund
+		self.assertEqual(credited_to_account(returns, payments, 3), Decimal("50.000"))
+		self.assertEqual(credited_to_account([], {}, 3), Decimal("0.000"))
+		self.assertEqual(credited_to_account(None, None, 3), Decimal("0.000"))
+
+
 if __name__ == "__main__":
 	unittest.main()

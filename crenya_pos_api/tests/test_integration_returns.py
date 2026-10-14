@@ -158,6 +158,35 @@ class TestCreditInvoiceReturns(CreditCase):
 		self.assertEqual(doc.update_outstanding_for_self, 1)
 		self.assertEqual([Decimal(money(row.amount)) for row in doc.payments], [Decimal("-30.000")])
 
+	def test_the_return_lookup_says_what_is_on_account_and_what_was_credited(self):
+		from crenya_pos_api.api import returns as returns_api
+
+		customer = make_customer("retlookup", limit=500)
+		sale, sold = self.sold(customer)
+
+		def lookup():
+			return returns_api.get_invoice_for_return(device_id=self.device_id, invoice=sold["name"])
+
+		first = lookup()
+		self.assertEqual((first["on_account"], first["credited"]), ("60.000", "0.000"))
+		# 30.000 all credited, then 30.000 split 20.000 credited and 10.000 refunded
+		self.post(self.give_back(sale, 3, "30.000"))
+		self.assertEqual(lookup()["credited"], "30.000")
+		self.post(self.give_back(sale, 3, "20.000", refund="10.000"))
+		after = lookup()
+		self.assertEqual((after["on_account"], after["credited"]), ("60.000", "50.000"))
+		# a plain refund credits nothing
+		self.post(self.give_back(sale, 1, None))
+		self.assertEqual(lookup()["credited"], "50.000")
+
+	def test_the_lookup_of_a_cash_sale_has_nothing_on_account(self):
+		from crenya_pos_api.api import returns as returns_api
+
+		customer = make_customer("retcashlookup", limit=500)
+		_sale, sold = self.sold(customer, cash="100.000")
+		answer = returns_api.get_invoice_for_return(device_id=self.device_id, invoice=sold["name"])
+		self.assertEqual((answer["on_account"], answer["credited"]), ("0.000", "0.000"))
+
 	def test_invoice_outstanding_answer(self):
 		from crenya_pos_api.api import credit as credit_api
 

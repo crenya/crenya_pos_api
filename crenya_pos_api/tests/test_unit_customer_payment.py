@@ -105,6 +105,19 @@ class TestLockKey(unittest.TestCase):
 		for handler in (CustomerHandler(), SalesInvoiceHandler(), ShiftHandler()):
 			self.assertIsNone(handler.lock_key({"customer": "CUST-1"}))
 
+	def test_a_sale_and_a_return_without_credit_take_no_lock(self):
+		from crenya_pos_api.sync.aggregates import SalesInvoiceHandler
+
+		handler = SalesInvoiceHandler()
+		self.assertIsNone(handler.lock_key({"is_return": 0, "credit_offset": "10.000"}))
+		self.assertIsNone(handler.lock_key({"is_return": 1}))
+		for zero in (None, "", "0", "0.000"):
+			self.assertIsNone(
+				handler.lock_key({"is_return": 1, "credit_offset": zero, "return_against": "X"})
+			)
+		# a credit with nothing to say whose return it is
+		self.assertIsNone(handler.lock_key({"is_return": 1, "credit_offset": "5.000"}))
+
 
 def debts(*amounts):
 	return [

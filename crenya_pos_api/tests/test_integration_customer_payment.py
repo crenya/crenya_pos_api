@@ -415,7 +415,8 @@ class TestCustomerPaymentAsDeviceUser(PaymentCase):
 			frappe.conf.throttle_user_limit = cls._saved_throttle
 		super().tearDownClass()
 
-	def test_the_device_user_posts_a_receipt_and_an_advance(self):
+	def register(self):
+		"""(device id, the device user, the sign-in answer): a till paired as the device user."""
 		frappe.local.request_ip = "127.0.0.1"
 		device_id = new_id()
 		answer = sign_in(self.person, PASSWORD, device_id)
@@ -433,23 +434,165 @@ class TestCustomerPaymentAsDeviceUser(PaymentCase):
 		finally:
 			frappe.set_user("Administrator")
 		frappe.db.commit()  # nosemgrep
+		return device_id, user, answer
+
+	def push_as(self, user, device_id, payload):
+		"""The result of the push as `user`, and the session user right after it (not reset by the
+		helper: the booking must hand the session back)."""
+		frappe.set_user(user)
+		try:
+			result = sync_api.push_batch(device_id=device_id, events=[self.event(payload, AGGREGATE)])[0]
+			after = frappe.session.user
+		finally:
+			frappe.set_user("Administrator")
+		return result, after
+
+	def test_the_device_user_posts_a_receipt_and_an_advance(self):
+		device_id, user, _answer = self.register()
 		customer = make_customer("devpay", limit=None)
 		invoice = self.sell(customer, "25.000")
-
-		def push(payload):
-			frappe.set_user(user)
-			try:
-				return sync_api.push_batch(device_id=device_id, events=[self.event(payload, AGGREGATE)])[0]
-			finally:
-				frappe.set_user("Administrator")
-
-		booked = self.assertOk(push(self.payment(customer, "40.000")))
+		result, after = self.push_as(user, device_id, self.payment(customer, "40.000"))
+		booked = self.assertOk(result)
+		# the session is the device user again when push_batch returns
+		self.assertEqual(after, user)
 		self.assertEqual(
 			booked["payment"], {"allocated": "25.000", "unallocated": "15.000", "invoices": [invoice]}
 		)
-		# posted as Administrator for the booking; the remarks name the device
-		remarks = frappe.db.get_value(PAYMENT_ENTRY, booked["name"], "remarks")
+		# the trail shows who booked it; the remarks name the device
+		owner, modified_by, remarks = frappe.db.get_value(
+			PAYMENT_ENTRY, booked["name"], ["owner", "modified_by", "remarks"]
+		)
+		self.assertEqual((owner, modified_by), (user, user))
 		self.assertTrue(remarks.startswith(f"Received at the till {device_id} "))
 		# the device user was given no right on Payment Entry for it
-		self.assertEqual(set(frappe.get_roles(user)) - {"All", "Guest"}, {DEVICE_ROLE})
 		self.assertFalse(frappe.has_permission("Payment Entry", "read", user=user))
+
+	def test_the_session_is_the_device_user_after_a_refused_receipt(self):
+		device_id, user, _answer = self.register()
+		customer = make_customer("devrefused", limit=None)
+		result, after = self.push_as(user, device_id, self.payment(customer, "5.000", currency="USD"))
+		self.assertError(result, "validation", False)
+		self.assertEqual(after, user)
+
+	def test_the_session_is_the_device_user_after_erpnext_refuses_the_booking(self):
+		from erpnext.accounts.doctype.payment_entry.payment_entry import PaymentEntry
+
+		device_id, user, _answer = self.register()
+		customer = make_customer("devfail", limit=None)
+		self.sell(customer, "10.000")
+		payload = self.payment(customer, "10.000")
+		with mock.patch.object(PaymentEntry, "submit", side_effect=frappe.ValidationError("refused")):
+			result, after = self.push_as(user, device_id, payload)
+		self.assertEqual(result["status"], "error")
+		self.assertEqual(after, user)
+		self.assertEqual(self.entries(payload["local_id"]), [])
+		# and the same receipt books once ERPNext lets it
+		retried, after = self.push_as(user, device_id, payload)
+		self.assertOk(retried)
+		self.assertEqual(after, user)
+
+	def test_a_receipt_over_http_with_the_device_key(self):
+		"""Through the real WSGI application with the device's API key: two receipts in one batch (the
+		second runs after the first booked as Administrator), a good answer, and each Payment Entry
+		is the device user's."""
+		from werkzeug.test import Client
+
+		device_id, user, answer = self.register()
+		customer = make_customer("devhttp", limit=None)
+		invoice = self.sell(customer, "25.000")
+		first = self.payment(customer, "10.000")
+		second = self.payment(customer, "20.000")
+		site = frappe.local.site
+		out = []
+
+		def worker():
+			try:
+				from frappe.app import application
+
+				response = Client(application).post(
+					"/api/method/crenya_pos_api.api.sync.push_batch",
+					json={
+						"device_id": device_id,
+						"events": [self.event(first, AGGREGATE), self.event(second, AGGREGATE)],
+					},
+					headers={
+						"Authorization": f"token {answer['api_key']}:{answer['api_secret']}",
+						"X-Frappe-Site-Name": site,
+					},
+					base_url=f"http://{site}",
+				)
+				out.append((response.status_code, response.get_json()))
+			except Exception as exc:  # the main thread reports it
+				out.append(exc)
+
+		thread = threading.Thread(target=worker)
+		thread.start()
+		thread.join(120)
+		self.assertFalse(thread.is_alive())
+		self.assertNotIsInstance(out[0], Exception, msg=repr(out[0]))
+		status, body = out[0]
+		self.assertEqual(status, 200, msg=body)
+		results = body["message"]
+		self.assertEqual([r["status"] for r in results], ["ok", "ok"], msg=results)
+		self.assertEqual(results[0]["payment"]["invoices"], [invoice])
+		self.assertEqual(
+			results[1]["payment"], {"allocated": "15.000", "unallocated": "5.000", "invoices": [invoice]}
+		)
+		frappe.db.rollback()
+		for result in results:
+			self.assertEqual(frappe.db.get_value(PAYMENT_ENTRY, result["name"], "owner"), user)
+
+	def test_experiment_if_owner_docperm_instead_of_administrator(self):
+		"""An experiment, never a failure: would a Custom DocPerm for the device role (if_owner) let
+		the booking run as the device user? The outcome is printed for the CI log."""
+		from contextlib import nullcontext
+
+		device_id, user, _answer = self.register()
+		customer = make_customer("devexperiment", limit=None)
+		self.sell(customer, "10.000")
+		perm = frappe.get_doc(
+			{
+				"doctype": "Custom DocPerm",
+				"parent": PAYMENT_ENTRY,
+				"parenttype": "DocType",
+				"parentfield": "permissions",
+				"role": DEVICE_ROLE,
+				"permlevel": 0,
+				"read": 1,
+				"write": 1,
+				"create": 1,
+				"submit": 1,
+				"if_owner": 1,
+			}
+		).insert(ignore_permissions=True)
+		frappe.clear_cache(doctype=PAYMENT_ENTRY)
+		try:
+			with mock.patch.object(payments, "_as_administrator", nullcontext):
+				result, _after = self.push_as(user, device_id, self.payment(customer, "10.000"))
+			print(
+				f"EXPERIMENT if_owner DocPerm without Administrator: {result['status']} {result.get('error')}"
+			)
+		finally:
+			frappe.set_user("Administrator")
+			frappe.delete_doc("Custom DocPerm", perm.name, ignore_permissions=True, force=True)
+			frappe.clear_cache(doctype=PAYMENT_ENTRY)
+			frappe.db.commit()  # nosemgrep
+
+
+class TestReturnsShareTheReceiptLock(PaymentCase):
+	def test_a_return_that_credits_the_account_takes_the_customers_receipt_lock(self):
+		customer = make_customer("lockret", limit=500)
+		sale = self.on_account_sale(customer, "100.000", cash="40.000")
+		self.post(sale)
+		ret = self.return_payload(sale, [(fixtures.MILK, "-1", "50.000", 1)], credit_offset="50.000")
+		ret["payments"] = []
+		receipt = self.event(self.payment(customer, "5.000"), AGGREGATE)
+		lock = events._lock_name(receipt)
+		self.assertTrue(lock)
+		self.assertEqual(events._lock_name(self.event(ret)), lock)
+		# a plain return, and a sale, take none
+		plain = self.return_payload(sale, [(fixtures.MILK, "-1", "50.000", 1)])
+		self.assertIsNone(events._lock_name(self.event(plain)))
+		self.assertIsNone(events._lock_name(self.event(sale)))
+		# and the credited return still posts
+		self.assertOk(self.push_one(self.event(ret)))

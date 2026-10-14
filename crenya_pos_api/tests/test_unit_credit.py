@@ -158,10 +158,6 @@ class TestApprovalsAndFields(unittest.TestCase):
 		self.assertEqual((field["unique"], field["read_only"]), (1, 1))
 
 
-if __name__ == "__main__":
-	unittest.main()
-
-
 class TestCreditBeyondOutstanding(unittest.TestCase):
 	def note(self, offset, outstanding):
 		from crenya_pos_api.sync.invoice_builder import credit_beyond_outstanding_note
@@ -186,3 +182,7 @@ class TestCreditBeyondOutstanding(unittest.TestCase):
 	def test_exact_at_three_decimals(self):
 		self.assertIsNone(self.note("0.001", "0.001"))
 		self.assertIn("left in credit by 0.001", self.note("0.002", "0.001"))
+
+
+if __name__ == "__main__":
+	unittest.main()

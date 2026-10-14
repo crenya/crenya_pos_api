@@ -417,11 +417,18 @@ def assert_on_account_allowed(ctx, customer, on_account, precision, notes):
 		raise SyncError(VALIDATION, f"on_account {on_account} has more than {precision} decimals")
 
 
-def assert_credit_offset_allowed(credit_offset, original, doc, precision):
-	"""The part of a return credited to the account: for a return against an invoice, in the
-	currency's decimals, at most the return's total."""
+def assert_credit_offset_allowed(credit_offset, original, doc, precision, default_customer=None):
+	"""The part of a return credited to the account: for a return against an invoice of a named
+	customer, in the currency's decimals, at most the return's total. The POS Profile's default
+	(walk-in) customer has no account anyone can collect, so nothing is credited to it. (A fully paid
+	invoice of a named customer may still be credited: an offline till does not know.)"""
 	if not original:
 		raise SyncError(VALIDATION, "credit_offset needs the invoice the return is against")
+	if default_customer and original.get("customer") == default_customer:
+		raise SyncError(
+			VALIDATION,
+			"A return of a sale to the POS Profile's default customer is refunded, not credited to an account",
+		)
 	if quantize(credit_offset, precision) != credit_offset:
 		raise SyncError(VALIDATION, f"credit_offset {credit_offset} has more than {precision} decimals")
 	if credit_offset > abs(quantize(_payments_due(doc), precision)):
@@ -590,7 +597,7 @@ def build_invoice(ctx, data, notes):
 	check_grand_total(doc, data)
 	if credit_offset:
 		precision = money_precision(doc.currency)
-		assert_credit_offset_allowed(credit_offset, original, doc, precision)
+		assert_credit_offset_allowed(credit_offset, original, doc, precision, profile.get("customer"))
 		note = credit_beyond_outstanding_note(credit_offset, original, precision)
 		if note:
 			notes.append(note)

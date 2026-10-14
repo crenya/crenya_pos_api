@@ -5,11 +5,8 @@ The restaurant's tests of these parts moved here with the code; the wording test
 products.
 """
 
-import sys
-import types
 import unittest
 from decimal import Decimal
-from unittest.mock import patch
 
 import frappe
 
@@ -24,6 +21,7 @@ from crenya_pos_api.expenses.product import (
 )
 from crenya_pos_api.expenses.reports import expense_label
 from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS
+from crenya_pos_api.tests.stubs import restaurant_constants, stub_modules
 
 VAT = "VAT 5% - _TCP"
 CGST = "CGST - _TCP"
@@ -196,18 +194,13 @@ class TestUnregisteredRestaurant(unittest.TestCase):
 	from the installed app, so a restaurant 0.15.6 keeps working; without it nobody can ask."""
 
 	def test_without_crenya_restaurant_the_roles_fail_loudly_not_with_the_retail_rule(self):
-		with patch.dict(sys.modules, {"crenya_restaurant": None, "crenya_restaurant.constants": None}):
+		with stub_modules({"crenya_restaurant": None, "crenya_restaurant.constants": None}):
 			with self.assertRaises(RuntimeError):
 				RESTAURANT.approver_roles(None)
 		self.assertEqual(RETAIL.approver_roles(None), ("Crenya POS Manager",))
 
 	def test_with_crenya_restaurant_the_roles_are_its_void_approvers(self):
-		fake = types.ModuleType("crenya_restaurant.constants")
-		fake.VOID_APPROVER_ROLES = ("Restaurant Manager", "System Manager")
-		with patch.dict(
-			sys.modules,
-			{"crenya_restaurant": types.ModuleType("crenya_restaurant"), "crenya_restaurant.constants": fake},
-		):
+		with stub_modules(restaurant_constants(("Restaurant Manager", "System Manager"))):
 			self.assertEqual(RESTAURANT.approver_roles(None), ("Restaurant Manager", "System Manager"))
 
 	def test_the_outlet_rule_is_the_profiles_applicable_users_for_both_products(self):

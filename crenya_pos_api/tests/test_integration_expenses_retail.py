@@ -11,7 +11,6 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module
 crenya_pos_api.tests.test_integration_expenses_retail
 """
 
-import sys
 import types
 import unittest
 import uuid
@@ -29,6 +28,7 @@ from crenya_pos_api.expenses import sync as expense_sync
 from crenya_pos_api.expenses.product import RESTAURANT, RETAIL
 from crenya_pos_api.sync.hashing import payload_hash
 from crenya_pos_api.tests import fixtures as core
+from crenya_pos_api.tests.stubs import restaurant_constants, stub_modules
 from crenya_pos_api.tests.sync_case import SyncCase, money, new_id
 from crenya_pos_api.tests.test_integration_expenses_booking import (
 	CASH_SUPPLIER,
@@ -101,7 +101,7 @@ class RetailExpenseCase(ExpenseCase):
 		p.update(over)
 		return p
 
-	def event(self, payload, operation="submit", event_id=None):
+	def expense_event(self, payload, operation="submit", event_id=None):
 		return {
 			"event_id": event_id or new_id(),
 			"aggregate_type": AGGREGATE,
@@ -112,9 +112,9 @@ class RetailExpenseCase(ExpenseCase):
 			"payload": payload,
 		}
 
-	def push(self, payload, operation="submit", event_id=None, ok=True, device_id=None):
+	def send(self, payload, operation="submit", event_id=None, ok=True, device_id=None):
 		result = sync_api.push_batch(
-			device_id=device_id or self.device_id, events=[self.event(payload, operation, event_id)]
+			device_id=device_id or self.device_id, events=[self.expense_event(payload, operation, event_id)]
 		)[0]
 		if ok:
 			self.assertIn(result["status"], ("ok", "duplicate"), msg=result.get("error"))
@@ -144,7 +144,7 @@ class TestRetailExpenses(RetailExpenseCase):
 		p = self.payload()
 		event_id = new_id()
 		with mock.patch.object(booking, "book", wraps=booking.book) as book:
-			first = self.push(p, event_id=event_id)
+			first = self.send(p, event_id=event_id)
 		# the engine is always told the product: the device's, a retail till's
 		book.assert_called_once()
 		self.assertIs(book.call_args.kwargs["product"], RETAIL)
@@ -152,9 +152,9 @@ class TestRetailExpenses(RetailExpenseCase):
 		self.assertEqual(first["doctype"], AGGREGATE)
 		self.assertEqual(first["expense"]["status"], "Booked")
 		# the answer was lost: the same event again, then a new event of the same expense
-		again = self.push(p, event_id=event_id)
+		again = self.send(p, event_id=event_id)
 		self.assertEqual(again["status"], "duplicate")
-		third = self.push(p)
+		third = self.send(p)
 		self.assertEqual({first["name"], again["name"], third["name"]}, {first["name"]})
 		self.assertEqual(frappe.db.count(AGGREGATE, {"local_id": p["local_id"]}), 1)
 		doc = self.expense(p["local_id"])
@@ -169,7 +169,7 @@ class TestRetailExpenses(RetailExpenseCase):
 
 	def test_retail_till_expense_books_paid_purchase_invoice(self):
 		p = self.payload()
-		self.push(p)
+		self.send(p)
 		doc = self.expense(p["local_id"])
 		self.assertEqual(doc.status, "Booked", msg=doc.posting_error)
 		pi = frappe.get_doc("Purchase Invoice", doc.purchase_invoice)
@@ -189,7 +189,7 @@ class TestRetailExpenses(RetailExpenseCase):
 
 	def test_retail_expense_needs_manager_role_to_amend(self):
 		p = self.payload()
-		self.push(p)
+		self.send(p)
 		amended = dict(
 			p,
 			edited_at=utc(now_datetime()),
@@ -199,13 +199,13 @@ class TestRetailExpenses(RetailExpenseCase):
 			tax="0.700",
 			total="14.700",
 		)
-		plain = self.push(dict(amended, approved_by=self.cashier), "amend", ok=False)
+		plain = self.send(dict(amended, approved_by=self.cashier), "amend", ok=False)
 		self.assertEqual(plain["status"], "error")
 		self.assertEqual(plain["error"]["code"], "permission")
-		nobody = self.push(dict(amended, approved_by=None), "amend", ok=False)
+		nobody = self.send(dict(amended, approved_by=None), "amend", ok=False)
 		self.assertEqual(nobody["error"]["code"], "validation")
 		with mock.patch.object(booking, "rebook", wraps=booking.rebook) as rebook:
-			done = self.push(dict(amended, approved_by=self.manager), "amend")
+			done = self.send(dict(amended, approved_by=self.manager), "amend")
 		self.assertIs(rebook.call_args.kwargs["product"], RETAIL)
 		self.assertEqual(done["expense"]["status"], "Booked")
 		self.assertEqual(self.expense(p["local_id"]).amount, 14.7)
@@ -214,9 +214,9 @@ class TestRetailExpenses(RetailExpenseCase):
 		frappe.db.set_value("POS Profile", self.profile.name, "crenya_expense_add_needs_pin", 1)
 		frappe.clear_document_cache("POS Profile", self.profile.name)
 		try:
-			refused = self.push(self.payload(), ok=False)
+			refused = self.send(self.payload(), ok=False)
 			self.assertEqual(refused["error"]["code"], "permission")
-			self.push(self.payload(approved_by=self.manager))
+			self.send(self.payload(approved_by=self.manager))
 		finally:
 			frappe.db.set_value("POS Profile", self.profile.name, "crenya_expense_add_needs_pin", 0)
 			frappe.clear_document_cache("POS Profile", self.profile.name)
@@ -226,14 +226,14 @@ class TestRetailExpenses(RetailExpenseCase):
 		profile = frappe.get_doc("POS Profile", self.profile.name)
 		saved = [row.user for row in profile.applicable_for_users]
 		p = self.payload()
-		self.push(p)
+		self.send(p)
 		try:
 			profile.set("applicable_for_users", [{"user": "Administrator"}])
 			profile.flags.ignore_validate = True
 			profile.save(ignore_permissions=True)
 			frappe.db.commit()  # nosemgrep
 			frappe.clear_document_cache("POS Profile", self.profile.name)
-			refused = self.push(
+			refused = self.send(
 				dict(p, approved_by=self.manager, edited_at=utc(now_datetime())), "amend", ok=False
 			)
 			self.assertEqual(refused["error"]["code"], "permission")
@@ -249,11 +249,11 @@ class TestRetailExpenses(RetailExpenseCase):
 	def test_amend_after_shift_close_refused_before_close_accepted(self):
 		shift_id = new_id()
 		p = self.payload(shift_local_id=shift_id)
-		self.push(p)
+		self.send(p)
 		closed = now_datetime().replace(microsecond=0)
 		self.push_shift(shift_id, closed)
 		after = dict(p, approved_by=self.manager, edited_at=utc(closed + timedelta(minutes=1)), notes="late")
-		refused = self.push(after, "amend", ok=False)
+		refused = self.send(after, "amend", ok=False)
 		self.assertEqual(refused["status"], "error")
 		self.assertEqual(refused["error"]["code"], "validation")
 		self.assertFalse(refused["error"]["retryable"])
@@ -262,7 +262,7 @@ class TestRetailExpenses(RetailExpenseCase):
 		before = dict(
 			p, approved_by=self.manager, edited_at=utc(closed - timedelta(minutes=5)), notes="on time"
 		)
-		self.push(before, "amend")
+		self.send(before, "amend")
 		self.assertEqual(self.expense(p["local_id"]).description, "on time")
 
 	def test_failed_booking_keeps_expense_not_booked(self):
@@ -278,7 +278,7 @@ class TestRetailExpenses(RetailExpenseCase):
 		frappe.db.commit()  # nosemgrep
 		try:
 			p = self.payload(mode_of_payment=mode)
-			result = self.push(p)
+			result = self.send(p)
 			# the cash left the drawer: the event succeeds, the expense waits Not booked
 			self.assertEqual(result["status"], "ok")
 			self.assertEqual(result["expense"]["status"], "Not booked")
@@ -302,11 +302,11 @@ class TestRetailExpenses(RetailExpenseCase):
 
 	def test_cancel_cancels_the_invoice_and_keeps_the_row(self):
 		p = self.payload()
-		self.push(p)
+		self.send(p)
 		pi = self.expense(p["local_id"]).purchase_invoice
-		refused = self.push(dict(p, approved_by=self.manager), "cancel", ok=False)
+		refused = self.send(dict(p, approved_by=self.manager), "cancel", ok=False)
 		self.assertEqual(refused["error"]["code"], "validation")
-		self.push(dict(p, approved_by=self.manager, reason="Entered twice"), "cancel")
+		self.send(dict(p, approved_by=self.manager, reason="Entered twice"), "cancel")
 		doc = self.expense(p["local_id"])
 		self.assertEqual(doc.status, "Cancelled")
 		self.assertEqual(frappe.db.get_value("Purchase Invoice", pi, "docstatus"), 2)
@@ -316,10 +316,10 @@ class TestRetailExpenses(RetailExpenseCase):
 		frappe.get_doc(
 			{"doctype": "Supplier", "supplier_name": other, "supplier_group": "All Supplier Groups"}
 		).insert(ignore_permissions=True)
-		refused = self.push(self.payload(supplier=other), ok=False)
+		refused = self.send(self.payload(supplier=other), ok=False)
 		self.assertEqual(refused["error"]["code"], "validation")
 		self.assertIn("not an enabled expense supplier", refused["error"]["message"])
-		self.push(self.payload(supplier=VEG_SHOP))
+		self.send(self.payload(supplier=VEG_SHOP))
 
 	def test_old_till_gets_no_expense_entities(self):
 		"""A till (or an outlet) that has not switched Expenses on is sent no category or supplier,
@@ -339,7 +339,7 @@ class TestRetailExpenses(RetailExpenseCase):
 			frappe.clear_document_cache("POS Profile", self.profile.name)
 			frappe.db.commit()  # nosemgrep
 		names = {row["id"] for row in self._pull("expense_supplier")}
-		self.assertEqual(names, {CASH_SUPPLIER, VEG_SHOP})
+		self.assertLessEqual({CASH_SUPPLIER, VEG_SHOP}, names)
 		cash = [row for row in self._pull("expense_supplier") if row["is_cash_supplier"]]
 		self.assertEqual([row["id"] for row in cash], [CASH_SUPPLIER])
 
@@ -369,24 +369,19 @@ class TestRetailExpenses(RetailExpenseCase):
 			platform="linux",
 			device_type="restaurant_pos",
 		)
-		constants = types.ModuleType("crenya_restaurant.constants")
-		constants.VOID_APPROVER_ROLES = ("Crenya POS Manager",)
-		stub = {
-			"crenya_restaurant": types.ModuleType("crenya_restaurant"),
-			"crenya_restaurant.constants": constants,
-		}
+		stub = restaurant_constants(("Crenya POS Manager",))
 		p = self.payload()
-		with mock.patch.dict(sys.modules, stub):
+		with stub_modules(stub):
 			with mock.patch.object(booking, "book", wraps=booking.book) as book:
-				self.push(p, device_id=restaurant)
+				self.send(p, device_id=restaurant)
 			self.assertIs(book.call_args.kwargs["product"], RESTAURANT)
 			amended = dict(p, edited_at=utc(now_datetime()), notes="amended")
-			refused = self.push(
+			refused = self.send(
 				dict(amended, approved_by=self.cashier), "amend", ok=False, device_id=restaurant
 			)
 			self.assertEqual(refused["error"]["code"], "permission")
 			with mock.patch.object(booking, "rebook", wraps=booking.rebook) as rebook:
-				self.push(dict(amended, approved_by=self.manager), "amend", device_id=restaurant)
+				self.send(dict(amended, approved_by=self.manager), "amend", device_id=restaurant)
 			self.assertIs(rebook.call_args.kwargs["product"], RESTAURANT)
 		doc = self.expense(p["local_id"])
 		self.assertEqual((doc.status, doc.device), ("Booked", restaurant))

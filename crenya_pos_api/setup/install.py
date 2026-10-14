@@ -22,19 +22,27 @@ POS_USER_ROLE = "Crenya POS User"
 DEVICE_ROLE = "Crenya POS Device"
 
 # Read rights a device's user needs for ERPNext to accept a pushed sale (0.9.3). The push posts
-# for the authorised device (sync/invoice_builder.py, ignore_permissions), but two ERPNext checks
+# for the authorised device (sync/invoice_builder.py, ignore_permissions), but some ERPNext checks
 # test the session user's rights whatever the document's flags say (found by recording every
 # check a device-role-only user's push fails, 2026-10-12, v15 and v16):
 # - `erpnext.accounts.party.get_party_account` checks the party account. It runs from
 #   `_get_party_details` -> `set_account_and_due_date` on every Sales Invoice, even when debit_to
 #   is already set, so setting debit_to first does not avoid it;
-# - `erpnext.stock.get_item_details.get_item_details` checks each line's Item.
+# - `erpnext.stock.get_item_details.get_item_details` checks each line's Item;
+# - `erpnext.accounts.doctype.loyalty_program.loyalty_program.get_loyalty_program_details_with_points`
+#   checks `has_permission("Customer", doc=..., throw=True)` when a sale of a customer in a Loyalty
+#   Program is submitted (found by retail P1 Task 0, v15 and v16; 0.12.1);
+# - `erpnext.controllers.accounts_controller.get_taxes_and_charges` checks `select` on the Sales
+#   Taxes and Charges Template: a sale wholly on account is a plain (not POS) invoice, whose tax rows
+#   the builder reads with it (0.13.0).
 # {DocType: right}, read-only, never a write; granted to the roles of devices that post sales only
 # (`ensure_push_reads`).
-# Customer: ERPNext reads the customer under the pushing user's rights when a sale of a customer in a
-# Loyalty Program is submitted (`get_loyalty_program_details_with_points` -> `has_permission("Customer",
-# doc=..., throw=True)`, v15 and v16); the device role had none, so that sale was refused (0.12.1)
-PUSH_READS = {"Account": "select", "Item": "read", "Customer": "read"}
+PUSH_READS = {
+	"Account": "select",
+	"Item": "read",
+	"Customer": "read",
+	"Sales Taxes and Charges Template": "select",
+}
 
 
 def _store_control_fields():

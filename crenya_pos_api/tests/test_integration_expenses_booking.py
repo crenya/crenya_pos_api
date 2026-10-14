@@ -112,12 +112,13 @@ class ExpenseCase(SyncCase):
 
 	@classmethod
 	def setUpClass(cls):
-		super().setUpClass()
 		# erptrue_app's entitlement hook reads a plan the test site does not have: no plan, no caps
+		# (before the base class registers the device)
 		for target in (entitlement_module, device_sync):
 			patcher = patch.object(target, "get_entitlement", return_value=None)
 			patcher.start()
 			cls.addClassCleanup(patcher.stop)
+		super().setUpClass()
 		company = frappe.get_doc("Company", core.COMPANY)
 		if not frappe.db.get_single_value("Stock Settings", "stock_uom"):
 			frappe.db.set_single_value("Stock Settings", "stock_uom", "Nos")

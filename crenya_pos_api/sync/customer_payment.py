@@ -239,10 +239,19 @@ def book_payment(ctx, data, notes):
 				"due_date": row["due_date"],
 			},
 		)
-	# the device was authorised by get_device_context; a till posts only through this handler
+	# The device was authorised by get_device_context and a till posts only through this handler.
+	# ERPNext's Payment Entry code checks the session user's own right on the doctype in places no flag
+	# reaches (`get_account_details`), and a device key must not be given that right (it would list
+	# every payment): the entry is posted as Administrator for the length of the booking. The
+	# remarks name the device and the cashier.
 	doc.flags.ignore_permissions = True
-	doc.insert(ignore_permissions=True)
-	doc.submit()
+	user = frappe.session.user
+	frappe.set_user("Administrator")
+	try:
+		doc.insert(ignore_permissions=True)
+		doc.submit()
+	finally:
+		frappe.set_user(user)
 	return doc
 
 

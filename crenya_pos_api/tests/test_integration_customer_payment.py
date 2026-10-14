@@ -443,26 +443,13 @@ class TestCustomerPaymentAsDeviceUser(PaymentCase):
 			finally:
 				frappe.set_user("Administrator")
 
-		payload = self.payment(customer, "40.000")
-		result = push(payload)
-		if result["status"] != "ok":
-			import traceback
-
-			from crenya_pos_api.sync.context import get_device_context
-
-			frappe.set_user(user)
-			try:
-				ctx = get_device_context(device_id)
-				payments.book_payment(ctx, payments.validate_customer_payment_payload(payload), [])
-				trace = "no exception when called directly"
-			except Exception:
-				trace = traceback.format_exc()
-			finally:
-				frappe.db.rollback()
-				frappe.set_user("Administrator")
-			self.fail(f"{result['error']}\n{trace}")
-		booked = self.assertOk(result)
+		booked = self.assertOk(push(self.payment(customer, "40.000")))
 		self.assertEqual(
 			booked["payment"], {"allocated": "25.000", "unallocated": "15.000", "invoices": [invoice]}
 		)
-		self.assertEqual(frappe.db.get_value(PAYMENT_ENTRY, booked["name"], "owner"), user)
+		# posted as Administrator for the booking; the remarks name the device
+		remarks = frappe.db.get_value(PAYMENT_ENTRY, booked["name"], "remarks")
+		self.assertTrue(remarks.startswith(f"Received at the till {device_id} "))
+		# the device user was given no right on Payment Entry for it
+		self.assertEqual(set(frappe.get_roles(user)) - {"All", "Guest"}, {DEVICE_ROLE})
+		self.assertFalse(frappe.has_permission("Payment Entry", "read", user=user))

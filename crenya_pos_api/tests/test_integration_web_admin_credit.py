@@ -27,6 +27,7 @@ from crenya_pos_api.tests.web_admin_case import (
 	ensure_shop2,
 	ensure_user,
 )
+from crenya_pos_api.utils.dates import format_db_datetime
 
 
 def credit_limit_rows(customer):
@@ -226,7 +227,10 @@ class TestSaveCreditLimit(WebCreditCase):
 		try:
 			with self.assertRaises(frappe.PermissionError):
 				web_admin.save_credit_limit(
-					self.profile.name, outside, "10", frappe.db.get_value("Customer", outside, "modified")
+					self.profile.name,
+					outside,
+					"10",
+					format_db_datetime(frappe.db.get_value("Customer", outside, "modified")),
 				)
 		finally:
 			profile = frappe.get_doc("POS Profile", self.profile.name)

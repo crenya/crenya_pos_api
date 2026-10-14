@@ -106,7 +106,9 @@ def jpeg():
 	from PIL import Image
 
 	buffer = io.BytesIO()
-	Image.new("RGB", (40, 30), (200, 30, 30)).save(buffer, format="JPEG")
+	# a colour of its own: Frappe keeps one File per content, so another suite's photo must differ
+	colour = tuple(int(uuid.uuid4().hex[i : i + 2], 16) for i in (0, 2, 4))
+	Image.new("RGB", (40, 30), colour).save(buffer, format="JPEG")
 	return buffer.getvalue()
 
 

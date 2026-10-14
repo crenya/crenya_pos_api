@@ -588,7 +588,19 @@ class TestCreditAsDeviceUser(CreditCase):
 			payload["offline_number"] = f"OFF-{device['device_short']}-{uuid.uuid4().hex[:6]}"
 			frappe.set_user(user)
 			try:
-				return sync_api.push_batch(device_id=device_id, events=[self.event(payload)])[0]
+				result = sync_api.push_batch(device_id=device_id, events=[self.event(payload)])[0]
+				if result["status"] == "error":  # DEBUG-TEMP
+					import traceback
+
+					from crenya_pos_api.sync.context import get_device_context
+					from crenya_pos_api.sync.invoice_builder import submit_invoice
+					from crenya_pos_api.sync.validation import validate_invoice_payload
+
+					try:
+						submit_invoice(get_device_context(device_id), validate_invoice_payload(payload), [])
+					except Exception:
+						print("DEBUGTRACE " + traceback.format_exc().replace("\n", " | "))
+				return result
 			finally:
 				frappe.set_user("Administrator")
 

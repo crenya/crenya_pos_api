@@ -246,12 +246,12 @@ def book_payment(ctx, data, notes):
 	# remarks name the device and the cashier.
 	doc.flags.ignore_permissions = True
 	user = frappe.session.user
-	frappe.set_user("Administrator")
+	frappe.set_user("Administrator")  # nosemgrep  # the booking only: restored in `finally`
 	try:
 		doc.insert(ignore_permissions=True)
 		doc.submit()
 	finally:
-		frappe.set_user(user)
+		frappe.set_user(user)  # nosemgrep  # back to the device user
 	return doc
 
 

@@ -221,6 +221,9 @@ def book_payment(ctx, data, notes):
 			LOCAL_ID_FIELD: data["local_id"],
 			"reference_no": data["local_id"],
 			"reference_date": data["business_date"],
+			# ERPNext writes its own "Amount ... received from ..." over the remarks unless told these
+			# are custom: they carry the till's id (`payment_for_local_id` reads the device from them)
+			"custom_remarks": 1,
 			"remarks": _remarks(ctx, data, cashier),
 		}
 	)

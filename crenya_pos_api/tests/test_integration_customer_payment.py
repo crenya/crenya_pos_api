@@ -443,7 +443,25 @@ class TestCustomerPaymentAsDeviceUser(PaymentCase):
 			finally:
 				frappe.set_user("Administrator")
 
-		booked = self.assertOk(push(self.payment(customer, "40.000")))
+		payload = self.payment(customer, "40.000")
+		result = push(payload)
+		if result["status"] != "ok":
+			import traceback
+
+			from crenya_pos_api.sync.context import get_device_context
+
+			frappe.set_user(user)
+			try:
+				ctx = get_device_context(device_id)
+				payments.book_payment(ctx, payments.validate_customer_payment_payload(payload), [])
+				trace = "no exception when called directly"
+			except Exception:
+				trace = traceback.format_exc()
+			finally:
+				frappe.db.rollback()
+				frappe.set_user("Administrator")
+			self.fail(f"{result['error']}\n{trace}")
+		booked = self.assertOk(result)
 		self.assertEqual(
 			booked["payment"], {"allocated": "25.000", "unallocated": "15.000", "invoices": [invoice]}
 		)

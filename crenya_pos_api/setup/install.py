@@ -3,6 +3,7 @@
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from crenya_pos_api.expenses.fields import EXPENSE_PROFILE_FIELDS
 from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS, APPROVER_ROLE, MAX_DISCOUNT_FIELD
 from crenya_pos_api.sync.tax_wording import (
 	DEFAULT_CREDIT_NOTE_TITLE,
@@ -234,6 +235,8 @@ CUSTOM_FIELDS = {
 			"insert_after": "crenya_scale_section",
 		},
 		*STORE_CONTROL_FIELDS,
+		# the outlet's expense settings, shared with the restaurant (expenses/fields.py)
+		*EXPENSE_PROFILE_FIELDS,
 	],
 	"Company": [
 		{

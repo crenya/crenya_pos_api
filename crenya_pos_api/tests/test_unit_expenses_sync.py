@@ -143,6 +143,27 @@ RESTAURANT_0_15_6 = {
 }
 
 
+class TestExpensePullsForAnOffOutlet(unittest.TestCase):
+	"""A retail outlet with Expenses off is told of no record and no deleted record either."""
+
+	def ctx(self, device_type, enabled):
+		profile = {"crenya_expenses_enabled": enabled}
+		return mock.Mock(
+			device_type=device_type,
+			profile=mock.Mock(get=lambda key, default=None: profile.get(key, default)),
+		)
+
+	def test_no_tombstones_while_a_retail_outlet_has_expenses_off(self):
+		for spec in (ExpenseCategorySpec(), ExpenseSupplierSpec()):
+			self.assertFalse(spec.sends_tombstones(self.ctx("till", 0)))
+			self.assertTrue(spec.sends_tombstones(self.ctx("till", 1)))
+			# a restaurant outlet's pulls are what they were
+			self.assertTrue(spec.sends_tombstones(self.ctx("restaurant_pos", 0)))
+
+	def test_other_entities_keep_theirs(self):
+		self.assertTrue(ENTITIES["item"].sends_tombstones(self.ctx("till", 0)))
+
+
 class TestOlderRestaurant(unittest.TestCase):
 	def setUp(self):
 		registry._logged_duplicates.clear()

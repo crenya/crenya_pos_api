@@ -101,6 +101,11 @@ class EntitySpec:
 	def cursor_scope(self, ctx):
 		return None
 
+	def sends_tombstones(self, ctx):
+		"""Whether the device is told of deleted records (default yes); an entity withheld from a
+		device sends it no tombstone either."""
+		return True
+
 	def excluded(self, row):
 		return False
 
@@ -738,6 +743,9 @@ class ExpenseCategorySpec(EntitySpec):
 	def cursor_scope(self, ctx):
 		return EXPENSE_OFF_SCOPE if _retail_off(ctx) else None
 
+	def sends_tombstones(self, ctx):
+		return not _retail_off(ctx)
+
 
 class ExpenseSupplierSpec(EntitySpec):
 	"""The outlet's expense suppliers: the enabled Suppliers of its supplier group, and its Cash
@@ -778,6 +786,9 @@ class ExpenseSupplierSpec(EntitySpec):
 		if _retail_off(ctx):
 			key = f"{EXPENSE_OFF_SCOPE}|{key}"
 		return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+	def sends_tombstones(self, ctx):
+		return not _retail_off(ctx)
 
 
 # built-in entities; crenya_pos_api.sync.registry.entities() adds those of other apps
@@ -929,7 +940,10 @@ def pull_changes(ctx, entity, cursor_token=None, limit=None):
 		)
 
 	rows, records_more = _fetch_records(spec, ctx, cursor, upper, limit)
-	tomb_rows, tombs_more = _fetch_tombstones(spec.doctype, cursor, upper, limit)
+	# an entity withheld from this device (a retail outlet with Expenses off) names no deleted record
+	tomb_rows, tombs_more = (
+		_fetch_tombstones(spec.doctype, cursor, upper, limit) if spec.sends_tombstones(ctx) else ([], False)
+	)
 
 	stock_modified, stock_name, stock_rows, stock_more = None, None, [], False
 	if spec.follows_stock:

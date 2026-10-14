@@ -11,6 +11,8 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module
 crenya_pos_api.tests.test_integration_expenses_retail
 """
 
+import base64
+import hashlib
 import types
 import unittest
 import uuid
@@ -22,6 +24,7 @@ import frappe
 from frappe.utils import add_to_date, now_datetime, nowdate
 
 from crenya_pos_api.api import device as device_api
+from crenya_pos_api.api import expenses as expenses_api
 from crenya_pos_api.api import sync as sync_api
 from crenya_pos_api.expenses import booking
 from crenya_pos_api.expenses import sync as expense_sync
@@ -37,6 +40,7 @@ from crenya_pos_api.tests.test_integration_expenses_booking import (
 	VEG_SHOP,
 	ExpenseCase,
 	cash_account,
+	jpeg,
 )
 
 AGGREGATE = "POS Expense"
@@ -321,7 +325,7 @@ class TestRetailExpenses(RetailExpenseCase):
 		self.assertIn("not an enabled expense supplier", refused["error"]["message"])
 		self.send(self.payload(supplier=VEG_SHOP))
 
-	def test_old_till_gets_no_expense_entities(self):
+	def test_pulls_are_empty_while_the_outlet_switch_is_off(self):
 		"""A till (or an outlet) that has not switched Expenses on is sent no category or supplier,
 		and its bootstrap says why; switching on sends them once."""
 		self.assertTrue(self._pull("expense_category"))
@@ -342,6 +346,30 @@ class TestRetailExpenses(RetailExpenseCase):
 		self.assertLessEqual({CASH_SUPPLIER, VEG_SHOP}, names)
 		cash = [row for row in self._pull("expense_supplier") if row["is_cash_supplier"]]
 		self.assertEqual([row["id"] for row in cash], [CASH_SUPPLIER])
+
+	def test_a_cursor_taken_while_off_sends_everything_once_switched_on(self):
+		"""The cursor scope changes with the switch: a till that pulled while it was off gets the
+		categories and suppliers the moment it is on, without a manual re-pull."""
+		cursors = {}
+		frappe.db.set_value("POS Profile", self.profile.name, "crenya_expenses_enabled", 0)
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		try:
+			for entity in ("expense_category", "expense_supplier"):
+				page = sync_api.pull_changes(device_id=self.device_id, entity=entity, limit=1)
+				self.assertEqual((page["records"], page["has_more"]), ([], False))
+				cursors[entity] = page["next_cursor"]
+		finally:
+			frappe.db.set_value("POS Profile", self.profile.name, "crenya_expenses_enabled", 1)
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+			frappe.db.commit()  # nosemgrep
+		for entity, cursor in cursors.items():
+			records, _cursor, _pages = self._pull_all(entity, 100, cursor=cursor)
+			self.assertTrue(records, msg=entity)
+		ids = {
+			row["id"]
+			for row in self._pull_all("expense_category", 100, cursor=cursors["expense_category"])[0]
+		}
+		self.assertIn(GAS, ids)
 
 	def _pull(self, entity):
 		return self._pull_all(entity, 100)[0]
@@ -388,6 +416,127 @@ class TestRetailExpenses(RetailExpenseCase):
 		self.assertIs(
 			expense_sync.product_of_device(types.SimpleNamespace(device_type="restaurant_pos")), RESTAURANT
 		)
+
+
+class TestRetailExpensePhoto(RetailExpenseCase):
+	"""The bill photo method (`api.expenses.attach_photo`): its limits and its idempotency."""
+
+	@classmethod
+	def setUpClass(cls):
+		frappe.set_user("Administrator")
+		if not booking.expenses_supported():
+			raise unittest.SkipTest("erptrue_app's POS Expense with the till fields is not installed")
+		super().setUpClass()
+
+	def attach(self, local_id, content, sha=None, device_id=None):
+		return expenses_api.attach_photo(
+			device_id=device_id or self.device_id,
+			local_id=local_id,
+			photo=base64.b64encode(content).decode(),
+			sha256=sha or hashlib.sha256(content).hexdigest(),
+		)
+
+	def booked(self):
+		payload = self.payload()
+		self.send(payload)
+		return payload["local_id"]
+
+	def files(self, local_id):
+		name = frappe.db.get_value(AGGREGATE, {"local_id": local_id}, "name")
+		return frappe.get_all(
+			"File",
+			filters={"attached_to_doctype": AGGREGATE, "attached_to_name": name, "is_private": 1},
+			pluck="name",
+		)
+
+	def test_a_photo_is_attached_once_and_the_same_photo_again_changes_nothing(self):
+		local_id = self.booked()
+		content = jpeg()
+		first = self.attach(local_id, content)
+		self.assertIs(first["already"], False)
+		self.assertTrue(first["file"].startswith("/private/files/"))
+		again = self.attach(local_id, content)
+		self.assertEqual((again["already"], again["file"]), (True, first["file"]))
+		self.assertEqual(len(self.files(local_id)), 1)
+		# it is on the Purchase Invoice too, once
+		doc = self.expense(local_id)
+		self.assertEqual(
+			frappe.db.count(
+				"File",
+				{
+					"file_url": first["file"],
+					"attached_to_doctype": "Purchase Invoice",
+					"attached_to_name": doc.purchase_invoice,
+				},
+			),
+			1,
+		)
+
+	def test_another_photo_replaces_it(self):
+		local_id = self.booked()
+		first = self.attach(local_id, jpeg())
+		second = self.attach(local_id, jpeg())
+		self.assertIs(second["already"], False)
+		self.assertNotEqual(second["file"], first["file"])
+		self.assertEqual(self.expense(local_id).photo, second["file"])
+
+	def test_a_photo_over_one_mib_is_refused(self):
+		local_id = self.booked()
+		big = b"\xff\xd8\xff" + b"0" * (booking.PHOTO_MAX_BYTES + 1 - 3)
+		self.assertEqual(len(big), booking.PHOTO_MAX_BYTES + 1)
+		with self.assertRaises(frappe.ValidationError):
+			self.attach(local_id, big)
+		self.assertEqual(self.files(local_id), [])
+
+	def test_only_a_jpeg_is_taken(self):
+		import io
+
+		from PIL import Image
+
+		local_id = self.booked()
+		buffer = io.BytesIO()
+		Image.new("RGB", (20, 20), (1, 2, 3)).save(buffer, format="PNG")
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self.attach(local_id, buffer.getvalue())
+		self.assertIn("JPEG", str(caught.exception))
+		with self.assertRaises(frappe.ValidationError):
+			self.attach(local_id, b"not an image at all")
+
+	def test_a_wrong_sha256_is_refused(self):
+		local_id = self.booked()
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self.attach(local_id, jpeg(), sha="0" * 64)
+		self.assertIn("sha256", str(caught.exception))
+		self.assertEqual(self.files(local_id), [])
+
+	def test_an_expense_of_another_outlet_is_refused(self):
+		local_id = self.booked()
+		name = frappe.db.get_value(AGGREGATE, {"local_id": local_id}, "name")
+		frappe.db.set_value(AGGREGATE, name, "outlet", "_Test Crenya Another Outlet")
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				self.attach(local_id, jpeg())
+		finally:
+			frappe.db.set_value(AGGREGATE, name, "outlet", self.profile.name)
+
+	def test_an_unknown_expense_is_refused(self):
+		with self.assertRaises(frappe.ValidationError):
+			self.attach("EXP-NOPE", jpeg())
+
+	def test_a_kitchen_display_may_not_attach_photos(self):
+		local_id = self.booked()
+		kds = new_id()
+		device_api.register_device(
+			device_id=kds,
+			device_name="Kitchen display",
+			pos_profile=self.profile.name,
+			app_version="0.7.0",
+			platform="linux",
+			device_type="kds",
+		)
+		with self.assertRaises(frappe.PermissionError):
+			self.attach(local_id, jpeg(), device_id=kds)
+		self.assertEqual(self.files(local_id), [])
 
 
 class TestRetailExpensesOff(SyncCase):

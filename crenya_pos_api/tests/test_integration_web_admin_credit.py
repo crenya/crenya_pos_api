@@ -279,6 +279,16 @@ class TestCreditPageForAccountants(WebCreditCase):
 		with self.assertRaises(frappe.PermissionError):
 			web_admin.credit_customers(self.profile.name)
 
+	def test_an_accounts_manager_reads_loyalty_only_for_a_company_they_may_use(self):
+		self.allow_company(ACCOUNTS, "_Test Crenya Other Company")
+		frappe.set_user(ACCOUNTS)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.loyalty_programs(self.profile.name)
+		frappe.set_user("Administrator")
+		self.allow_company(ACCOUNTS, fixtures.COMPANY)
+		frappe.set_user(ACCOUNTS)
+		self.assertIn("rows", web_admin.loyalty_programs(self.profile.name))
+
 	def test_a_restaurant_outlet_is_not_a_shop(self):
 		frappe.set_user(ACCOUNTS)
 		with self.assertRaises(frappe.PermissionError):

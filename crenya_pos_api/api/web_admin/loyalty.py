@@ -14,7 +14,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, getdate, today
 
-from crenya_pos_api.api.web_admin.scope import manage, shop_profiles
+from crenya_pos_api.api.web_admin.scope import manage, shop_profiles, user_may_use_company
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.utils.dates import format_date, format_db_datetime
 from crenya_pos_api.utils.decimal import format_money, format_number
@@ -42,10 +42,14 @@ def _can_edit() -> bool:
 
 def _context(outlet):
 	"""The shop's WebAdminContext for a manager of it (`manage`) or an Accounts Manager of any shop;
-	frappe.PermissionError otherwise. From a browser session only."""
+	frappe.PermissionError otherwise. From a browser session only; an Accounts Manager only for a
+	company they may use (a User Permission on Company is honoured)."""
 	require_web_session()
 	if "Accounts Manager" in frappe.get_roles() and isinstance(outlet, str) and shop_profiles(outlet):
-		return WebAdminContext(frappe.session.user, outlet)
+		ctx = WebAdminContext(frappe.session.user, outlet)
+		if not user_may_use_company(ctx.company):
+			raise frappe.PermissionError
+		return ctx
 	return manage(outlet)
 
 

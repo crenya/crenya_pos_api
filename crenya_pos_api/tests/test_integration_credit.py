@@ -604,3 +604,35 @@ class TestCreditAsDeviceUser(CreditCase):
 		over = self.assertOk(push(self.on_account_sale(customer, "100.000")))
 		self.assertEqual(frappe.db.get_value("Sales Invoice", over["name"], "owner"), user)
 		self.assertOk(push(self.sale_payload(lines=[(fixtures.MILK, "2", "0.600")], customer=customer)))
+
+
+class TestApprovalsContract(CreditCase):
+	"""With credit sales on, the till's bootstrap always carries the approvals block with the credit
+	actions under exactly these keys and the site's approver roles (golden)."""
+
+	def test_credit_approvals_block_golden(self):
+		fields = ("crenya_approve_credit_over_limit", "crenya_approve_credit_sale")
+		saved = frappe.db.get_value("POS Profile", self.profile.name, list(fields), as_dict=True)
+		self.addCleanup(frappe.clear_document_cache, "POS Profile", self.profile.name)
+		self.addCleanup(frappe.db.set_value, "POS Profile", self.profile.name, saved)
+		for over, sale in ((1, 0), (1, 1), (0, 0)):
+			frappe.db.set_value(
+				"POS Profile", self.profile.name, dict(zip(fields, (over, sale), strict=True))
+			)
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+			block = device_api.get_bootstrap(device_id=self.device_id)["approvals"]
+			self.assertEqual(block["approver_roles"], ["Crenya POS Manager"])
+			self.assertEqual(
+				[(row["action"], row["label"], row["label_ar"]) for row in block["labels"]],
+				[
+					("credit_over_limit", "Sell on account over the limit", "بيع آجل فوق الحد"),
+					("credit_sale", "Sell on account", "بيع بالآجل"),
+				],
+			)
+			self.assertEqual("credit_over_limit" in block["required"], bool(over))
+			self.assertEqual("credit_sale" in block["required"], bool(sale))
+		self.set_switch(0)
+		try:
+			self.assertNotIn("labels", device_api.get_bootstrap(device_id=self.device_id)["approvals"])
+		finally:
+			self.set_switch(1)

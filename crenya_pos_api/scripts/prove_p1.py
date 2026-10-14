@@ -218,6 +218,10 @@ def setup():
 	frappe.db.set_single_value("System Settings", "currency_precision", "3")
 	frappe.db.set_default("currency_precision", "3")
 	frappe.clear_cache()
+	# what `bench run-tests` does first: the site's setup wizard data (warehouse types, fiscal years)
+	for hook in frappe.get_hooks("before_tests"):
+		frappe.get_attr(hook)()
+	frappe.db.commit()  # nosemgrep
 	profile = fx.setup_fixtures()
 	company = frappe.get_doc("Company", fx.COMPANY)
 	Ctx.profile = profile

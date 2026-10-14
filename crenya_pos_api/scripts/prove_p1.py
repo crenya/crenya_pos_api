@@ -147,7 +147,14 @@ def sales_invoice(cust, pos, paid=None, qty=10, rate=10, days_ago=0, ret_against
 			"taxes",
 			{
 				k: row.get(k)
-				for k in ("charge_type", "account_head", "description", "rate", "included_in_print_rate", "cost_center")
+				for k in (
+					"charge_type",
+					"account_head",
+					"description",
+					"rate",
+					"included_in_print_rate",
+					"cost_center",
+				)
 			},
 		)
 	if ret_against:
@@ -222,14 +229,10 @@ def setup():
 	frappe.db.commit()
 	roles = sorted(frappe.get_roles(Ctx.device_user))
 	print(f"SETUP frappe={frappe.__version__} device_user={Ctx.device_user} roles={roles}", flush=True)
-	print(
-		"SETUP erpnext=%s precision=%s"
-		% (
-			__import__("erpnext").__version__,
-			frappe.db.get_single_value("System Settings", "currency_precision"),
-		),
-		flush=True,
-	)
+	import erpnext
+
+	precision = frappe.db.get_single_value("System Settings", "currency_precision")
+	print(f"SETUP erpnext={erpnext.__version__} precision={precision}", flush=True)
 
 
 # ---- steps ----
@@ -241,7 +244,7 @@ def step1_shapes():
 	cash = post(sales_invoice(customer("cashref"), pos=True, paid=100), Ctx.device_user)
 	a = post(sales_invoice(cust, pos=True, paid=40), Ctx.device_user)
 	b = post(sales_invoice(cust, pos=False), Ctx.device_user)
-	from erpnext.accounts.utils import get_balance_on  # noqa: F401
+	from erpnext.accounts.utils import get_balance_on
 	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
 
 	cust_out = get_customer_outstanding(cust, fx.COMPANY)
@@ -321,7 +324,6 @@ def step2_limit():
 	report("2b", bool(waived), waiver="over-limit credit sale inside the waiver", posted=waived, error=err)
 
 	# the customer is now over the limit: a cash sale to them
-	over = flt(frappe.db.get_value("Sales Invoice", waived, "grand_total"), 3) if waived else 0
 	cash_refused = _crossing_cash(cust, Ctx.device_user)
 	report(
 		"2c",
@@ -330,12 +332,19 @@ def step2_limit():
 		refused=bool(cash_refused),
 		message=cash_refused,
 	)
+
 	def waived_cash():
 		with credit_limit_waived():
 			return post(sales_invoice(cust, pos=True, paid=20, qty=2), Ctx.device_user)
 
 	doc, err = attempt(waived_cash)
-	report("2d", bool(doc), waiver="cash sale to over-limit customer inside the waiver", posted=doc and doc.name, error=err)
+	report(
+		"2d",
+		bool(doc),
+		waiver="cash sale to over-limit customer inside the waiver",
+		posted=doc and doc.name,
+		error=err,
+	)
 
 	leaked = _crossing(cust, Ctx.device_user)
 	report(
@@ -349,9 +358,9 @@ def step2_limit():
 	# fallback: the device user is given the Accounts Settings Credit Controller role
 	try:
 		if not frappe.db.exists("Role", "_TC Credit Controller"):
-			frappe.get_doc({"doctype": "Role", "role_name": "_TC Credit Controller", "desk_access": 0}).insert(
-				ignore_permissions=True
-			)
+			frappe.get_doc(
+				{"doctype": "Role", "role_name": "_TC Credit Controller", "desk_access": 0}
+			).insert(ignore_permissions=True)
 		frappe.db.set_single_value("Accounts Settings", "credit_controller", "_TC Credit Controller")
 		user = frappe.get_doc("User", Ctx.device_user)
 		user.append("roles", {"role": "_TC Credit Controller"})
@@ -433,14 +442,10 @@ def step3_receipt():
 	a = post(sales_invoice(cust, pos=True, paid=40, days_ago=1), Ctx.device_user)  # outstanding 60.000
 	b = post(sales_invoice(cust, pos=False, qty=5), Ctx.device_user)  # outstanding 50.000
 	before = (m(outstanding(a.name)), m(outstanding(b.name)))
-	pe, rows = _receive(cust, 70)
+	pe, _rows = _receive(cust, 70)
 	after = (m(outstanding(a.name)), m(outstanding(b.name)))
 	order = [r.reference_name for r in pe.references]
-	ok = (
-		after == ("0.000", "40.000")
-		and order == [a.name, b.name]
-		and flt(pe.unallocated_amount, 3) == 0
-	)
+	ok = after == ("0.000", "40.000") and order == [a.name, b.name] and flt(pe.unallocated_amount, 3) == 0
 	report(
 		"3a",
 		ok,
@@ -476,9 +481,7 @@ def step4_return():
 	before = outstanding(orig_a.name)
 	frappe.db.savepoint("step4a")
 	try:
-		ret = post(
-			sales_invoice(cust, pos=True, qty=-3, ret_against=orig_a.name), Ctx.device_user
-		)
+		ret = post(sales_invoice(cust, pos=True, qty=-3, ret_against=orig_a.name), Ctx.device_user)
 		report(
 			"4a",
 			flt(before, 3) - flt(outstanding(orig_a.name), 3) == 30,
@@ -491,7 +494,9 @@ def step4_return():
 		)
 	except Exception as e:
 		frappe.db.rollback(save_point="step4a")
-		report("4a", False, case="is_pos=1 return without payment rows", error=str(e).replace("\n", " ")[:200])
+		report(
+			"4a", False, case="is_pos=1 return without payment rows", error=str(e).replace("\n", " ")[:200]
+		)
 		# the shape the plan falls back to: is_pos=0
 		orig_a = post(sales_invoice(cust, pos=True, paid=40), Ctx.device_user)
 		before = outstanding(orig_a.name)
@@ -507,9 +512,7 @@ def step4_return():
 	# (b) partial refund 10.000
 	orig_b = post(sales_invoice(cust, pos=True, paid=40), Ctx.device_user)
 	before_b = outstanding(orig_b.name)
-	ret_b = post(
-		sales_invoice(cust, pos=True, paid=-10, qty=-3, ret_against=orig_b.name), Ctx.device_user
-	)
+	ret_b = post(sales_invoice(cust, pos=True, paid=-10, qty=-3, ret_against=orig_b.name), Ctx.device_user)
 	drop = flt(before_b, 3) - flt(outstanding(orig_b.name), 3)
 	report(
 		"4b",
@@ -539,15 +542,9 @@ def _points(name):
 @guarded("5")
 def step5_loyalty():
 	cust = customer("loyalty", limit=1000, loyalty=fx.LOYALTY_PROGRAM)
-	paid = post(
-		sales_invoice(cust, pos=True, paid=100, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user
-	)
-	partial = post(
-		sales_invoice(cust, pos=True, paid=40, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user
-	)
-	credit = post(
-		sales_invoice(cust, pos=False, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user
-	)
+	paid = post(sales_invoice(cust, pos=True, paid=100, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user)
+	partial = post(sales_invoice(cust, pos=True, paid=40, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user)
+	credit = post(sales_invoice(cust, pos=False, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user)
 	pp, pt, pc = _points(paid.name), _points(partial.name), _points(credit.name)
 	report(
 		"5",
@@ -594,36 +591,46 @@ def step6_expenses():
 		}.items()
 		if not v
 	]
-	print(f"STEP6 profile={profile.name} retail(no crenya_restaurant_mode)=True missing_on_bare_ci_site={missing}")
+	print(
+		f"STEP6 profile={profile.name} retail(no crenya_restaurant_mode)=True missing_on_bare_ci_site={missing}"
+	)
 	# the bare CI site has no supplier and no purchase VAT template: make them (rolled back) so the
 	# posting itself is proven; on a customer site the setup check reports them (restaurant Task 4)
 	if not supplier:
-		supplier = frappe.get_doc(
-			{
-				"doctype": "Supplier",
-				"supplier_name": "_TC P1 Cash Supplier",
-				"supplier_group": frappe.db.get_value("Supplier Group", {"is_group": 0}, "name")
-				or frappe.db.get_value("Supplier Group", {}, "name"),
-			}
-		).insert(ignore_permissions=True).name
+		supplier = (
+			frappe.get_doc(
+				{
+					"doctype": "Supplier",
+					"supplier_name": "_TC P1 Cash Supplier",
+					"supplier_group": frappe.db.get_value("Supplier Group", {"is_group": 0}, "name")
+					or frappe.db.get_value("Supplier Group", {}, "name"),
+				}
+			)
+			.insert(ignore_permissions=True)
+			.name
+		)
 	if not tax:
-		tax = frappe.get_doc(
-			{
-				"doctype": "Purchase Taxes and Charges Template",
-				"title": "_TC P1 Input VAT 5%",
-				"company": profile.company,
-				"taxes": [
-					{
-						"category": "Total",
-						"add_deduct_tax": "Add",
-						"charge_type": "On Net Total",
-						"account_head": fx.VAT_ACCOUNT,
-						"description": "VAT 5%",
-						"rate": 5,
-					}
-				],
-			}
-		).insert(ignore_permissions=True).name
+		tax = (
+			frappe.get_doc(
+				{
+					"doctype": "Purchase Taxes and Charges Template",
+					"title": "_TC P1 Input VAT 5%",
+					"company": profile.company,
+					"taxes": [
+						{
+							"category": "Total",
+							"add_deduct_tax": "Add",
+							"charge_type": "On Net Total",
+							"account_head": fx.VAT_ACCOUNT,
+							"description": "VAT 5%",
+							"rate": 5,
+						}
+					],
+				}
+			)
+			.insert(ignore_permissions=True)
+			.name
+		)
 	pi = frappe.new_doc("Purchase Invoice")
 	pi.update(
 		{
@@ -675,7 +682,10 @@ def step6_expenses():
 	vat_debit = sum(d for a_, d, c in entries if a_ == row.account_head)
 	report(
 		"6",
-		m(pi.grand_total) == "10.500" and m(cash_credit) == "10.500" and m(exp_debit) == "10.000" and m(vat_debit) == "0.500",
+		m(pi.grand_total) == "10.500"
+		and m(cash_credit) == "10.500"
+		and m(exp_debit) == "10.000"
+		and m(vat_debit) == "0.500",
 		grand_total=m(pi.grand_total),
 		cash_credit=m(cash_credit),
 		expense_debit=m(exp_debit),

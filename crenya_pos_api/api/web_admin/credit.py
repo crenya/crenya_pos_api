@@ -1,6 +1,6 @@
 """A shop's credit customers on app.crenya.com: who has a credit limit or a balance, who is over the
 limit, and the limit's edit. From a browser session only (`require_web_session`, inside `scope`), for
-a user who may use the shop's company (`scope.manage_company`).
+a user who may use the shop's company (`credit_view`).
 
 ERPNext stays the authority: the limit is the Customer's own *Credit Limit* row for the shop's
 company, else its Customer Group's, else the Company's (`sync.credit`), and the balance
@@ -8,9 +8,12 @@ company, else its Customer Group's, else the Company's (`sync.credit`), and the 
 "No limit" (`credit_limit` null). Every row says where its limit comes from (`limit_source`):
 clearing a customer's own limit does not mean "no limit" when the group or the company has one.
 
-Reading is for the shop's managers. **Changing a limit is for a System Manager or an Accounts
-Manager only** (founder decision 2026-10-14): the manager who approves an over-limit sale at the
-till does not set the limit that approval is measured against.
+Reading is for the shop's managers and for a System Manager or an Accounts Manager, who need not
+be a Crenya POS Manager of the shop: for them the boundary is the company (a User Permission on
+Company is honoured; none means every company). **Changing a limit is for a System Manager or an
+Accounts Manager only** (founder decisions 2026-10-14): the manager who approves an over-limit sale
+at the till does not set the limit that approval is measured against. `credit_shops` lists the
+shops a user may open the Credit page of.
 """
 
 from decimal import Decimal
@@ -21,13 +24,9 @@ from frappe.query_builder import Order
 from frappe.query_builder.functions import Count, Sum
 from frappe.utils import cint
 
-from crenya_pos_api.api.web_admin.scope import (
-	manage_company,
-	shop_profiles,
-	user_may_use_company,
-)
+from crenya_pos_api.api.web_admin.scope import manages, shop_profiles, user_may_use_company
 from crenya_pos_api.sync.context import money_precision, profile_users
-from crenya_pos_api.sync.credit import customer_credit_limit_sources, customer_in_outlet
+from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, customer_credit_limit_sources, customer_in_outlet
 from crenya_pos_api.utils.dates import format_db_datetime
 from crenya_pos_api.utils.decimal import (
 	DecimalParseError,
@@ -208,7 +207,7 @@ def credit_customers(outlet: str) -> dict:
 	limit is the customer's own, its group's or the company's. At most MAX_CREDIT_ROWS rows;
 	`more` says the list was cut. `can_edit`: the user may change limits (System Manager or Accounts
 	Manager)."""
-	ctx = manage_company(outlet)
+	ctx = credit_view(outlet)
 	rows, more = credit_rows(ctx)
 	return {
 		"outlet": ctx.outlet,
@@ -223,23 +222,64 @@ def _is_credit_editor() -> bool:
 	return bool(set(frappe.get_roles()) & set(CREDIT_EDITOR_ROLES))
 
 
-def credit_editor(outlet) -> WebAdminContext:
-	"""The context of a shop whose credit limits the session user may change: a System Manager or an
-	Accounts Manager (Crenya POS Manager is not enough), who works at the shop (a System Manager at
-	every one) and may use its company. frappe.PermissionError otherwise."""
+def credit_view(outlet) -> WebAdminContext:
+	"""The context of a shop whose Credit page the session user may open: a manager of the shop, or a
+	System Manager or an Accounts Manager (who need not be a Crenya POS Manager), in every case
+	only for a company they may use (User Permission on Company). From a browser session only.
+	frappe.PermissionError otherwise, for a restaurant outlet and an unknown one too."""
 	require_web_session()
-	if not _is_credit_editor():
-		refuse(_("Credit limits are changed by a System Manager or an Accounts Manager"))
 	if not outlet or not isinstance(outlet, str) or not shop_profiles(outlet):
 		raise frappe.PermissionError
 	user = frappe.session.user
 	ctx = WebAdminContext(user, outlet)
-	users = set(profile_users(ctx.profile))
-	if "System Manager" not in frappe.get_roles(user) and users and user not in users:
+	roles = set(frappe.get_roles(user))
+	if not (roles & set(CREDIT_EDITOR_ROLES)) and not manages(roles, user, set(profile_users(ctx.profile))):
 		raise frappe.PermissionError
 	if not user_may_use_company(ctx.company):
 		raise frappe.PermissionError
 	return ctx
+
+
+def credit_editor(outlet) -> WebAdminContext:
+	"""`credit_view` for a user who may change the shop's limits: a System Manager or an Accounts
+	Manager (Crenya POS Manager is not enough). frappe.PermissionError otherwise."""
+	require_web_session()
+	if not _is_credit_editor():
+		refuse(_("Credit limits are changed by a System Manager or an Accounts Manager"))
+	return credit_view(outlet)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def credit_shops() -> dict:
+	"""The shops the session user may open the Credit page of: {"shops": [{name, outlet_name,
+	company, currency, credit_view: true, credit_enabled, can_edit}]}, by name. A System Manager or
+	an Accounts Manager gets every shop of the companies they may use (a User Permission on Company
+	is honoured; none means all), a Crenya POS Manager the shops they manage (read only: `can_edit`
+	false), a cashier none. Unlike `outlets`, a shop is listed without the user managing it, so the
+	web shows the Credit tab to an accountant who cannot open the shop's other pages."""
+	require_web_session()
+	user = frappe.session.user
+	roles = set(frappe.get_roles(user))
+	editor = bool(roles & set(CREDIT_EDITOR_ROLES))
+	shops = []
+	for row in shop_profiles():
+		profile = frappe.get_cached_doc("POS Profile", row.name)
+		if not (editor or manages(roles, user, set(profile_users(profile)))):
+			continue
+		if not user_may_use_company(row.company):
+			continue
+		shops.append(
+			{
+				"name": row.name,
+				"outlet_name": row.name,
+				"company": row.company,
+				"currency": frappe.get_cached_value("Company", row.company, "default_currency"),
+				"credit_view": True,
+				"credit_enabled": bool(cint(profile.get(CREDIT_SALES_FIELD))),
+				"can_edit": editor,
+			}
+		)
+	return {"shops": shops}
 
 
 def parse_limit(value, precision) -> Decimal | None:

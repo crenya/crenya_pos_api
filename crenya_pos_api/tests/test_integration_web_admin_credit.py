@@ -21,6 +21,7 @@ from crenya_pos_api.tests.test_integration_credit import CreditCase, make_custom
 from crenya_pos_api.tests.web_admin_case import (
 	CASHIER,
 	MANAGER,
+	SHOP2,
 	SHOP2_CASHIER,
 	SHOP2_MANAGER,
 	ensure_shop2,
@@ -99,10 +100,13 @@ class TestCreditCustomers(WebCreditCase):
 		self.assertLess(names.index(over), names.index(free))
 
 	def test_cashier_and_other_shops_manager_refused(self):
-		for user in (CASHIER, SHOP2_MANAGER):
-			frappe.set_user(user)
-			with self.assertRaises(frappe.PermissionError, msg=user):
-				web_admin.credit_customers(self.profile.name)
+		frappe.set_user(CASHIER)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.credit_customers(self.profile.name)
+		# shop 2 lists its own users: this shop's manager does not manage it
+		self.as_manager()
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.credit_customers(SHOP2)
 
 	def test_a_key_is_refused(self):
 		customer = make_customer("webkey", limit=100)
@@ -192,10 +196,12 @@ class TestSaveCreditLimit(WebCreditCase):
 	def test_only_a_manager_of_the_shop_and_only_its_customers(self):
 		customer = make_customer("webscope", limit=75)
 		modified = self.modified(customer)
-		for user in (CASHIER, SHOP2_MANAGER):
-			frappe.set_user(user)
-			with self.assertRaises(frappe.PermissionError, msg=user):
-				web_admin.save_credit_limit(self.profile.name, customer, "10", modified)
+		frappe.set_user(CASHIER)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.save_credit_limit(self.profile.name, customer, "10", modified)
+		self.as_manager()
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.save_credit_limit(SHOP2, customer, "10", modified)
 		# a customer outside the shop's customer groups
 		self.as_manager()
 		outside = fixtures.make_customer(f"_TC web outside {new_id()[:6]}")

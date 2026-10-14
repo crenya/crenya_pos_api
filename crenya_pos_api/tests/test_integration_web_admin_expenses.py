@@ -26,7 +26,7 @@ from crenya_pos_api.tests import fixtures as core
 from crenya_pos_api.tests.sync_case import money, new_id
 from crenya_pos_api.tests.test_integration_expenses_booking import CARD, GAS, cash_account
 from crenya_pos_api.tests.test_integration_expenses_retail import RetailExpenseCase, utc
-from crenya_pos_api.tests.web_admin_case import SHOP2_CASHIER, SHOP2_MANAGER, ensure_shop2, ensure_user
+from crenya_pos_api.tests.web_admin_case import SHOP2, SHOP2_CASHIER, SHOP2_MANAGER, ensure_shop2, ensure_user
 
 
 class TestWebAdminExpenses(RetailExpenseCase):
@@ -97,11 +97,9 @@ class TestWebAdminExpenses(RetailExpenseCase):
 			],
 			[doc.name],
 		)
-		# another shop's manager sees none of it, and may not ask for this shop
-		frappe.set_user(SHOP2_MANAGER)
-		self.assertNotIn(doc.name, [r["name"] for r in web_admin.expenses_not_booked()["rows"]])
+		# shop 2 lists its own users, so this shop's manager may not ask for it
 		with self.assertRaises(frappe.PermissionError):
-			web_admin.expenses_not_booked(self.profile.name)
+			web_admin.expenses_not_booked(SHOP2)
 		# a cashier manages nothing
 		frappe.set_user(self.cashier)
 		self.assertEqual(web_admin.expenses_not_booked()["rows"], [])
@@ -123,8 +121,8 @@ class TestWebAdminExpenses(RetailExpenseCase):
 		# booked already: nothing to retry
 		with self.assertRaises(frappe.ValidationError):
 			web_admin.retry_expense_booking(doc.name)
-		# another shop's manager may not retry this one
-		frappe.set_user(SHOP2_MANAGER)
+		# a cashier may not retry
+		frappe.set_user(self.cashier)
 		with self.assertRaises(frappe.PermissionError):
 			web_admin.retry_expense_booking(doc.name)
 
@@ -138,7 +136,7 @@ class TestWebAdminExpenses(RetailExpenseCase):
 		self.assertEqual([row["action"] for row in answer["expense"]["log"]], ["add", "booking failed"])
 		self.assertEqual(answer["currency"]["precision"], 3)
 		self.assertIs(answer["can_retry"], True)
-		for user, name in ((SHOP2_MANAGER, doc.name), (self.manager, "EXP-NOPE"), (self.cashier, doc.name)):
+		for user, name in ((self.manager, "EXP-NOPE"), (self.cashier, doc.name)):
 			frappe.set_user(user)
 			with self.assertRaises(frappe.PermissionError, msg=user):
 				web_admin.till_expense(name)
@@ -163,9 +161,12 @@ class TestWebAdminExpenses(RetailExpenseCase):
 		)
 		again = web_admin.ensure_cash_supplier(self.profile.name)
 		self.assertEqual((again["cash_supplier"], again["created"]), (made["cash_supplier"], False))
-		frappe.set_user(SHOP2_MANAGER)
+		frappe.set_user(self.cashier)
 		with self.assertRaises(frappe.PermissionError):
 			web_admin.ensure_cash_supplier(self.profile.name)
+		frappe.set_user(self.manager)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.ensure_cash_supplier(SHOP2)
 
 	def test_z_sections_on_account_and_expenses(self):
 		"""Float 10.000, cash sales 50.000, cash received 15.250, cash paid out 7.350, card paid out

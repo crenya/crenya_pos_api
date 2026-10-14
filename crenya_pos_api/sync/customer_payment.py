@@ -93,7 +93,9 @@ def allocate(amount, invoices, precision):
 
 def open_invoices(customer, company):
 	"""The customer's submitted Sales Invoices of the company with something outstanding, oldest
-	first (rows locked until the entry is booked, so two receipts never take the same debt)."""
+	first. The customer's row is locked until the entry is booked, so two receipts of one customer
+	never take the same debt."""
+	frappe.db.get_value("Customer", customer, "name", for_update=True)
 	rows = frappe.get_all(
 		"Sales Invoice",
 		filters={
@@ -105,7 +107,6 @@ def open_invoices(customer, company):
 		},
 		fields=["name", "grand_total", "outstanding_amount", "due_date"],
 		order_by="posting_date asc, creation asc, name asc",
-		for_update=True,
 	)
 	return [
 		{

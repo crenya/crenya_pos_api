@@ -431,6 +431,18 @@ def assert_credit_offset_allowed(credit_offset, original, doc, precision):
 		)
 
 
+def _apply_profile_accounts(doc, profile):
+	"""A POS invoice takes its rows' income and expense accounts from the POS Profile
+	(`get_pos_profile_item_details`); a plain invoice, which a sale wholly on account is, takes
+	the items' and company's. The same sale books to the same accounts either way, so the profile's
+	own are put on the rows (proved by a GL comparison, test_credit_only_posts_to_the_same_accounts)."""
+	for field in ("income_account", "expense_account"):
+		account = profile.get(field)
+		if account:
+			for row in doc.get("items") or []:
+				row.set(field, account)
+
+
 def _due_date(doc, ctx):
 	"""The due date of a sale on account: the customer's payment terms, else the posting date."""
 	from erpnext.accounts.party import get_due_date
@@ -534,6 +546,8 @@ def build_invoice(ctx, data, notes):
 	doc.set_missing_values(for_validate=True)
 	# POS Profile values must not re-enable pricing rules: the till's rate is final
 	doc.ignore_pricing_rule = 1
+	if credit_only:
+		_apply_profile_accounts(doc, profile)
 	if open_return:
 		set_valuation_incoming_rates(doc)
 	if doc.taxes_and_charges and not doc.get("taxes"):

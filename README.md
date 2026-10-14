@@ -263,6 +263,16 @@ deletes) a device user that holds any role beyond `Crenya POS Device`.
 - The **return lookup** (`returns.get_invoice_for_return`) is authorised by the device, not the
   cashier's desk roles: the invoice and its POS Profile must be the device's company's.
 
+#### Expenses (the booking engine, 0.13.0)
+
+What a cashier pays out of the drawer is booked as one paid Purchase Invoice of erptrue_app's POS
+Expense. The engine moved down from crenya_restaurant and is shared by the retail and the restaurant
+till: `expenses/booking.py` (the booking, its retry, the setup checks), `expenses/fields.py` (the
+outlet's `crenya_expense*` POS Profile fields and their check), `expenses/reports.py` (the Z rows) and
+`expenses/product.py`, the seam: one `ExpenseProduct` per product (device types, bootstrap key,
+capability, the settings page named in messages, the approver roles). The engine names no product;
+crenya_restaurant registers its own with `register_product`.
+
 #### Device ids
 
 A device id is the device's UUID. Ids that differ only in case are the same
@@ -1275,6 +1285,12 @@ they create `_Test Crenya …` masters with an example currency, country and
 bench --site <test-site> set-config allow_tests true
 bench --site <test-site> run-tests --app crenya_pos_api
 ```
+
+The expenses booking tests (`tests/test_integration_expenses_booking`) need erptrue_app's POS Expense
+(this app reaches it by DocType name and never depends on it); without it they skip and
+`TestExpensesOff` runs. CI's `expenses` job installs erptrue_app over SSH with a read-only deploy key
+kept in the repository secret `ERPTRUE_APP_DEPLOY_KEY` (the same key as crenya_restaurant's); without
+the secret the job warns and skips.
 
 #### Contributing
 

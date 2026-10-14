@@ -13,6 +13,12 @@ concurrency:
   group: develop-crenya_pos_api-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # erptrue_app ref with POS Expense's till fields (>= 0.0.3) for the `expenses` job only: this app
+  # reaches erptrue_app by DocType name, never as a dependency. Override with the repository
+  # variable ERPTRUE_APP_REF.
+  ERPTRUE_APP_REF: ${{ vars.ERPTRUE_APP_REF || 'main' }}
+
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -118,5 +124,121 @@ jobs:
         run: |
           bench --site test_site set-config allow_tests true
           bench --site test_site run-tests --app crenya_pos_api
+        env:
+          TYPE: server
+
+  # the expenses engine (0.13.0) books into erptrue_app's POS Expense: the job above keeps it out
+  # (every other test, and `TestExpensesOff`); this one installs it and runs the booking tests
+  expenses:
+    name: Expenses with erptrue_app (${{ matrix.frappe }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # erptrue_app needs Python 3.14 (its pyproject), which Frappe version-15 runs too
+      # a draft pull request tests production's Frappe (version-16) only; ready PRs and main test both
+      matrix: ${{ fromJSON(github.event.pull_request.draft && '{"include":[{"frappe":"version-16","python":"3.14","node":24,"mariadb":"11.8"}]}' || '{"include":[{"frappe":"version-15","python":"3.14","node":24,"mariadb":"10.6"},{"frappe":"version-16","python":"3.14","node":24,"mariadb":"11.8"}]}') }}
+
+    services:
+      redis-cache:
+        image: redis:alpine
+        ports:
+          - 13000:6379
+      redis-queue:
+        image: redis:alpine
+        ports:
+          - 11000:6379
+      mariadb:
+        image: mariadb:${{ matrix.mariadb }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: --health-cmd="mariadb-admin ping" --health-interval=5s --health-timeout=2s --health-retries=3
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v5
+
+      # erptrue_app is a private repository: it is fetched over SSH with a read-only deploy key of
+      # crenya/erptrue_app kept in this repository's secret ERPTRUE_APP_DEPLOY_KEY. Without the
+      # secret (a fork's pull request, or a repository not given it yet) the job warns and skips
+      # the rest: the main job still runs `TestExpensesOff`.
+      - name: SSH key for erptrue_app
+        id: key
+        env:
+          ERPTRUE_APP_DEPLOY_KEY: ${{ secrets.ERPTRUE_APP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ERPTRUE_APP_DEPLOY_KEY:-}" ]; then
+            echo "::warning::The secret ERPTRUE_APP_DEPLOY_KEY is not set: the expenses booking tests did not run (README.md, Tests)"
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$ERPTRUE_APP_DEPLOY_KEY" > ~/.ssh/erptrue_app_deploy
+          chmod 600 ~/.ssh/erptrue_app_deploy
+          # GitHub's published host key (api.github.com/meta), not a scan
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          echo "have=true" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python
+        if: steps.key.outputs.have == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Setup Node
+        if: steps.key.outputs.have == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          check-latest: true
+
+      - name: Install MariaDB Client
+        if: steps.key.outputs.have == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mariadb-client
+
+      - name: Setup
+        if: steps.key.outputs.have == 'true'
+        run: |
+          pip install frappe-bench
+          bench init --skip-redis-config-generation --skip-assets --frappe-branch ${{ matrix.frappe }} --python "$(which python)" ~/frappe-bench
+          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
+          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
+
+      - name: Install
+        if: steps.key.outputs.have == 'true'
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench get-app --branch ${{ matrix.frappe }} erpnext
+          bench get-app crenya_pos_api $GITHUB_WORKSPACE
+          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/erptrue_app_deploy -o IdentitiesOnly=yes" \
+            bench get-app --branch "$ERPTRUE_APP_REF" erptrue_app git@github.com:crenya/erptrue_app.git
+          bench setup requirements --dev
+          bench new-site --db-root-password root --admin-password admin test_site
+          bench --site test_site install-app erpnext
+          bench --site test_site install-app crenya_pos_api
+          bench --site test_site install-app erptrue_app
+          bench build
+        env:
+          CI: 'Yes'
+
+      - name: POS Expense has the till fields
+        if: steps.key.outputs.have == 'true'
+        working-directory: /home/runner/frappe-bench
+        run: |
+          # an erptrue_app without them would only skip the tests below: fail instead
+          bench --site test_site execute crenya_pos_api.expenses.booking.expenses_supported | tee supported.txt
+          grep -qix true supported.txt
+
+      - name: Run Tests
+        if: steps.key.outputs.have == 'true'
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench --site test_site set-config allow_tests true
+          bench --site test_site run-tests --app crenya_pos_api --module crenya_pos_api.tests.test_integration_expenses_booking
         env:
           TYPE: server

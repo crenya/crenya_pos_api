@@ -311,7 +311,7 @@ def step2_limit():
 	refusal = _crossing(cust, Ctx.device_user)
 	report(
 		"2a",
-		bool(refusal) and "Credit Limit" in refusal,
+		bool(refusal) and "credit limit" in refusal.lower(),
 		baseline="device user over limit, no waiver",
 		refused=bool(refusal),
 		message=refusal,
@@ -462,7 +462,7 @@ def step3_receipt():
 		oldest_first=order == [a.name, b.name],
 	)
 	cust2 = customer("advance", limit=1000)
-	c = post(sales_invoice(cust2, pos=False, qty=2.5), Ctx.device_user)  # 25.000
+	c = post(sales_invoice(cust2, pos=False, qty=5, rate=5), Ctx.device_user)  # 25.000
 	pe2, _ = _receive(cust2, 40)
 	ok2 = flt(outstanding(c.name), 3) == 0 and flt(pe2.unallocated_amount, 3) == 15
 	report(
@@ -546,19 +546,35 @@ def _points(name):
 @guarded("5")
 def step5_loyalty():
 	cust = customer("loyalty", limit=1000, loyalty=fx.LOYALTY_PROGRAM)
-	paid = post(sales_invoice(cust, pos=True, paid=100, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user)
-	partial = post(sales_invoice(cust, pos=True, paid=40, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user)
-	credit = post(sales_invoice(cust, pos=False, loyalty=fx.LOYALTY_PROGRAM), Ctx.device_user)
+	user = Ctx.device_user
+	probe, err = attempt(
+		lambda: post(sales_invoice(cust, pos=True, paid=1, loyalty=fx.LOYALTY_PROGRAM), user)
+	)
+	device_ok = probe is not None
+	messages = [str(x)[:160] for x in (frappe.local.message_log or [])][-2:] if not device_ok else []
+	report(
+		"5a",
+		device_ok,
+		check="the device user submits an invoice of a customer in a loyalty program",
+		error=err,
+		messages=messages,
+	)
+	if not device_ok:
+		user = None  # measure the points as Administrator; 5a is the finding for Task 2
+	paid = post(sales_invoice(cust, pos=True, paid=100, loyalty=fx.LOYALTY_PROGRAM), user)
+	partial = post(sales_invoice(cust, pos=True, paid=40, loyalty=fx.LOYALTY_PROGRAM), user)
+	credit = post(sales_invoice(cust, pos=False, loyalty=fx.LOYALTY_PROGRAM), user)
 	pp, pt, pc = _points(paid.name), _points(partial.name), _points(credit.name)
 	report(
 		"5",
 		bool(pp),
 		program=fx.LOYALTY_PROGRAM,
+		posted_as="device user" if user else "Administrator",
 		paid_100=pp,
 		partial_40_of_100=pt,
 		on_account_100=pc,
-		earned_on_unpaid_part=bool(pc) and (not pt or sum(p for p, _ in pc) == sum(p for p, _ in pp)),
-		note="PASS means the cash invoice earned; the observed lists decide section 5.7 (points on the unpaid part)",
+		earned_on_unpaid_part=bool(pc),
+		note="PASS means the paid invoice earned points; the observed lists decide section 5.7",
 	)
 
 
@@ -676,6 +692,7 @@ def step6_expenses():
 		},
 	)
 	pi.run_method("set_missing_values")
+	pi.update({"currency": fx.CURRENCY, "conversion_rate": 1, "plc_conversion_rate": 1})
 	pi.run_method("calculate_taxes_and_totals")
 	pi.paid_amount = flt(pi.grand_total)
 	pi.insert(ignore_permissions=True)

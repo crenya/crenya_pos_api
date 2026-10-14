@@ -184,38 +184,28 @@ class TestWebAdminExpenses(RetailExpenseCase):
 		self.assertEqual(frappe.db.get_value("POS Expense", doc.name, "status"), "Not booked")
 
 	def test_a_repeated_retry_books_one_purchase_invoice(self):
+		"""The second retry of what is booked is refused before the engine: nothing is cancelled or
+		reposted (the engine's own retry of a booked expense would repost an edited one)."""
 		doc, mode = self.not_booked()
 		self.add_account(mode)
 		frappe.set_user(self.manager)
-		web_admin.retry_expense_booking(doc.name)
-		for _ in range(2):
-			with self.assertRaises(frappe.ValidationError):
-				web_admin.retry_expense_booking(doc.name)
-		self.assertEqual(
-			frappe.db.count(
-				"Purchase Invoice", {"remarks": ["like", f"%POS Expense {doc.name}%"], "docstatus": 1}
-			),
-			1,
-		)
-
-	def test_a_second_retry_of_a_booked_expense_books_nothing_new(self):
-		"""At the engine: a retry of what is already booked returns early, the same invoice, no new one."""
-		doc, mode = self.not_booked()
-		self.add_account(mode)
-		self.assertEqual(booking.retry(doc, product=RETAIL), booking.BOOKED)
-		doc.reload()
-		invoice = doc.purchase_invoice
-		self.assertTrue(invoice)
-		self.assertEqual(booking.retry(doc, product=RETAIL), booking.BOOKED)
-		doc.reload()
-		self.assertEqual(doc.purchase_invoice, invoice)
-		self.assertEqual(
-			frappe.db.count(
-				"Purchase Invoice", {"remarks": ["like", f"%POS Expense {doc.name}%"], "docstatus": 1}
-			),
-			1,
-		)
+		first = web_admin.retry_expense_booking(doc.name)
+		self.assertEqual(first["status"], "Booked")
+		invoice = first["purchase_invoice"]
+		with mock.patch.object(booking, "retry", wraps=booking.retry) as retry:
+			for _ in range(2):
+				with self.assertRaises(frappe.ValidationError):
+					web_admin.retry_expense_booking(doc.name)
+		retry.assert_not_called()
+		self.assertEqual(frappe.db.get_value("POS Expense", doc.name, "purchase_invoice"), invoice)
+		self.assertEqual(frappe.db.get_value("Purchase Invoice", invoice, "docstatus"), 1)
 		self.assertEqual(frappe.db.count("Purchase Invoice", {"amended_from": invoice}), 0)
+		self.assertEqual(
+			frappe.db.count(
+				"Purchase Invoice", {"remarks": ["like", f"%POS Expense {doc.name}%"], "docstatus": 1}
+			),
+			1,
+		)
 
 	def test_a_manager_does_not_enable_a_disabled_cash_supplier(self):
 		saved = frappe.db.get_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD)

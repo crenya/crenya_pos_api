@@ -181,3 +181,45 @@ def retail_facts(profile) -> dict:
 def retail_setup_checks(profile) -> list[dict]:
 	"""The shop's setup checks, read live."""
 	return retail_checks(retail_facts(profile))
+
+
+# selling on account (retail P1)
+
+CREDIT_CHECK_KEYS = ("credit_receivable",)
+
+
+def credit_checks(facts: dict) -> list[dict]:
+	"""The shop's checks for selling on account (pure), none while the outlet's switch is off: the
+	company needs a default receivable account for the unpaid part of a sale to be booked to."""
+	if not facts.get("enabled"):
+		return []
+	account = facts.get("receivable_account")
+	company = facts.get("company")
+	return [
+		check(
+			"credit_receivable",
+			OK if account else MISSING,
+			"A receivable account of the outlet's company",
+			account,
+			f"Chart of Accounts → Company {company} → Default Receivable Account",
+		)
+	]
+
+
+def credit_facts(profile) -> dict:
+	"""What `credit_checks` reads of a POS Profile, live."""
+	from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
+
+	company = profile.get("company")
+	return {
+		"enabled": bool(cint(profile.get(CREDIT_SALES_FIELD))),
+		"company": company,
+		"receivable_account": frappe.get_cached_value("Company", company, "default_receivable_account")
+		if company
+		else None,
+	}
+
+
+def credit_setup_checks(profile) -> list[dict]:
+	"""The shop's credit setup checks, read live."""
+	return credit_checks(credit_facts(profile))

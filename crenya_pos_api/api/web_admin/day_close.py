@@ -12,6 +12,7 @@ import frappe
 from frappe.utils import cint, flt, formatdate, getdate
 
 from crenya_pos_api.api.web_admin.scope import manage
+from crenya_pos_api.expenses.reports import expense_label, shift_expenses
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.shift import count_shift_invoices
 from crenya_pos_api.utils.decimal import as_decimal, format_money
@@ -46,6 +47,17 @@ Z_LABELS = {
 	"approvals_count": ("Manager approvals", "موافقات المدير"),
 	"expense_count": ("Expenses", "المصروفات"),
 	"paid_out_mode": ("paid out", "مدفوع"),
+	# selling on account and the payments received on it (retail P1)
+	"on_account": ("On account", "بالآجل"),
+	"on_account_sales_count": ("Sales on account", "مبيعات بالآجل"),
+	"on_account_sales_amount": ("Sold on account", "المباع بالآجل"),
+	"on_account_returned_amount": ("Returned to the account", "المرتجع إلى الحساب"),
+	"on_account_received_count": ("Payments received", "الدفعات المستلمة"),
+	"on_account_received_amount": ("Received on account", "المستلم على الحساب"),
+	"received_mode": ("received", "مستلم"),
+	# the shift's expenses, one row each
+	"expenses": ("Expenses", "المصروفات"),
+	"expenses_total": ("Total", "الإجمالي"),
 }
 # the shift fields of each section: (row key, kind)
 SALES_ROWS = (
@@ -99,8 +111,68 @@ def _section(key, rows):
 	return {"key": key, "title_en": en, "title_ar": ar, "rows": rows}
 
 
-def z_sections(shift, precision, tax_label_en, tax_label_ar=None) -> list[dict]:
-	"""The Z report's sections of a shift document (or dict with its `payments` rows)."""
+ON_ACCOUNT_ROWS = (
+	("on_account_sales_count", "on_account_sales_count", KIND_COUNT),
+	("on_account_sales_amount", "on_account_sales_amount", KIND_MONEY),
+	("on_account_returned_amount", "on_account_returned_amount", KIND_MONEY),
+	("on_account_received_count", "on_account_received_count", KIND_COUNT),
+	("on_account_received_amount", "on_account_received_amount", KIND_MONEY),
+)
+
+
+def on_account_section(shift, precision):
+	"""The ON ACCOUNT section of a shift (pure), or None when it sold nothing on account and received
+	nothing: the counts and amounts the till sent, then each mode's receipts. A shift of a till
+	without credit has none, so its Z is what it was."""
+	payments = shift.get("payments") or []
+	received = [p for p in payments if flt(p.get("received"))]
+	if not received and not any(flt(shift.get(field)) for field, _key, _kind in ON_ACCOUNT_ROWS):
+		return None
+	rows = [_row(key, shift.get(field), kind, precision) for field, key, kind in ON_ACCOUNT_ROWS]
+	for payment in received:
+		mode = payment.get("mode_of_payment")
+		en, ar = Z_LABELS["received_mode"]
+		rows.append(
+			_row(
+				"received_mode",
+				payment.get("received"),
+				KIND_MONEY,
+				precision,
+				f"{mode} {en}",
+				f"{ar} ({mode})",
+			)
+		)
+	return _section("on_account", rows)
+
+
+def expenses_section(expenses, precision):
+	"""The EXPENSES section (pure) from `reports.shift_expenses` rows, one row each and their total,
+	or None without expenses. The mode shows after the name of an expense not paid in cash."""
+	if not expenses:
+		return None
+	rows = []
+	total = Decimal(0)
+	for expense in expenses:
+		label = expense_label(expense) or Z_LABELS["expenses"][0]
+		amount = as_decimal(expense["amount"])
+		total += amount
+		rows.append(
+			{
+				"label_en": label,
+				"label_ar": label,
+				"qty": None,
+				"value": format_money(amount, precision),
+				"kind": KIND_MONEY,
+			}
+		)
+	rows.append(_row("expenses_total", total, KIND_MONEY, precision))
+	return _section("expenses", rows)
+
+
+def z_sections(shift, precision, tax_label_en, tax_label_ar=None, expenses=None) -> list[dict]:
+	"""The Z report's sections of a shift document (or dict with its `payments` rows). ON ACCOUNT
+	follows when the shift sold or received on account, and EXPENSES (the shift's `expenses`, from
+	`reports.shift_expenses`) at the end."""
 
 	def rows(fields):
 		return [
@@ -138,13 +210,17 @@ def z_sections(shift, precision, tax_label_en, tax_label_ar=None) -> list[dict]:
 					f"{ar} ({mode})",
 				)
 			)
-	return [
+	sections = [
 		_section("sales", rows(SALES_ROWS)),
 		_section("payments", payment_rows),
 		_section("returns", rows(RETURNS_ROWS)),
 		_section("store_controls", rows(STORE_CONTROL_ROWS)),
 		_section("paid_out", paid_out_rows),
 	]
+	for extra in (on_account_section(shift, precision), expenses_section(expenses, precision)):
+		if extra:
+			sections.append(extra)
+	return sections
 
 
 def _business_day(opened_at, closed_at) -> tuple:
@@ -264,6 +340,7 @@ def day_close(shift: str) -> dict:
 	first, _label = _business_day(doc.opened_at, doc.closed_at)
 	answer = common(ctx.company, ctx.currency)
 	tax_ar = frappe.get_cached_value("Company", ctx.company, "crenya_tax_name_ar") or None
+	cash_modes = set(frappe.get_all("Mode of Payment", filters={"type": "Cash"}, pluck="name"))
 	return {
 		**answer,
 		"shift": doc.name,
@@ -277,5 +354,11 @@ def day_close(shift: str) -> dict:
 		"missing_bills": max(
 			0, cint(doc.sales_count) + cint(doc.returns_count) - count_shift_invoices(doc.local_id)
 		),
-		"sections": z_sections(doc.as_dict(), money_precision(ctx.currency), answer["tax_label"], tax_ar),
+		"sections": z_sections(
+			doc.as_dict(),
+			money_precision(ctx.currency),
+			answer["tax_label"],
+			tax_ar,
+			expenses=shift_expenses(doc, cash_modes),
+		),
 	}

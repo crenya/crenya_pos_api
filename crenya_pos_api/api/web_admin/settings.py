@@ -14,7 +14,9 @@ from frappe import _
 from frappe.utils import cint, cstr
 
 from crenya_pos_api.api.web_admin.scope import manage
-from crenya_pos_api.setup.install import CUSTOM_FIELDS, STORE_CONTROL_FIELDS
+from crenya_pos_api.expenses import booking as expenses_booking
+from crenya_pos_api.expenses.fields import EXPENSE_PROFILE_FIELDS
+from crenya_pos_api.setup.install import CREDIT_PROFILE_FIELDS, CUSTOM_FIELDS, STORE_CONTROL_FIELDS
 from crenya_pos_api.sync import scale_rules as till_scale_rules
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.locale_data import DENOMINATION_DOCTYPE, DENOMINATION_KINDS
@@ -31,7 +33,7 @@ from crenya_pos_api.web.context import (
 	refuse,
 	setting_value,
 )
-from crenya_pos_api.web.retail_checks import retail_setup_checks
+from crenya_pos_api.web.retail_checks import credit_setup_checks, retail_setup_checks
 from crenya_pos_api.web.setup_checks import fraction_decimals, money_setup_checks
 
 # when a saved setting reaches the outlet's tills: a till fetches the bootstrap (which carries
@@ -66,7 +68,19 @@ RETAIL_SETTINGS_FIELDS = (
 	),
 )
 # the accounting links of the outlet: a System Manager's
-OWNER_ONLY = frozenset({"taxes_and_charges", "write_off_account", "write_off_cost_center", "cost_center"})
+OWNER_ONLY = frozenset(
+	{
+		"taxes_and_charges",
+		"write_off_account",
+		"write_off_cost_center",
+		"cost_center",
+		# the expenses' accounting links (the switch and the PIN to add are a manager's; the Cash
+		# Supplier may still be created by a manager: `expenses.ensure_cash_supplier`)
+		expenses_booking.CASH_SUPPLIER_FIELD,
+		expenses_booking.SUPPLIER_GROUP_FIELD,
+		expenses_booking.TAX_TEMPLATE_FIELD,
+	}
+)
 # shown, never written from the web (the item groups decide what a till sells: the Items pages)
 READ_ONLY = frozenset({"item_groups"})
 # Company custom fields of the receipt wording (setup/install.py), in their order
@@ -111,7 +125,9 @@ def settings_fields() -> list[dict]:
 			field = _custom_field(name) if name in custom else _meta_field(meta, name)
 			if field is not None:
 				fields.append(field)
-	return fields + list(STORE_CONTROL_FIELDS)
+	# then the Credit sales and Expenses sections (their field definitions are this app's, one list
+	# for the install and the form)
+	return fields + list(STORE_CONTROL_FIELDS) + list(EXPENSE_PROFILE_FIELDS) + list(CREDIT_PROFILE_FIELDS)
 
 
 def _names(doctype, filters):
@@ -130,6 +146,23 @@ def _link_options(ctx) -> dict:
 		"Customer": _names("Customer", {"disabled": 0}),
 		"Cost Center": _names("Cost Center", {"company": ctx.company, "is_group": 0, "disabled": 0}),
 		"Account": _names("Account", {"company": ctx.company, "is_group": 0, "disabled": 0}),
+		# the expenses: the shop's expense suppliers (its group, else every one), the groups and the
+		# purchase VAT templates of its company
+		"Supplier": _names(
+			"Supplier",
+			{
+				"disabled": 0,
+				**(
+					{"supplier_group": group}
+					if (group := ctx.profile.get(expenses_booking.SUPPLIER_GROUP_FIELD))
+					else {}
+				),
+			},
+		),
+		"Supplier Group": _names("Supplier Group", {}),
+		"Purchase Taxes and Charges Template": _names(
+			"Purchase Taxes and Charges Template", {"company": ctx.company, "disabled": 0}
+		),
 	}
 
 
@@ -163,6 +196,10 @@ def _settings(ctx) -> dict:
 		),
 		# what the outlet's tills need, read live: [{key, status, label, detail, fix}]
 		"setup_checks": money_setup_checks(ctx.currency) + retail_setup_checks(profile),
+		# what booking the shop's expenses needs, and what selling on account needs, read live (the
+		# restaurant's `expense_setup_checks` key, so the shared components read both)
+		"expense_setup_checks": expenses_booking.setup_checks(profile),
+		"credit_setup_checks": credit_setup_checks(profile),
 	}
 
 

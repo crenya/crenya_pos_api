@@ -246,5 +246,6 @@ jobs:
           bench --site test_site set-config allow_tests true
           bench --site test_site run-tests --app crenya_pos_api --module crenya_pos_api.tests.test_integration_expenses_booking
           bench --site test_site run-tests --app crenya_pos_api --module crenya_pos_api.tests.test_integration_expenses_retail
+          bench --site test_site run-tests --app crenya_pos_api --module crenya_pos_api.tests.test_integration_web_admin_expenses
         env:
           TYPE: server

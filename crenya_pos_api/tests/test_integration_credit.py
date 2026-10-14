@@ -525,6 +525,14 @@ class TestCreditSync(CreditCase):
 			self.set_switch(1)
 
 	def test_bootstrap_credit_block_till_only(self):
+		# the shared profile's approvals depend on the tests that ran before (a patch test switches
+		# them off): set the two credit ones as a new profile has them
+		fields = ("crenya_approve_credit_over_limit", "crenya_approve_credit_sale")
+		saved = frappe.db.get_value("POS Profile", self.profile.name, list(fields), as_dict=True)
+		frappe.db.set_value("POS Profile", self.profile.name, dict(zip(fields, (1, 0), strict=True)))
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		self.addCleanup(frappe.clear_document_cache, "POS Profile", self.profile.name)
+		self.addCleanup(frappe.db.set_value, "POS Profile", self.profile.name, saved)
 		boot = device_api.get_bootstrap(device_id=self.device_id)
 		self.assertEqual(boot["credit"], {"enabled": True})
 		self.assertEqual(boot["features"]["credit_sales"], 1)

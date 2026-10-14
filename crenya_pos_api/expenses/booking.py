@@ -661,26 +661,48 @@ def supplier_group_of(profile):
 	)
 
 
-def _enabled(supplier):
+def _enabled(supplier, may_enable=True):
 	"""`supplier` enabled again when it was disabled (the outlet's own Cash Supplier: a till cannot
-	book without it); None when there is no such Supplier."""
+	book without it); None when there is no such Supplier. With `may_enable` false a disabled one is
+	left alone and the caller is told (frappe.ValidationError): an owner may have disabled it on
+	purpose."""
 	if not supplier or not frappe.db.exists("Supplier", supplier):
 		return None
 	if cint(frappe.db.get_value("Supplier", supplier, "disabled")):
+		if not may_enable:
+			frappe.throw(
+				_(
+					"Supplier {0} is disabled: ask the owner to enable it, or to choose another Cash Supplier"
+				).format(supplier),
+				frappe.ValidationError,
+			)
 		doc = frappe.get_doc("Supplier", supplier)
 		doc.disabled = 0
 		doc.save(ignore_permissions=True)
 	return supplier
 
 
-def ensure_cash_supplier(profile):
+def ensure_cash_supplier(profile, may_enable=True):
 	"""The outlet's enabled Cash Supplier, made (and set on the outlet) when it has none:
-	(name, created). A disabled one is enabled again."""
-	current = _enabled(profile.get(CASH_SUPPLIER_FIELD))
+	(name, created). A disabled one is enabled again when `may_enable`, else the caller is told
+	(frappe.ValidationError). A supplier that already has the name the outlet's would get is adopted
+	only when it is in the outlet's expense supplier group."""
+	current = _enabled(profile.get(CASH_SUPPLIER_FIELD), may_enable)
 	if current:
 		return current, False
 	supplier_name = _("Cash Purchases - {0}").format(profile.name)
-	name = _enabled(frappe.db.get_value("Supplier", {"supplier_name": supplier_name}, "name"))
+	group = supplier_group_of(profile)
+	existing = frappe.db.get_value(
+		"Supplier", {"supplier_name": supplier_name}, ["name", "supplier_group"], as_dict=True
+	)
+	if existing and existing.supplier_group != group:
+		frappe.throw(
+			_(
+				"Supplier {0} already exists in the group {1}, not in this outlet's expense supplier group {2}"
+			).format(existing.name, existing.supplier_group, group),
+			frappe.ValidationError,
+		)
+	name = _enabled(existing.name if existing else None, may_enable)
 	created = False
 	if not name:
 		name = (
@@ -688,7 +710,7 @@ def ensure_cash_supplier(profile):
 				{
 					"doctype": "Supplier",
 					"supplier_name": supplier_name,
-					"supplier_group": supplier_group_of(profile),
+					"supplier_group": group,
 					"supplier_type": "Individual",
 				}
 			)

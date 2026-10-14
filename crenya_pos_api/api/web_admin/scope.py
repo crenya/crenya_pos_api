@@ -12,7 +12,7 @@ from frappe.utils import cint
 
 from crenya_pos_api.sync.approvals import APPROVER_ROLE
 from crenya_pos_api.sync.context import profile_users
-from crenya_pos_api.web.context import WebAdminContext
+from crenya_pos_api.web.context import WebAdminContext, require_web_session
 
 # crenya_restaurant's POS Profile field that makes an outlet a restaurant
 RESTAURANT_MODE_FIELD = "crenya_restaurant_mode"
@@ -38,7 +38,9 @@ def shop_profiles(outlet: str | None = None) -> list:
 
 
 def managed_shops() -> list:
-	"""The shops the session user manages ([{name, company}], by name)."""
+	"""The shops the session user manages ([{name, company}], by name). From a browser session
+	only (`require_web_session`)."""
+	require_web_session()
 	user = frappe.session.user
 	if user in (None, "Guest"):
 		return []
@@ -54,11 +56,45 @@ def managed_shops() -> list:
 
 def manage(outlet) -> WebAdminContext:
 	"""The WebAdminContext of a shop the session user manages; frappe.PermissionError for any
-	other (or no) outlet, a restaurant outlet included."""
+	other (or no) outlet, a restaurant outlet included. From a browser session only
+	(`require_web_session`): every Shops web-admin method comes through here (or `managed_shops`),
+	so a till's or a person's API key left on a device reaches none of them."""
+	require_web_session()
 	if not outlet or not isinstance(outlet, str) or not shop_profiles(outlet):
 		raise frappe.PermissionError
 	user = frappe.session.user
 	ctx = WebAdminContext(user, outlet)
 	if not manages(frappe.get_roles(user), user, set(profile_users(ctx.profile))):
+		raise frappe.PermissionError
+	return ctx
+
+
+def company_permitted(permissions, company) -> bool:
+	"""Whether a user whose User Permissions are `permissions` ({doctype: [{"doc": name, ...}]}, as
+	`get_user_permissions` answers) may work with `company` (pure): any company when they have none
+	on Company, else only the listed ones."""
+	allowed = (permissions or {}).get("Company")
+	if not allowed:
+		return True
+	return company in {row.get("doc") for row in allowed}
+
+
+def user_may_use_company(company, user=None) -> bool:
+	"""Whether the session user's User Permissions on Company include `company` (Administrator
+	always)."""
+	user = user or frappe.session.user
+	if user == "Administrator":
+		return True
+	from frappe.core.doctype.user_permission.user_permission import get_user_permissions
+
+	return company_permitted(get_user_permissions(user), company)
+
+
+def manage_company(outlet) -> WebAdminContext:
+	"""`manage`, and the user may use the shop's company (User Permission on Company): for the
+	credit and expense methods, which read and change the company's money. frappe.PermissionError
+	otherwise."""
+	ctx = manage(outlet)
+	if not user_may_use_company(ctx.company):
 		raise frappe.PermissionError
 	return ctx

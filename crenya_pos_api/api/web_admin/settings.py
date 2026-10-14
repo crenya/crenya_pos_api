@@ -134,6 +134,19 @@ def _names(doctype, filters):
 	return frappe.get_all(doctype, filters=filters, pluck="name", order_by="name asc", limit=MAX_LINK_OPTIONS)
 
 
+def _expense_link_options(ctx) -> dict:
+	"""The shop's expense suppliers (its group, else every one), the groups and the purchase VAT
+	templates of its company."""
+	group = ctx.profile.get(expenses_booking.SUPPLIER_GROUP_FIELD)
+	return {
+		"Supplier": _names("Supplier", {"disabled": 0, **({"supplier_group": group} if group else {})}),
+		"Supplier Group": _names("Supplier Group", {}),
+		"Purchase Taxes and Charges Template": _names(
+			"Purchase Taxes and Charges Template", {"company": ctx.company, "disabled": 0}
+		),
+	}
+
+
 def _link_options(ctx) -> dict:
 	"""{Link doctype: up to MAX_LINK_OPTIONS names} the form offers, of the outlet's company and
 	currency."""
@@ -146,23 +159,9 @@ def _link_options(ctx) -> dict:
 		"Customer": _names("Customer", {"disabled": 0}),
 		"Cost Center": _names("Cost Center", {"company": ctx.company, "is_group": 0, "disabled": 0}),
 		"Account": _names("Account", {"company": ctx.company, "is_group": 0, "disabled": 0}),
-		# the expenses: the shop's expense suppliers (its group, else every one), the groups and the
-		# purchase VAT templates of its company
-		"Supplier": _names(
-			"Supplier",
-			{
-				"disabled": 0,
-				**(
-					{"supplier_group": group}
-					if (group := ctx.profile.get(expenses_booking.SUPPLIER_GROUP_FIELD))
-					else {}
-				),
-			},
-		),
-		"Supplier Group": _names("Supplier Group", {}),
-		"Purchase Taxes and Charges Template": _names(
-			"Purchase Taxes and Charges Template", {"company": ctx.company, "disabled": 0}
-		),
+		# the expenses' links: names across the site, offered to a System Manager only (the only user
+		# who can set them; a manager reads the value, not the site's supplier list)
+		**(_expense_link_options(ctx) if is_system_manager() else {}),
 	}
 
 

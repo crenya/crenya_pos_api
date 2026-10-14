@@ -168,6 +168,100 @@ class TestWebAdminExpenses(RetailExpenseCase):
 		with self.assertRaises(frappe.PermissionError):
 			web_admin.ensure_cash_supplier(SHOP2)
 
+	def test_another_shops_expense_is_out_of_reach(self):
+		"""Shop 2 lists its own users, so this shop's manager reads and retries none of its expenses."""
+		doc = self.make_expense(outlet=SHOP2)
+		self.assertEqual((doc.outlet, doc.status), (SHOP2, "Not booked"))
+		frappe.set_user(self.manager)
+		for call in (
+			lambda: web_admin.till_expense(doc.name),
+			lambda: web_admin.retry_expense_booking(doc.name),
+			lambda: web_admin.expenses_not_booked(SHOP2),
+		):
+			with self.assertRaises(frappe.PermissionError):
+				call()
+		self.assertNotIn(doc.name, [r["name"] for r in web_admin.expenses_not_booked()["rows"]])
+		self.assertEqual(frappe.db.get_value("POS Expense", doc.name, "status"), "Not booked")
+
+	def test_a_repeated_retry_books_one_purchase_invoice(self):
+		doc, mode = self.not_booked()
+		self.add_account(mode)
+		frappe.set_user(self.manager)
+		web_admin.retry_expense_booking(doc.name)
+		for _ in range(2):
+			with self.assertRaises(frappe.ValidationError):
+				web_admin.retry_expense_booking(doc.name)
+		self.assertEqual(
+			frappe.db.count(
+				"Purchase Invoice", {"remarks": ["like", f"%POS Expense {doc.name}%"], "docstatus": 1}
+			),
+			1,
+		)
+
+	def test_a_manager_does_not_enable_a_disabled_cash_supplier(self):
+		saved = frappe.db.get_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD)
+		supplier = f"_Test Crenya Disabled Cash {uuid.uuid4().hex[:6]}"
+		frappe.get_doc(
+			{
+				"doctype": "Supplier",
+				"supplier_name": supplier,
+				"supplier_group": frappe.db.get_value(
+					"POS Profile", self.profile.name, booking.SUPPLIER_GROUP_FIELD
+				),
+				"disabled": 1,
+			}
+		).insert(ignore_permissions=True)
+
+		def restore():
+			frappe.db.set_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD, saved)
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+			frappe.db.commit()  # nosemgrep
+
+		self.addCleanup(restore)
+		frappe.db.set_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD, supplier)
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		frappe.set_user(self.manager)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			web_admin.ensure_cash_supplier(self.profile.name)
+		self.assertIn("ask the owner", str(caught.exception))
+		self.assertEqual(frappe.db.get_value("Supplier", supplier, "disabled"), 1)
+		# a System Manager enables it again
+		frappe.set_user("Administrator")
+		answer = web_admin.ensure_cash_supplier(self.profile.name)
+		self.assertEqual((answer["cash_supplier"], answer["created"]), (supplier, False))
+		self.assertEqual(frappe.db.get_value("Supplier", supplier, "disabled"), 0)
+
+	def test_a_supplier_of_that_name_in_another_group_is_not_adopted(self):
+		saved = frappe.db.get_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD)
+		name = f"Cash Purchases - {self.profile.name}"
+		existing = frappe.db.get_value(
+			"Supplier", {"supplier_name": name}, ["name", "supplier_group"], as_dict=True
+		)
+		if existing:
+			frappe.db.set_value("Supplier", existing.name, "supplier_group", "All Supplier Groups")
+		else:
+			frappe.get_doc(
+				{"doctype": "Supplier", "supplier_name": name, "supplier_group": "All Supplier Groups"}
+			).insert(ignore_permissions=True)
+
+		def restore():
+			if existing:
+				frappe.db.set_value("Supplier", existing.name, "supplier_group", existing.supplier_group)
+			else:
+				frappe.delete_doc("Supplier", name, ignore_permissions=True, force=True)
+			frappe.db.set_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD, saved)
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+			frappe.db.commit()  # nosemgrep
+
+		self.addCleanup(restore)
+		frappe.db.set_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD, None)
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		frappe.set_user(self.manager)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			web_admin.ensure_cash_supplier(self.profile.name)
+		self.assertIn("not in this outlet's expense supplier group", str(caught.exception))
+		self.assertFalse(frappe.db.get_value("POS Profile", self.profile.name, booking.CASH_SUPPLIER_FIELD))
+
 	def test_z_sections_on_account_and_expenses(self):
 		"""Float 10.000, cash sales 50.000, cash received 15.250, cash paid out 7.350, card paid out
 		4.000: the drawer expects 67.900, the card its sales (20.000), counted as expected."""

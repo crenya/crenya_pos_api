@@ -7,8 +7,9 @@ from decimal import Decimal
 
 import frappe
 
-from crenya_pos_api.api.web_admin.credit import _row, parse_limit
+from crenya_pos_api.api.web_admin.credit import MAX_CREDIT_LIMIT, _row, audit_text, parse_limit
 from crenya_pos_api.api.web_admin.day_close import Z_LABELS, expenses_section, on_account_section, z_sections
+from crenya_pos_api.api.web_admin.scope import company_permitted
 from crenya_pos_api.web.retail_checks import credit_checks
 
 
@@ -22,6 +23,9 @@ class TestParseLimit(unittest.TestCase):
 		for value in (None, "", "  ", "0", "0.000"):
 			self.assertIsNone(parse_limit(value, 3), msg=repr(value))
 
+	def test_the_largest_limit_is_taken(self):
+		self.assertEqual(parse_limit(str(MAX_CREDIT_LIMIT), 3), MAX_CREDIT_LIMIT)
+
 	def test_what_is_refused(self):
 		for value, fragment in (
 			("10.0001", "more than 3 decimals"),
@@ -29,6 +33,7 @@ class TestParseLimit(unittest.TestCase):
 			("-5", "negative"),
 			("abc", "credit_limit"),
 			(12.5, "credit_limit"),
+			("1000000000000", "more than"),
 		):
 			precision = 2 if value == "12.345" else 3
 			with self.assertRaises(ValueError, msg=repr(value)) as caught:
@@ -41,31 +46,56 @@ class TestCreditRow(unittest.TestCase):
 		return frappe._dict(name="CUST-1", customer_name="Ahmed", modified="2026-10-14 09:00:00.000000")
 
 	def test_over_the_limit_is_flagged_and_nothing_is_available(self):
-		row = _row(self.customer(), Decimal("100.000"), Decimal("150.000"), 2, 3)
+		row = _row(self.customer(), Decimal("100.000"), "customer", Decimal("150.000"), 2, 3)
 		self.assertEqual(
 			(row["credit_limit"], row["outstanding"], row["available"], row["over_limit"]),
 			("100.000", "150.000", "0.000", True),
 		)
 		self.assertEqual((row["customer"], row["name"], row["open_invoices"]), ("CUST-1", "Ahmed", 2))
+		self.assertEqual(row["limit_source"], "customer")
 
 	def test_under_the_limit(self):
-		row = _row(self.customer(), Decimal("500.000"), Decimal("420.000"), 1, 3)
-		self.assertEqual((row["available"], row["over_limit"]), ("80.000", False))
+		row = _row(self.customer(), Decimal("500.000"), "group", Decimal("420.000"), 1, 3)
+		self.assertEqual(
+			(row["available"], row["over_limit"], row["limit_source"]), ("80.000", False, "group")
+		)
 
 	def test_exactly_at_the_limit_is_not_over(self):
-		row = _row(self.customer(), Decimal("100.000"), Decimal("100.000"), 1, 3)
+		row = _row(self.customer(), Decimal("100.000"), "company", Decimal("100.000"), 1, 3)
 		self.assertEqual((row["available"], row["over_limit"]), ("0.000", False))
 
 	def test_no_limit_has_no_limit_and_never_over(self):
-		row = _row(self.customer(), None, Decimal("80.000"), 1, 3)
+		row = _row(self.customer(), None, None, Decimal("80.000"), 1, 3)
 		self.assertEqual(
 			(row["credit_limit"], row["available"], row["over_limit"], row["outstanding"]),
 			(None, None, False, "80.000"),
 		)
+		# no limit has no source
+		self.assertIsNone(row["limit_source"])
 
 	def test_a_customer_in_credit_shows_a_negative_balance(self):
-		row = _row(self.customer(), None, Decimal("-30.000"), 0, 3)
+		row = _row(self.customer(), None, None, Decimal("-30.000"), 0, 3)
 		self.assertEqual(row["outstanding"], "-30.000")
+
+
+class TestAuditAndCompany(unittest.TestCase):
+	def test_the_comment_names_the_old_and_the_new_limit(self):
+		text = audit_text("Co", Decimal("100"), Decimal("250.5"), "app.crenya.com", "boss@example.com", 3)
+		self.assertEqual(
+			text,
+			"Credit limit for Co changed from 100.000 to 250.500 from app.crenya.com by boss@example.com",
+		)
+		cleared = audit_text("Co", Decimal("100"), None, "app.crenya.com", "boss@example.com", 3)
+		self.assertIn("from 100.000 to no limit of its own", cleared)
+		self.assertIn("from no limit of its own to 5.000", audit_text("Co", None, Decimal("5"), "w", "u", 3))
+
+	def test_a_user_permission_on_company_limits_the_companies(self):
+		self.assertTrue(company_permitted({}, "Co A"))
+		self.assertTrue(company_permitted(None, "Co A"))
+		self.assertTrue(company_permitted({"Warehouse": [{"doc": "W"}]}, "Co A"))
+		perms = {"Company": [{"doc": "Co A"}, {"doc": "Co B"}]}
+		self.assertTrue(company_permitted(perms, "Co B"))
+		self.assertFalse(company_permitted(perms, "Co C"))
 
 
 class TestCreditChecks(unittest.TestCase):

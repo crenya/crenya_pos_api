@@ -40,10 +40,14 @@ def customer_credit_limit(customer, company):
 	return limit if limit > 0 else None
 
 
-def customer_credit_limits(rows, company):
-	"""{customer name: credit limit as a Decimal or None} for the pull's customer `rows` (name,
-	customer_group), in three queries for the page: ERPNext's `get_credit_limit` order, the
-	customer's own row, else its group's, else the company's; 0 or none is no limit."""
+LIMIT_SOURCES = ("customer", "group", "company")
+
+
+def customer_credit_limit_sources(rows, company):
+	"""{customer name: (credit limit as a Decimal or None, where it comes from)} for the customer
+	`rows` (name, customer_group), in three queries for the page: ERPNext's `get_credit_limit`
+	order, the customer's own row ("customer"), else its group's ("group"), else the company's
+	("company"); 0 or none is no limit (None, None)."""
 	names = [row.name for row in rows]
 	groups = list({row.customer_group for row in rows if row.customer_group})
 
@@ -71,10 +75,24 @@ def customer_credit_limits(rows, company):
 	company_limit = frappe.get_cached_value("Company", company, "credit_limit")
 	out = {}
 	for row in rows:
-		value = own.get(row.name) or by_group.get(row.customer_group) or company_limit
-		limit = as_decimal(value)
-		out[row.name] = limit if limit > 0 else None
+		for source, value in (
+			("customer", own.get(row.name)),
+			("group", by_group.get(row.customer_group)),
+			("company", company_limit),
+		):
+			if value:
+				limit = as_decimal(value)
+				out[row.name] = (limit, source) if limit > 0 else (None, None)
+				break
+		else:
+			out[row.name] = (None, None)
 	return out
+
+
+def customer_credit_limits(rows, company):
+	"""{customer name: credit limit as a Decimal or None} for the pull's customer `rows`
+	(`customer_credit_limit_sources` without the source); 0 or none is no limit."""
+	return {name: limit for name, (limit, _source) in customer_credit_limit_sources(rows, company).items()}
 
 
 def credit_status(customer, company):

@@ -118,6 +118,11 @@ def create_shift(ctx, data, notes):
 	_set_store_controls(doc, data["store_controls"], precision)
 	_set_on_account(doc, data["on_account"], precision)
 	for row in data["payments"]:
+		if quantize(row["received"], precision) != row["received"]:
+			raise SyncError(
+				VALIDATION,
+				f"payments[{row['mode_of_payment']}].received {row['received']} has more than {precision} decimals",
+			)
 		values = {"mode_of_payment": row["mode_of_payment"]}
 		for field in PAYMENT_MONEY_FIELDS:
 			values[field] = _money(row[field], precision)

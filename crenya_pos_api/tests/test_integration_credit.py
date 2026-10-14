@@ -15,6 +15,7 @@ from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import sync as sync_api
 from crenya_pos_api.api.auth import sign_in
 from crenya_pos_api.sync import credit as credit_service
+from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS
 from crenya_pos_api.sync.context import DEVICE_ROLE, POS_USER_ROLE, get_device_context
 from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, credit_limit_waived
 from crenya_pos_api.sync.errors import InvalidRequestError
@@ -209,14 +210,24 @@ class TestCreditStatus(CreditCase):
 		with self.assertRaises(InvalidRequestError):
 			credit_api.get_status(device_id=self.device_id, customer=None)
 
-	def test_status_other_company_refused(self):
-		customer = make_customer("company", limit=150)
-		ctx = get_device_context(self.device_id)
-		with self.assertRaises(InvalidRequestError):
-			credit_service.status_for(ctx, customer, company="_Test Crenya Other Company")
-		self.assertEqual(
-			credit_service.status_for(ctx, customer, company=fixtures.COMPANY)["credit_limit"], "150.000"
-		)
+	def test_status_is_one_answer_for_nothing_to_see(self):
+		customer = make_customer("uniform", limit=150)
+		messages = set()
+		for ask in (
+			lambda: credit_api.get_status(device_id=self.device_id, customer="No such customer"),
+			lambda: credit_api.get_invoice_outstanding(device_id=self.device_id, invoice="ACC-SINV-NOPE"),
+		):
+			with self.assertRaises(InvalidRequestError) as caught:
+				ask()
+			messages.add(str(caught.exception))
+		self.assertEqual(len(messages), 1)
+		# an outlet that does not sell on account answers no credit question
+		self.set_switch(0)
+		try:
+			with self.assertRaises(InvalidRequestError):
+				credit_api.get_status(device_id=self.device_id, customer=customer)
+		finally:
+			self.set_switch(1)
 
 	def test_status_is_for_tills(self):
 		kds = new_id()
@@ -338,6 +349,18 @@ class TestOnAccountInvoice(CreditCase):
 			raise ValueError("boom")
 		self.assertFalse(frappe.local.crenya_credit_waived)
 
+	def test_the_waiver_flag_is_not_seen_by_another_thread(self):
+		import threading
+
+		seen = []
+		with credit_limit_waived():
+			worker = threading.Thread(
+				target=lambda: seen.append(getattr(frappe.local, credit_service.WAIVER_FLAG, False))
+			)
+			worker.start()
+			worker.join()
+		self.assertEqual(seen, [False])
+
 	def test_the_waiver_is_installed_once(self):
 		import erpnext.selling.doctype.customer.customer as customer_module
 
@@ -355,14 +378,17 @@ class TestOnAccountInvoice(CreditCase):
 		sale["customer"] = None
 		self.assertError(self.push_one(self.event(sale)), "validation", False)
 
-	def test_on_account_when_outlet_switch_off_refused(self):
+	def test_a_credit_sale_made_while_the_switch_was_on_posts_when_it_is_off(self):
+		"""Never refuse what the customer took: the owner switched it off before the sale synced."""
 		customer = make_customer("off", limit=500)
 		self.set_switch(0)
 		try:
-			result = self.assertError(
-				self.push_one(self.event(self.on_account_sale(customer, "100.000"))), "validation", False
+			event = self.event(self.on_account_sale(customer, "100.000"))
+			result = self.assertOk(self.push_one(event))
+			self.assertEqual(
+				flt(frappe.db.get_value("Sales Invoice", result["name"], "outstanding_amount"), 3), 100.0
 			)
-			self.assertIn("switched off", result["error"]["message"])
+			self.assertIn("switched off", self.note_of(event))
 		finally:
 			self.set_switch(1)
 
@@ -397,6 +423,76 @@ class TestOnAccountInvoice(CreditCase):
 		self.assertEqual(
 			[(row.loyalty_points, flt(row.purchase_amount, 3)) for row in points], [(100, 100.0)]
 		)
+
+
+class TestOnAccountPosting(CreditCase):
+	def test_credit_only_posts_to_the_same_accounts_as_a_cash_sale(self):
+		"""A profile with its own income and expense accounts: the plain (not POS) invoice of a sale
+		wholly on account books revenue, cost of goods and tax to the same accounts and cost centres
+		as the same sale for cash; only the customer's line differs."""
+		income = "_Test Crenya Profile Income - _TCP"
+		expense = "_Test Crenya Profile COGS - _TCP"
+		for name, parent, kind in (
+			(income, "Direct Income - _TCP", "Income Account"),
+			(expense, "Direct Expenses - _TCP", "Cost of Goods Sold"),
+		):
+			if not frappe.db.exists("Account", name):
+				fixtures._insert(
+					{
+						"doctype": "Account",
+						"account_name": name.rsplit(" - ", 1)[0],
+						"parent_account": parent,
+						"company": fixtures.COMPANY,
+						"account_type": kind,
+						"account_currency": fixtures.CURRENCY,
+					}
+				)
+		fields = ("income_account", "expense_account")
+		saved = frappe.db.get_value("POS Profile", self.profile.name, list(fields), as_dict=True)
+		frappe.db.set_value(
+			"POS Profile", self.profile.name, {"income_account": income, "expense_account": expense}
+		)
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		self.addCleanup(frappe.clear_document_cache, "POS Profile", self.profile.name)
+		self.addCleanup(frappe.db.set_value, "POS Profile", self.profile.name, saved)
+		customer = make_customer("gl", limit=500)
+		credit = frappe.get_doc("Sales Invoice", self.post(self.on_account_sale(customer, "100.000"))["name"])
+		cash = frappe.get_doc(
+			"Sales Invoice",
+			self.post(self.sale_payload(lines=[(fixtures.MILK, "2", "50.000")], customer=customer))["name"],
+		)
+
+		def lines(invoice):
+			skip = {credit.debit_to, cash_account_of(cash)}
+			return sorted(
+				(row.account, flt(row.debit, 3), flt(row.credit, 3), row.cost_center)
+				for row in frappe.get_all(
+					"GL Entry",
+					filters={"voucher_no": invoice.name, "is_cancelled": 0},
+					fields=["account", "debit", "credit", "cost_center"],
+				)
+				if row.account not in skip
+			)
+
+		def cash_account_of(invoice):
+			return invoice.payments[0].account
+
+		self.assertEqual(lines(credit), lines(cash))
+		self.assertTrue(any(row[0] == income for row in lines(cash)), "the profile's income account is used")
+
+	def test_credit_with_a_loyalty_redemption_keeps_the_pos_shape(self):
+		"""credit_only with a loyalty redemption keeps the POS shape: points pay part, the rest is
+		on account."""
+		customer = make_customer("loyalredeem", limit=500, loyalty=fixtures.LOYALTY_PROGRAM)
+		self.post(self.on_account_sale(customer, "100.000", cash="100.000"))
+		sale = self.on_account_sale(customer, "100.000")
+		sale["on_account"] = "99.000"
+		sale["loyalty"] = {"points": 100, "amount": "1.000"}
+		result = self.post(sale)
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		self.assertEqual(doc.is_pos, 1)
+		self.assertEqual(flt(doc.loyalty_amount, 3), 1.0)
+		self.assertEqual(flt(doc.outstanding_amount, 3), 99.0)
 
 
 class TestCreditReturn(CreditCase):
@@ -501,6 +597,10 @@ class TestCreditShift(CreditCase):
 		bad = self.shift_payload()
 		bad["payments"][0]["received"] = "-1.000"
 		self.assertError(self.push_one(self.event(bad, SHIFT)), "validation", False)
+		fine = self.shift_payload()
+		fine["payments"][0]["received"] = "40.0001"
+		self.assertError(self.push_one(self.event(fine, SHIFT)), "validation", False)
+		self.assertFalse(frappe.db.exists(SHIFT, fine["local_id"]))
 
 
 class TestCreditSync(CreditCase):
@@ -515,6 +615,86 @@ class TestCreditSync(CreditCase):
 		self.assertEqual(records[limited]["credit_limit"], "500.000")
 		self.assertIn("credit_limit", records[unlimited])
 		self.assertIsNone(records[unlimited]["credit_limit"])
+
+	def test_switching_credit_on_sends_the_customers_again_with_their_limit(self):
+		limited = make_customer("rescope", limit=500)
+		self.set_switch(0)
+		try:
+			first = sync_api.pull_changes(device_id=self.device_id, entity="customer", limit=500)
+			self.assertNotIn("credit_limit", {k for r in first["records"] for k in r})
+			cursor = first["next_cursor"]
+			while first["has_more"]:
+				first = sync_api.pull_changes(
+					device_id=self.device_id, entity="customer", cursor=cursor, limit=500
+				)
+				cursor = first["next_cursor"]
+		finally:
+			self.set_switch(1)
+		# the owner turned credit on: the till's old cursor restarts the customers once
+		again = sync_api.pull_changes(device_id=self.device_id, entity="customer", cursor=cursor, limit=500)
+		seen = list(again["records"])
+		while again["has_more"]:
+			again = sync_api.pull_changes(
+				device_id=self.device_id, entity="customer", cursor=again["next_cursor"], limit=500
+			)
+			seen += again["records"]
+		self.assertEqual({r["name"]: r for r in seen}[limited]["credit_limit"], "500.000")
+		# and it settles: nothing is sent again on the next pull
+		after = sync_api.pull_changes(
+			device_id=self.device_id, entity="customer", cursor=again["next_cursor"], limit=500
+		)
+		self.assertEqual(after["records"], [])
+
+	def test_the_pulled_limits_are_erpnexts_for_a_whole_page(self):
+		from erpnext.selling.doctype.customer.customer import get_credit_limit
+
+		group = fixtures.leaf_customer_group()
+		customers = [make_customer("page own", limit=250), make_customer("page none")]
+		rows = frappe.get_all(
+			"Customer", filters={"name": ["in", customers]}, fields=["name", "customer_group"]
+		)
+		saved = frappe.db.get_value("Company", fixtures.COMPANY, "credit_limit")
+		group_doc = frappe.get_doc("Customer Group", group)
+		saved_rows = [(r.company, r.credit_limit) for r in group_doc.credit_limits]
+		try:
+			for company_limit, group_limit in ((0, None), (700, None), (700, 300)):
+				frappe.db.set_value("Company", fixtures.COMPANY, "credit_limit", company_limit)
+				frappe.clear_document_cache("Company", fixtures.COMPANY)
+				group_doc.reload()
+				group_doc.set("credit_limits", [])
+				if group_limit:
+					group_doc.append(
+						"credit_limits", {"company": fixtures.COMPANY, "credit_limit": group_limit}
+					)
+				group_doc.save(ignore_permissions=True)
+				batch = credit_service.customer_credit_limits(rows, fixtures.COMPANY)
+				for name in customers:
+					erpnext = flt(get_credit_limit(name, fixtures.COMPANY))
+					self.assertEqual(flt(batch[name] or 0), erpnext, (name, company_limit, group_limit))
+		finally:
+			group_doc.reload()
+			group_doc.set("credit_limits", [])
+			for company, limit in saved_rows:
+				group_doc.append("credit_limits", {"company": company, "credit_limit": limit})
+			group_doc.save(ignore_permissions=True)
+			frappe.db.set_value("Company", fixtures.COMPANY, "credit_limit", saved or 0)
+			frappe.clear_document_cache("Company", fixtures.COMPANY)
+
+	def test_patch_v0_13_twice_changes_no_approval(self):
+		from crenya_pos_api.patches.v0_13 import credit_fields
+
+		fields = [field for _key, field, *_ in APPROVAL_ACTIONS]
+		saved = frappe.db.get_value("POS Profile", self.profile.name, fields, as_dict=True)
+		self.addCleanup(frappe.clear_document_cache, "POS Profile", self.profile.name)
+		self.addCleanup(frappe.db.set_value, "POS Profile", self.profile.name, saved)
+		frappe.db.set_value("POS Profile", self.profile.name, dict(zip(fields, [1, 0] * 8, strict=False)))
+		frappe.db.commit()  # nosemgrep
+		before = frappe.db.get_value("POS Profile", self.profile.name, fields, as_dict=True)
+		credit_fields.execute()
+		credit_fields.execute()
+		self.assertEqual(frappe.db.get_value("POS Profile", self.profile.name, fields, as_dict=True), before)
+		self.assertEqual(frappe.db.get_value("POS Profile", self.profile.name, CREDIT_SALES_FIELD), 1)
+		self.assertTrue(frappe.get_meta("Payment Entry").has_field("crenya_local_id"))
 
 	def test_an_outlet_without_credit_sends_no_limit(self):
 		limited = make_customer("pulloff", limit=500)
@@ -604,6 +784,21 @@ class TestCreditAsDeviceUser(CreditCase):
 		over = self.assertOk(push(self.on_account_sale(customer, "100.000")))
 		self.assertEqual(frappe.db.get_value("Sales Invoice", over["name"], "owner"), user)
 		self.assertOk(push(self.sale_payload(lines=[(fixtures.MILK, "2", "0.600")], customer=customer)))
+		# a part-paid sale (POS shape) and a return credited to the account, as the device user
+		part = self.on_account_sale(customer, "100.000", cash="40.000")
+		sold = self.assertOk(push(part))
+		self.assertEqual(
+			flt(frappe.db.get_value("Sales Invoice", sold["name"], "outstanding_amount"), 3), 60.0
+		)
+		ret = self.return_payload(part, [(fixtures.MILK, "-1", "50.000", 1)], credit_offset="50.000")
+		ret["payments"] = []
+		credited = self.assertOk(push(ret))
+		self.assertEqual(
+			frappe.db.get_value("Sales Invoice", credited["name"], "update_outstanding_for_self"), 0
+		)
+		self.assertEqual(
+			flt(frappe.db.get_value("Sales Invoice", sold["name"], "outstanding_amount"), 3), 10.0
+		)
 
 
 class TestApprovalsContract(CreditCase):

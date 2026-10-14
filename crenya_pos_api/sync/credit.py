@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from decimal import Decimal
 
 import frappe
+from frappe.utils import cint
 
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, money_precision
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
@@ -37,6 +38,38 @@ def customer_credit_limit(customer, company):
 
 	limit = as_decimal(get_credit_limit(customer, company))
 	return limit if limit > 0 else None
+
+
+def customer_credit_limits(rows, company):
+	"""{customer name: credit limit as a Decimal or None} for the pull's customer `rows` (name,
+	customer_group), in three queries for the page: ERPNext's `get_credit_limit` order, the
+	customer's own row, else its group's, else the company's; 0 or none is no limit."""
+	names = [row.name for row in rows]
+	groups = list({row.customer_group for row in rows if row.customer_group})
+
+	def limits(parenttype, parents):
+		if not parents:
+			return {}
+		found = frappe.get_all(
+			"Customer Credit Limit",
+			filters={"parent": ["in", parents], "parenttype": parenttype, "company": company},
+			fields=["parent", "credit_limit"],
+			order_by="idx asc",
+		)
+		result = {}
+		for row in found:
+			result.setdefault(row.parent, row.credit_limit)
+		return result
+
+	own = limits("Customer", names)
+	by_group = limits("Customer Group", groups)
+	company_limit = frappe.get_cached_value("Company", company, "credit_limit")
+	out = {}
+	for row in rows:
+		value = own.get(row.name) or by_group.get(row.customer_group) or company_limit
+		limit = as_decimal(value)
+		out[row.name] = limit if limit > 0 else None
+	return out
 
 
 def credit_status(customer, company):
@@ -75,38 +108,47 @@ def _require_till(ctx):
 		raise_api_error(InvalidRequestError, f"Credit is for tills, not for {ctx.device_type} devices")
 
 
-def status_for(ctx, customer, company=None):
-	"""`credit_status` for the device's customer: the device's company only (another company is
-	refused), an existing customer of the outlet (inside its customer groups, when it limits them)."""
+NOT_FOUND = "Not found"
+
+
+def _require_credit(ctx):
+	"""Credit answers go to a till of an outlet that sells on account."""
 	_require_till(ctx)
-	if company and company != ctx.company:
-		raise_api_error(InvalidRequestError, f"Company {company!r} is not the company of this device")
+	if not cint(ctx.profile.get(CREDIT_SALES_FIELD)):
+		raise_api_error(InvalidRequestError, "Credit sales are switched off for this outlet")
+
+
+def status_for(ctx, customer):
+	"""`credit_status` for a customer of the device's outlet (an existing customer inside its customer
+	groups, when it limits them). One answer for a customer that is not there and one that is not the
+	outlet's, so the call tells nothing about other customers."""
+	_require_credit(ctx)
 	if not customer or not isinstance(customer, str) or not frappe.db.exists("Customer", customer):
-		raise_api_error(InvalidRequestError, f"Customer {customer!r} does not exist")
+		raise_api_error(InvalidRequestError, NOT_FOUND)
 	roots = [row.customer_group for row in ctx.profile.get("customer_groups") or []]
 	if roots:
 		from crenya_pos_api.sync.pull import _descendants
 
 		group = frappe.db.get_value("Customer", customer, "customer_group")
 		if group not in _descendants("Customer Group", roots):
-			raise_api_error(InvalidRequestError, f"Customer {customer} is not a customer of this outlet")
+			raise_api_error(InvalidRequestError, NOT_FOUND)
 	return credit_status(customer, ctx.company)
 
 
 def invoice_outstanding_for(ctx, invoice):
 	"""{name, grand_total, outstanding, as_of} of a submitted sale of this outlet (by name or by the
 	till's local id): what a return of it can credit to the account."""
-	_require_till(ctx)
+	_require_credit(ctx)
 	if not invoice or not isinstance(invoice, str):
-		raise_api_error(InvalidRequestError, "invoice is required")
+		raise_api_error(InvalidRequestError, NOT_FOUND)
 	fields = ["name", "docstatus", "is_return", "company", "pos_profile", "grand_total", "outstanding_amount"]
 	row = frappe.db.get_value("Sales Invoice", invoice, fields, as_dict=True) or frappe.db.get_value(
 		"Sales Invoice", {"crenya_local_id": invoice}, fields, as_dict=True
 	)
 	if not row or row.docstatus != 1 or row.is_return:
-		raise_api_error(InvalidRequestError, f"Invoice {invoice!r} is not a submitted sale")
+		raise_api_error(InvalidRequestError, NOT_FOUND)
 	if row.company != ctx.company or row.pos_profile != ctx.profile.name:
-		raise_api_error(InvalidRequestError, f"Invoice {row.name} was not sold at this outlet")
+		raise_api_error(InvalidRequestError, NOT_FOUND)
 	precision = money_precision()
 	return {
 		"name": row.name,

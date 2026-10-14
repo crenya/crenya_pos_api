@@ -399,12 +399,15 @@ def reconcile_payments(doc, default_mode, notes, on_account=0, credit_offset=0):
 			doc.remove(row)
 
 
-def assert_on_account_allowed(ctx, customer, on_account, precision):
-	"""A sale on account needs the outlet's switch, a named customer and an amount in the
-	currency's decimals. (A limit is not required, and the over-limit check is the till's
-	approval: the server never refuses a sale already made, `credit_limit_waived`.)"""
+def assert_on_account_allowed(ctx, customer, on_account, precision, notes):
+	"""A sale on account needs a named customer and an amount in the currency's decimals. (A limit
+	is not required, and the over-limit check is the till's approval: the server never refuses a
+	sale already made, `credit_limit_waived`.) The outlet's switch is no condition: a sale made
+	while it was on, synced after the owner switched it off, is posted, with a note."""
 	if not cint(ctx.profile.get(CREDIT_SALES_FIELD)):
-		raise SyncError(VALIDATION, f"Sales on account are switched off for POS Profile {ctx.profile.name}")
+		notes.append(
+			f"Sold on account while Sell on Account is switched off for POS Profile {ctx.profile.name}"
+		)
 	if customer == ctx.profile.customer:
 		raise SyncError(
 			VALIDATION, "A sale on account needs a named customer, not the POS Profile's default customer"
@@ -479,7 +482,7 @@ def build_invoice(ctx, data, notes):
 	on_account = data.get("on_account") or Decimal(0)
 	credit_offset = data.get("credit_offset") or Decimal(0)
 	if on_account:
-		assert_on_account_allowed(ctx, customer, on_account, money_precision(ctx.currency))
+		assert_on_account_allowed(ctx, customer, on_account, money_precision(ctx.currency), notes)
 	# a sale wholly on account is no POS payment: no payment rows, ERPNext's plain invoice shape
 	# (Task 0: outstanding = the whole total). Redeeming points keeps the POS shape.
 	credit_only = bool(on_account) and not data.get("loyalty") and not _pays_anything(data["payments"])

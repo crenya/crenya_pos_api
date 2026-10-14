@@ -577,6 +577,7 @@ class TestCreditAsDeviceUser(CreditCase):
 				device_name="Credit till",
 				pos_profile=self.profile.name,
 				app_version="0.9.0",
+				platform="linux",
 			)
 		finally:
 			frappe.set_user("Administrator")

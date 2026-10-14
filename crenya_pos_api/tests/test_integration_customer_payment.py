@@ -6,18 +6,28 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module
 crenya_pos_api.tests.test_integration_customer_payment
 """
 
+import threading
+import time
 import uuid
 from decimal import Decimal
+from unittest import mock
 
 import frappe
-from frappe.utils import flt, nowdate
+from frappe.utils import add_days, flt, nowdate
 
+from crenya_pos_api.api import device as device_api
+from crenya_pos_api.api import sync as sync_api
 from crenya_pos_api.api import web_admin
+from crenya_pos_api.api.auth import sign_in
+from crenya_pos_api.sync import customer_payment as payments
+from crenya_pos_api.sync import events
 from crenya_pos_api.sync.approvals import APPROVER_ROLE
-from crenya_pos_api.sync.context import POS_USER_ROLE
+from crenya_pos_api.sync.context import DEVICE_ROLE, POS_USER_ROLE
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.sync_case import money, new_id
 from crenya_pos_api.tests.test_integration_credit import CreditCase, make_customer
+from crenya_pos_api.tests.test_integration_device_users import PASSWORD
+from crenya_pos_api.tests.test_integration_device_users import ensure_user as ensure_person
 from crenya_pos_api.tests.web_admin_case import MANAGER, ensure_user
 
 AGGREGATE = "Customer Payment"
@@ -266,3 +276,175 @@ class TestCustomerPayment(PaymentCase):
 		row = next(row for row in rows if row["name"] == event_id)
 		self.assertEqual(row["aggregate_type"], AGGREGATE)
 		self.assertTrue(row["hint"] and row["hint_ar"])
+
+
+class TestCustomerPaymentRules(PaymentCase):
+	def test_oldest_means_posting_date_before_creation(self):
+		customer = make_customer("postdate", limit=None)
+		later_made = self.sell(customer, "30.000")
+		earlier_dated = self.post(
+			self.on_account_sale(customer, total="40.000", posting_date=add_days(nowdate(), -1))
+		)["name"]
+		# made second, dated first: it is the oldest debt
+		result = self.assertOk(self.pay(self.payment(customer, "25.000")))
+		self.assertEqual(result["payment"]["invoices"], [earlier_dated])
+		self.assertEqual(
+			(outstanding(earlier_dated), outstanding(later_made)), (Decimal("15.000"), Decimal("30.000"))
+		)
+
+	def test_an_invoice_of_another_company_is_not_allocated(self):
+		customer = make_customer("othercompany", limit=None)
+		invoice = self.sell(customer, "30.000")
+		frappe.db.set_value("Sales Invoice", invoice, "company", "_Test Crenya Other Company")
+		try:
+			result = self.assertOk(self.pay(self.payment(customer, "10.000")))
+		finally:
+			frappe.db.set_value("Sales Invoice", invoice, "company", fixtures.COMPANY)
+		self.assertEqual(result["payment"], {"allocated": "0.000", "unallocated": "10.000", "invoices": []})
+
+	def test_the_default_customer_is_refused(self):
+		result = self.pay(self.payment(self.walk_in, "5.000"))
+		self.assertError(result, "validation", False)
+		self.assertIn("named customer", result["error"]["message"])
+
+	def test_a_unique_key_collision_answers_as_a_duplicate(self):
+		"""Both lookups miss (a concurrent request committed in between): the insert meets the
+		unique `crenya_local_id` and the event is answered with the entry that won."""
+		customer = make_customer("collide", limit=None)
+		payload = self.payment(customer, "3.000")
+		first = self.assertOk(self.pay(payload))
+		real = payments.payment_for_local_id
+		calls = []
+
+		def blind_twice(local_id, device_id=None):
+			calls.append(local_id)
+			return None if len(calls) <= 2 else real(local_id, device_id)
+
+		with mock.patch.object(payments, "payment_for_local_id", blind_twice):
+			again = self.pay(payload)
+		self.assertEqual((again["status"], again["name"]), ("duplicate", first["name"]))
+		self.assertEqual(len(self.entries(payload["local_id"])), 1)
+
+	def test_another_devices_entry_with_the_same_local_id_is_not_ours(self):
+		customer = make_customer("otherdevice", limit=None)
+		payload = self.payment(customer, "3.000")
+		self.assertOk(self.pay(payload))
+		self.assertIsNotNone(payments.payment_for_local_id(payload["local_id"], self.device_id))
+		self.assertIsNone(payments.payment_for_local_id(payload["local_id"], new_id()))
+		self.assertIsNotNone(payments.payment_for_local_id(payload["local_id"]))
+
+
+class TestConcurrentReceipts(PaymentCase):
+	"""Two receipts of one customer never allocate the same invoice twice: the second waits for the
+	first to commit and then reads the balances (MariaDB's REPEATABLE READ would otherwise show it
+	the old ones)."""
+
+	def test_two_receipts_for_one_invoice_allocate_it_once(self):
+		customer = make_customer("race", limit=None)
+		invoice = self.sell(customer, "30.000")
+		first = self.payment(customer, "30.000")
+		second = self.payment(customer, "30.000")
+		lock = events._lock_name(self.event(first, AGGREGATE))
+		self.assertTrue(lock)
+		# the same customer, named by its till id, takes the same lock
+		self.assertEqual(
+			payments.CustomerPaymentHandler().lock_key({"customer": customer}), f"customer:{customer}"
+		)
+		self.assertTrue(events._acquire_lock(lock))
+		site = frappe.local.site
+		sites_path = frappe.local.sites_path
+		device_id = self.device_id
+		event = self.event(second, AGGREGATE)
+		answers = []
+
+		def worker():
+			frappe.init(site=site, sites_path=sites_path)
+			frappe.connect()
+			try:
+				frappe.set_user("Administrator")
+				answers.extend(sync_api.push_batch(device_id=device_id, events=[event]))
+			except Exception as exc:  # the main thread reports it
+				answers.append(exc)
+			finally:
+				frappe.destroy()
+
+		thread = threading.Thread(target=worker)
+		thread.start()
+		try:
+			# the second receipt is waiting for the lock; the first books and commits meanwhile
+			time.sleep(2)
+			self.assertEqual(self.entries(second["local_id"]), [])
+			won = self.assertOk(self.pay(first))
+		finally:
+			events._release_lock(lock)
+		thread.join(60)
+		self.assertFalse(thread.is_alive())
+		self.assertEqual(len(answers), 1, msg=answers)
+		lost = answers[0]
+		self.assertNotIsInstance(lost, Exception, msg=repr(lost))
+		self.assertEqual(lost["status"], "ok", msg=lost.get("error"))
+		self.assertEqual(won["payment"]["invoices"], [invoice])
+		# the second read the invoice paid: nothing allocated, all an advance
+		self.assertEqual(lost["payment"], {"allocated": "0.000", "unallocated": "30.000", "invoices": []})
+		frappe.db.rollback()
+		self.assertEqual(outstanding(invoice), Decimal("0.000"))
+		allocated = frappe.db.sql(
+			"select coalesce(sum(allocated_amount), 0) from `tabPayment Entry Reference` "
+			"where reference_doctype = 'Sales Invoice' and reference_name = %s and docstatus = 1",
+			(invoice,),
+		)[0][0]
+		self.assertEqual(Decimal(money(allocated)), Decimal("30.000"))
+
+
+class TestCustomerPaymentAsDeviceUser(PaymentCase):
+	"""The receipt as the device user, who holds the device role only."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls._saved_throttle = frappe.conf.get("throttle_user_limit")
+		frappe.conf.throttle_user_limit = 10000
+		cls.person = ensure_person("_test_crenya_pay_cashier@example.com", [POS_USER_ROLE, "Sales User"])
+		frappe.db.commit()  # nosemgrep
+
+	@classmethod
+	def tearDownClass(cls):
+		if cls._saved_throttle is None:
+			frappe.conf.pop("throttle_user_limit", None)
+		else:
+			frappe.conf.throttle_user_limit = cls._saved_throttle
+		super().tearDownClass()
+
+	def test_the_device_user_posts_a_receipt_and_an_advance(self):
+		frappe.local.request_ip = "127.0.0.1"
+		device_id = new_id()
+		answer = sign_in(self.person, PASSWORD, device_id)
+		user = answer["device_user"]
+		self.assertEqual(set(frappe.get_roles(user)) - {"All", "Guest"}, {DEVICE_ROLE})
+		frappe.set_user(user)
+		try:
+			device_api.register_device(
+				device_id=device_id,
+				device_name="Receipt till",
+				pos_profile=self.profile.name,
+				app_version="0.9.0",
+				platform="linux",
+			)
+		finally:
+			frappe.set_user("Administrator")
+		frappe.db.commit()  # nosemgrep
+		customer = make_customer("devpay", limit=None)
+		invoice = self.sell(customer, "25.000")
+
+		def push(payload):
+			frappe.set_user(user)
+			try:
+				return sync_api.push_batch(device_id=device_id, events=[self.event(payload, AGGREGATE)])[0]
+			finally:
+				frappe.set_user("Administrator")
+
+		booked = self.assertOk(push(self.payment(customer, "40.000")))
+		self.assertEqual(
+			booked["payment"], {"allocated": "25.000", "unallocated": "15.000", "invoices": [invoice]}
+		)
+		self.assertEqual(frappe.db.get_value(PAYMENT_ENTRY, booked["name"], "owner"), user)

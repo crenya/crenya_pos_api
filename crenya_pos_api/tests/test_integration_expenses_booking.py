@@ -100,6 +100,16 @@ def ensure_category(name, account=None):
 	return name
 
 
+def jpeg():
+	import io
+
+	from PIL import Image
+
+	buffer = io.BytesIO()
+	Image.new("RGB", (40, 30), (200, 30, 30)).save(buffer, format="JPEG")
+	return buffer.getvalue()
+
+
 def cash_account():
 	return frappe.db.get_value(
 		"Mode of Payment Account", {"parent": core.CASH, "company": core.COMPANY}, "default_account"
@@ -430,7 +440,7 @@ class TestExpenseBooking(ExpenseCase):
 			{
 				"doctype": "File",
 				"file_name": f"bill-{uuid.uuid4().hex[:6]}.jpg",
-				"content": b"\xff\xd8\xff\xe0jpeg",
+				"content": jpeg(),
 				"is_private": 1,
 			}
 		).insert(ignore_permissions=True)

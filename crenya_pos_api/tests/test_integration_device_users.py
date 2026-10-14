@@ -237,6 +237,28 @@ class TestDeviceUsers(SyncCase):
 		)
 		self.assertEqual(frappe.db.get_value("Sales Invoice", results[0]["name"], "owner"), name)
 
+	def test_a_device_user_sells_to_a_loyalty_customer(self):
+		"""A sale of a customer in a Loyalty Program submitted by the device user alone (0.12.1):
+		ERPNext reads the Customer under the pushing user's rights to book the points."""
+		device_id, answer = self.pair()
+		name = answer["device_user"]
+		device = self.register(name, device_id)
+		self.assertEqual(set(frappe.get_roles(name)) - {"All", "Guest"}, {DEVICE_ROLE})
+		customer = fixtures.make_customer("_Test Crenya Loyal Buyer", fixtures.LOYALTY_PROGRAM)
+		frappe.db.commit()
+		payload = self.sale_payload(customer=customer, cashier=self.cashier)
+		payload["offline_number"] = f"OFF-{device['device_short']}-loy001"
+		frappe.set_user(name)
+		try:
+			results = sync_api.push_batch(device_id=device_id, events=[self.event(payload)])
+		finally:
+			frappe.set_user("Administrator")
+		self.assertOk(results[0])
+		self.assertEqual(frappe.db.get_value("Sales Invoice", results[0]["name"], "owner"), name)
+		self.assertTrue(
+			frappe.db.exists("Loyalty Point Entry", {"invoice": results[0]["name"], "customer": customer})
+		)
+
 	def test_another_devices_user_cannot_use_a_device(self):
 		first_id, first = self.pair()
 		second_id, second = self.pair(self.other)

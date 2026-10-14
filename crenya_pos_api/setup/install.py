@@ -24,7 +24,10 @@ DEVICE_ROLE = "Crenya POS Device"
 # - `erpnext.stock.get_item_details.get_item_details` checks each line's Item.
 # {DocType: right}, read-only, never a write; granted to the roles of devices that post sales only
 # (`ensure_push_reads`).
-PUSH_READS = {"Account": "select", "Item": "read"}
+# Customer: ERPNext reads the customer under the pushing user's rights when a sale of a customer in a
+# Loyalty Program is submitted (`get_loyalty_program_details_with_points` -> `has_permission("Customer",
+# doc=..., throw=True)`, v15 and v16); the device role had none, so that sale was refused (0.12.1)
+PUSH_READS = {"Account": "select", "Item": "read", "Customer": "read"}
 
 
 def _store_control_fields():

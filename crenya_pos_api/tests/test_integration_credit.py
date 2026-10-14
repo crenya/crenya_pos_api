@@ -290,6 +290,43 @@ class TestCreditStatus(CreditCase):
 		with self.assertRaises(InvalidRequestError):
 			credit_api.get_invoice_outstanding(device_id=self.device_id, invoice="ACC-SINV-NOPE")
 
+	def test_with_the_switch_off_an_old_invoice_is_still_answered(self):
+		customer = make_customer("offinvoice", limit=500)
+		sale = self.on_account_sale(customer, "100.000", cash="40.000")
+		sold = self.post(sale)
+		self.set_switch(0)
+		try:
+			answer = credit_api.get_invoice_outstanding(device_id=self.device_id, invoice=sold["name"])
+			self.assertEqual((answer["grand_total"], answer["outstanding"]), ("100.000", "60.000"))
+			# the uniform not-found answer is unchanged
+			with self.assertRaises(InvalidRequestError) as caught:
+				credit_api.get_invoice_outstanding(device_id=self.device_id, invoice="ACC-SINV-NOPE")
+			self.assertEqual(str(caught.exception), "Not found")
+		finally:
+			self.set_switch(1)
+
+	def test_with_the_switch_off_a_customer_who_owes_is_answered_and_others_are_not(self):
+		owes = make_customer("offowes", limit=500)
+		clear = make_customer("offclear", limit=500)
+		self.post(self.on_account_sale(owes, "100.000", cash="40.000"))
+		self.set_switch(0)
+		try:
+			status = credit_api.get_status(device_id=self.device_id, customer=owes)
+			self.assertEqual((status["outstanding"], status["available"]), ("60.000", "440.000"))
+			with self.assertRaises(InvalidRequestError) as caught:
+				credit_api.get_status(device_id=self.device_id, customer=clear)
+			self.assertIn("switched off", str(caught.exception))
+			# a customer who is not there, or not the outlet's, is still the same not-found answer
+			with self.assertRaises(InvalidRequestError) as missing:
+				credit_api.get_status(device_id=self.device_id, customer="No such customer")
+			self.assertEqual(str(missing.exception), "Not found")
+		finally:
+			self.set_switch(1)
+		# switched on again, the customer with nothing owing is answered
+		self.assertEqual(
+			credit_api.get_status(device_id=self.device_id, customer=clear)["outstanding"], "0.000"
+		)
+
 
 class TestOnAccountInvoice(CreditCase):
 	def test_on_account_exact_omr(self):

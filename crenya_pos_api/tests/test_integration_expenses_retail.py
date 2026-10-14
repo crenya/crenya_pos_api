@@ -26,7 +26,7 @@ from frappe.utils import add_to_date, now_datetime, nowdate
 from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import expenses as expenses_api
 from crenya_pos_api.api import sync as sync_api
-from crenya_pos_api.expenses import booking
+from crenya_pos_api.expenses import booking, reports
 from crenya_pos_api.expenses import sync as expense_sync
 from crenya_pos_api.expenses.product import RESTAURANT, RETAIL
 from crenya_pos_api.sync.hashing import payload_hash
@@ -314,6 +314,34 @@ class TestRetailExpenses(RetailExpenseCase):
 		doc = self.expense(p["local_id"])
 		self.assertEqual(doc.status, "Cancelled")
 		self.assertEqual(frappe.db.get_value("Purchase Invoice", pi, "docstatus"), 2)
+
+	def test_contention_is_retried_not_kept_not_booked(self):
+		"""A deadlock or a stale timestamp while booking undoes the event (retryable): the till
+		sends it again and it books. (The restaurant's own test of this patches its copy of the
+		engine; this one goes through the built-in handler.)"""
+		for error in (frappe.QueryDeadlockError, frappe.TimestampMismatchError):
+			payload = self.payload()
+			with mock.patch.object(booking, "_post", side_effect=error("busy")):
+				result = self.send(payload, ok=False)
+			self.assertEqual(result["status"], "error", msg=error)
+			self.assertTrue(result["error"]["retryable"], msg=error)
+			self.assertIsNone(self.expense(payload["local_id"]))
+			self.assertEqual(self.send(payload)["expense"]["status"], "Booked")
+
+	def test_a_delete_the_server_could_not_finish_stays_not_booked_and_out_of_the_z(self):
+		shift_id = new_id()
+		kept = self.payload(shift_local_id=shift_id)
+		gone = self.payload(shift_local_id=shift_id)
+		for payload in (kept, gone):
+			self.send(payload)
+		with mock.patch.object(booking, "_cancel_pi", side_effect=frappe.ValidationError("linked")):
+			self.send(dict(gone, approved_by=self.manager, reason="Not ours"), "cancel")
+		doc = self.expense(gone["local_id"])
+		self.assertEqual(doc.status, "Not booked")
+		self.assertEqual(frappe.db.get_value("Purchase Invoice", doc.purchase_invoice, "docstatus"), 1)
+		shift = frappe._dict(local_id=shift_id, pos_profile=self.profile.name)
+		rows = reports.shift_expenses(shift, {core.CASH})
+		self.assertEqual(len(rows), 1)
 
 	def test_supplier_outside_the_outlet_refused(self):
 		other = f"_Test Crenya Other Supplier {uuid.uuid4().hex[:6]}"

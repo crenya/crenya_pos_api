@@ -710,11 +710,13 @@ def _require_expenses():
 		frappe.throw(expenses_booking.UNSUPPORTED)
 
 
-def _retail_off(ctx):
-	"""A retail outlet that has not switched Expenses on: it is sent no category or supplier."""
-	return product_for(ctx.device_type) == RETAIL and not cint(
-		ctx.profile.get(expenses_booking.ENABLED_FIELD)
-	)
+def _expenses_withheld(ctx):
+	"""A device that is sent no expense record: one with no expense product (a kitchen display, a
+	waiter phone), or a retail outlet that has not switched Expenses on."""
+	product = product_for(ctx.device_type)
+	if product is None:
+		return True
+	return product == RETAIL and not cint(ctx.profile.get(expenses_booking.ENABLED_FIELD))
 
 
 class ExpenseCategorySpec(EntitySpec):
@@ -726,7 +728,7 @@ class ExpenseCategorySpec(EntitySpec):
 
 	def filters(self, table, ctx):
 		_require_expenses()
-		return [table.name == ""] if _retail_off(ctx) else []
+		return [table.name == ""] if _expenses_withheld(ctx) else []
 
 	def build(self, rows, ctx):
 		return [
@@ -741,10 +743,10 @@ class ExpenseCategorySpec(EntitySpec):
 		]
 
 	def cursor_scope(self, ctx):
-		return EXPENSE_OFF_SCOPE if _retail_off(ctx) else None
+		return EXPENSE_OFF_SCOPE if _expenses_withheld(ctx) else None
 
 	def sends_tombstones(self, ctx):
-		return not _retail_off(ctx)
+		return not _expenses_withheld(ctx)
 
 
 class ExpenseSupplierSpec(EntitySpec):
@@ -757,7 +759,7 @@ class ExpenseSupplierSpec(EntitySpec):
 
 	def filters(self, table, ctx):
 		_require_expenses()
-		if _retail_off(ctx):
+		if _expenses_withheld(ctx):
 			return [table.name == ""]
 		group = ctx.profile.get(expenses_booking.SUPPLIER_GROUP_FIELD)
 		cash = ctx.profile.get(expenses_booking.CASH_SUPPLIER_FIELD) or ""
@@ -783,12 +785,12 @@ class ExpenseSupplierSpec(EntitySpec):
 			ctx.profile.get(field) or ""
 			for field in (expenses_booking.SUPPLIER_GROUP_FIELD, expenses_booking.CASH_SUPPLIER_FIELD)
 		)
-		if _retail_off(ctx):
+		if _expenses_withheld(ctx):
 			key = f"{EXPENSE_OFF_SCOPE}|{key}"
 		return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 	def sends_tombstones(self, ctx):
-		return not _retail_off(ctx)
+		return not _expenses_withheld(ctx)
 
 
 # how far back the booking pull looks (by the expense's business date): the till lists the day's
@@ -802,15 +804,16 @@ class ExpenseBookingSpec(EntitySpec):
 	`{id (the till's local_id), name (the POS Expense), status, purchase_invoice, posting_error}`.
 	A POS Expense is read by its `modified`, which every booking, retry and cancel moves. It names
 	only the outlet's expenses that came from a till and are recent; no tombstones (a deleted
-	POS Expense names no record on the till). A retail outlet whose Expenses switch is off gets
-	none."""
+	POS Expense names no record on the till). A retail outlet whose Expenses switch is off, and a device with no expense
+	product (kds, waiter), get none. The look-back is `EXPENSE_BOOKING_DAYS` (62) days of the expense's
+	business date: an older expense retried on the web is not delivered."""
 
 	doctype = expenses_booking.EXPENSE
 	fields = ("name", "local_id", "status", "purchase_invoice", "posting_error")
 
 	def filters(self, table, ctx):
 		_require_expenses()
-		if _retail_off(ctx):
+		if _expenses_withheld(ctx):
 			return [table.name == ""]
 		since = add_days(nowdate(), -EXPENSE_BOOKING_DAYS)
 		return [
@@ -834,7 +837,7 @@ class ExpenseBookingSpec(EntitySpec):
 		]
 
 	def cursor_scope(self, ctx):
-		return EXPENSE_OFF_SCOPE if _retail_off(ctx) else None
+		return EXPENSE_OFF_SCOPE if _expenses_withheld(ctx) else None
 
 	def sends_tombstones(self, ctx):
 		return False

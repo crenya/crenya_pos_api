@@ -465,6 +465,51 @@ class TestRetailExpenses(RetailExpenseCase):
 			frappe.clear_document_cache("POS Profile", self.profile.name)
 			frappe.db.commit()  # nosemgrep
 
+	def _device_of_type(self, device_type):
+		device_id = new_id()
+		device_api.register_device(
+			device_id=device_id,
+			device_name=f"{device_type} device",
+			pos_profile=self.profile.name,
+			app_version="0.7.0",
+			platform="linux",
+			device_type=device_type,
+		)
+		return device_id
+
+	def test_a_device_without_an_expense_product_is_sent_no_expense_record(self):
+		"""A kitchen display or waiter phone of the outlet is sent no category, supplier or booking."""
+		self.send(self.payload())
+		for device_type in ("kds", "waiter_phone"):
+			device_id = self._device_of_type(device_type)
+			for entity in ("expense_category", "expense_supplier", "expense_booking"):
+				records = self._pull_all(entity, 100, device_id=device_id)[0]
+				self.assertEqual(records, [], msg=f"{device_type} {entity}")
+
+	def test_a_restaurant_till_is_sent_the_booking_of_its_outlets_expenses(self):
+		restaurant = self._device_of_type("restaurant_pos")
+		p = self.payload()
+		with stub_modules(restaurant_constants(("Crenya POS Manager",))):
+			self.send(p, device_id=restaurant)
+		rows = [
+			row
+			for row in self._pull_all("expense_booking", 100, device_id=restaurant)[0]
+			if row["id"] == p["local_id"]
+		]
+		self.assertEqual([(row["status"]) for row in rows], ["Booked"])
+		self.assertTrue(self._pull_all("expense_category", 100, device_id=restaurant)[0])
+
+	def test_the_booking_pull_looks_back_62_days_of_the_business_date(self):
+		inside, outside = self.payload(), self.payload()
+		self.send(inside)
+		self.send(outside)
+		for p, days in ((inside, 62), (outside, 63)):
+			name = frappe.db.get_value(AGGREGATE, {"local_id": p["local_id"]}, "name")
+			frappe.db.set_value(AGGREGATE, name, "expense_date", add_days(nowdate(), -days))
+		ids = {row["id"] for row in self._pull("expense_booking")}
+		self.assertIn(inside["local_id"], ids)
+		self.assertNotIn(outside["local_id"], ids)
+
 	def _pull(self, entity):
 		return self._pull_all(entity, 100)[0]
 

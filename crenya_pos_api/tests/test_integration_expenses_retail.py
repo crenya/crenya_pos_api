@@ -21,7 +21,7 @@ from decimal import Decimal
 from unittest import mock
 
 import frappe
-from frappe.utils import add_to_date, now_datetime, nowdate
+from frappe.utils import add_days, add_to_date, now_datetime, nowdate
 
 from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import expenses as expenses_api
@@ -398,6 +398,72 @@ class TestRetailExpenses(RetailExpenseCase):
 			for row in self._pull_all("expense_category", 100, cursor=cursors["expense_category"])[0]
 		}
 		self.assertIn(GAS, ids)
+
+	def test_the_booking_pull_carries_a_web_retry_to_the_till(self):
+		"""A failed booking pulls as `Not booked` with its error; after the owner's Retry on the
+		web the same expense pulls again as `Booked` with its invoice and no error. Another
+		outlet's expense, one made on the desk (no local_id) and an expense past the window are
+		not sent."""
+		mode = f"_Test Crenya Pullpetty {uuid.uuid4().hex[:6]}"
+		frappe.get_doc(
+			{"doctype": "Mode of Payment", "mode_of_payment": mode, "type": "Cash", "enabled": 1}
+		).insert(ignore_permissions=True)
+		profile = frappe.get_doc("POS Profile", self.profile.name)
+		profile.append("payments", {"mode_of_payment": mode})
+		profile.flags.ignore_validate = True
+		profile.save(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep
+		try:
+			p = self.payload(mode_of_payment=mode)
+			self.send(p)
+			doc = self.expense(p["local_id"])
+			first, cursor, _pages = self._pull_all("expense_booking", 100)
+			mine = [row for row in first if row["id"] == p["local_id"]]
+			self.assertEqual(len(mine), 1)
+			self.assertEqual(
+				(mine[0]["name"], mine[0]["status"], mine[0]["purchase_invoice"]),
+				(doc.name, "Not booked", None),
+			)
+			self.assertIn(mode, mine[0]["posting_error"])
+
+			mop = frappe.get_doc("Mode of Payment", mode)
+			mop.append("accounts", {"company": core.COMPANY, "default_account": cash_account()})
+			mop.save(ignore_permissions=True)
+			self.assertEqual(booking.retry(doc, product=RETAIL), booking.BOOKED)
+			doc.reload()
+			again, _cursor, _pages = self._pull_all("expense_booking", 100, cursor=cursor)
+			mine = [row for row in again if row["id"] == p["local_id"]]
+			self.assertEqual(len(mine), 1, "the retry is a change after the till's cursor")
+			self.assertEqual(
+				(mine[0]["status"], mine[0]["purchase_invoice"], mine[0]["posting_error"]),
+				("Booked", doc.purchase_invoice, None),
+			)
+
+			# only this outlet's till expenses, and not the old ones
+			frappe.db.set_value(AGGREGATE, doc.name, "expense_date", add_days(nowdate(), -400))
+			old, _cursor, _pages = self._pull_all("expense_booking", 100)
+			self.assertNotIn(p["local_id"], [row["id"] for row in old])
+			frappe.db.set_value(AGGREGATE, doc.name, {"expense_date": nowdate(), "outlet": "Elsewhere"})
+			other, _cursor, _pages = self._pull_all("expense_booking", 100)
+			self.assertNotIn(p["local_id"], [row["id"] for row in other])
+		finally:
+			profile = frappe.get_doc("POS Profile", self.profile.name)
+			profile.payments = [row for row in profile.payments if row.mode_of_payment != mode]
+			profile.flags.ignore_validate = True
+			profile.save(ignore_permissions=True)
+			frappe.db.commit()  # nosemgrep
+
+	def test_the_booking_pull_is_empty_while_the_outlet_switch_is_off(self):
+		self.send(self.payload())
+		self.assertTrue(self._pull("expense_booking"))
+		frappe.db.set_value("POS Profile", self.profile.name, "crenya_expenses_enabled", 0)
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		try:
+			self.assertEqual(self._pull("expense_booking"), [])
+		finally:
+			frappe.db.set_value("POS Profile", self.profile.name, "crenya_expenses_enabled", 1)
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+			frappe.db.commit()  # nosemgrep
 
 	def _pull(self, entity):
 		return self._pull_all(entity, 100)[0]

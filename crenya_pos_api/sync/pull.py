@@ -14,7 +14,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 import frappe
-from frappe.utils import cint, get_datetime, getdate, now_datetime, nowdate
+from frappe.utils import add_days, cint, get_datetime, getdate, now_datetime, nowdate
 
 from crenya_pos_api.expenses import booking as expenses_booking
 from crenya_pos_api.expenses.product import RETAIL, product_for
@@ -791,6 +791,55 @@ class ExpenseSupplierSpec(EntitySpec):
 		return not _retail_off(ctx)
 
 
+# how far back the booking pull looks (by the expense's business date): the till lists the day's
+# expenses and a manager retries within days, not months
+EXPENSE_BOOKING_DAYS = 62
+
+
+class ExpenseBookingSpec(EntitySpec):
+	"""`expense_booking` (0.13.2): what ERPNext made of the outlet's till expenses, so a booking
+	made on app.crenya.com (Retry) reaches the till that still shows `Not booked`:
+	`{id (the till's local_id), name (the POS Expense), status, purchase_invoice, posting_error}`.
+	A POS Expense is read by its `modified`, which every booking, retry and cancel moves. It names
+	only the outlet's expenses that came from a till and are recent; no tombstones (a deleted
+	POS Expense names no record on the till). A retail outlet whose Expenses switch is off gets
+	none."""
+
+	doctype = expenses_booking.EXPENSE
+	fields = ("name", "local_id", "status", "purchase_invoice", "posting_error")
+
+	def filters(self, table, ctx):
+		_require_expenses()
+		if _retail_off(ctx):
+			return [table.name == ""]
+		since = add_days(nowdate(), -EXPENSE_BOOKING_DAYS)
+		return [
+			table.outlet == ctx.profile.name,
+			table.local_id.isnotnull(),
+			table.local_id != "",
+			table.expense_date >= since,
+		]
+
+	def build(self, rows, ctx):
+		return [
+			{
+				"id": row.local_id,
+				"name": row.name,
+				"status": row.status or None,
+				"purchase_invoice": row.purchase_invoice or None,
+				"posting_error": row.posting_error or None,
+				"modified": format_db_datetime(row.modified),
+			}
+			for row in rows
+		]
+
+	def cursor_scope(self, ctx):
+		return EXPENSE_OFF_SCOPE if _retail_off(ctx) else None
+
+	def sends_tombstones(self, ctx):
+		return False
+
+
 # built-in entities; crenya_pos_api.sync.registry.entities() adds those of other apps
 ENTITIES = {
 	"item": ItemSpec(),
@@ -806,6 +855,8 @@ ENTITIES = {
 	# 0.13.0: the till's expense categories and the outlet's expense suppliers
 	"expense_category": ExpenseCategorySpec(),
 	"expense_supplier": ExpenseSupplierSpec(),
+	# 0.13.2: the booking state of the outlet's till expenses
+	"expense_booking": ExpenseBookingSpec(),
 }
 
 

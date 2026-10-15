@@ -11,6 +11,9 @@ The Payment Entry is allocated to the customer's submitted, outstanding Sales In
 left stays unallocated, an advance on the customer's account. The result adds
 `payment` {allocated, unallocated, invoices}.
 
+The Payment Entry's `reference_no` is the reference the cashier typed (a card slip or transfer number, so
+the bank statement can be reconciled), or the till's `local_id` when none was typed; the remarks keep both.
+
 A resend never books twice: the Payment Entry keeps the till's `local_id` in `crenya_local_id` (NULL on
 every entry that did not come from a till, never an empty string: the field is unique), looked up
 before anything is booked. A payment ERPNext cannot book (a mode of payment without an account for the
@@ -231,9 +234,11 @@ def book_payment(ctx, data, notes):
 			"received_amount": flt(data["amount"], precision),
 			"source_exchange_rate": 1,
 			"target_exchange_rate": 1,
-			# the till's id: the idempotency key, and the reference a bank account's entry requires
+			# the till's id is the idempotency key (`crenya_local_id`); the reference a bank account's
+			# entry requires is the one the cashier typed (card slip, transfer number) so the bank
+			# statement can be matched, and only when none was typed the till's id (cash needs none)
 			LOCAL_ID_FIELD: data["local_id"],
-			"reference_no": data["local_id"],
+			"reference_no": data["reference"] or data["local_id"],
 			"reference_date": data["business_date"],
 			# ERPNext writes its own "Amount ... received from ..." over the remarks unless told these
 			# are custom: they carry the till's id (`payment_for_local_id` reads the device from them)

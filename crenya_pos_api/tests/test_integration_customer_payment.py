@@ -96,6 +96,43 @@ class TestCustomerPayment(PaymentCase):
 			[(first, Decimal("30.000")), (second, Decimal("30.000"))],
 		)
 
+	def test_the_typed_reference_is_the_payment_entrys_reference_no(self):
+		customer = make_customer("refno", limit=None)
+		payload = self.payment(customer, "7.000", reference="CARD-SLIP-77")
+		result = self.assertOk(self.pay(payload))
+		entry = frappe.get_doc(PAYMENT_ENTRY, result["name"])
+		self.assertEqual(entry.reference_no, "CARD-SLIP-77")
+		self.assertEqual(entry.crenya_local_id, payload["local_id"])
+		self.assertIn("reference CARD-SLIP-77", entry.remarks)
+		# a resend finds the entry by the till's id, not by the reference
+		again = self.pay(payload)
+		self.assertEqual(again["status"], "duplicate")
+		self.assertEqual(again["name"], result["name"])
+		self.assertEqual(len(self.entries(payload["local_id"])), 1)
+
+	def test_without_a_typed_reference_the_till_id_stays_the_reference_no(self):
+		customer = make_customer("norefno", limit=None)
+		payload = self.payment(customer, "3.000")
+		entry = frappe.get_doc(PAYMENT_ENTRY, self.assertOk(self.pay(payload))["name"])
+		self.assertEqual(entry.reference_no, payload["local_id"])
+
+	def test_a_blank_reference_is_none_and_the_till_id_stays_the_reference_no(self):
+		customer = make_customer("blankref", limit=None)
+		payload = self.payment(customer, "2.000", reference="   ")
+		entry = frappe.get_doc(PAYMENT_ENTRY, self.assertOk(self.pay(payload))["name"])
+		self.assertEqual(entry.reference_no, payload["local_id"])
+		self.assertNotIn("reference", entry.remarks)
+
+	def test_a_reference_is_stripped_and_one_over_140_characters_is_refused(self):
+		customer = make_customer("longref", limit=None)
+		exactly = "R" * 140
+		payload = self.payment(customer, "2.000", reference=f"  {exactly}  ")
+		entry = frappe.get_doc(PAYMENT_ENTRY, self.assertOk(self.pay(payload))["name"])
+		self.assertEqual(entry.reference_no, exactly)
+		too_long = self.payment(customer, "2.000", reference="R" * 141)
+		self.assertError(self.pay(too_long), "validation", False)
+		self.assertEqual(self.entries(too_long["local_id"]), [])
+
 	def test_receipt_more_than_debt_leaves_advance(self):
 		customer = make_customer("advance", limit=None)
 		invoice = self.sell(customer, "25.000")

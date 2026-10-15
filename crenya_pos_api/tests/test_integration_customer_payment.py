@@ -116,6 +116,23 @@ class TestCustomerPayment(PaymentCase):
 		entry = frappe.get_doc(PAYMENT_ENTRY, self.assertOk(self.pay(payload))["name"])
 		self.assertEqual(entry.reference_no, payload["local_id"])
 
+	def test_a_blank_reference_is_none_and_the_till_id_stays_the_reference_no(self):
+		customer = make_customer("blankref", limit=None)
+		payload = self.payment(customer, "2.000", reference="   ")
+		entry = frappe.get_doc(PAYMENT_ENTRY, self.assertOk(self.pay(payload))["name"])
+		self.assertEqual(entry.reference_no, payload["local_id"])
+		self.assertNotIn("reference", entry.remarks)
+
+	def test_a_reference_is_stripped_and_one_over_140_characters_is_refused(self):
+		customer = make_customer("longref", limit=None)
+		exactly = "R" * 140
+		payload = self.payment(customer, "2.000", reference=f"  {exactly}  ")
+		entry = frappe.get_doc(PAYMENT_ENTRY, self.assertOk(self.pay(payload))["name"])
+		self.assertEqual(entry.reference_no, exactly)
+		too_long = self.payment(customer, "2.000", reference="R" * 141)
+		self.assertError(self.pay(too_long), "validation", False)
+		self.assertEqual(self.entries(too_long["local_id"]), [])
+
 	def test_receipt_more_than_debt_leaves_advance(self):
 		customer = make_customer("advance", limit=None)
 		invoice = self.sell(customer, "25.000")

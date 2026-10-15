@@ -275,7 +275,11 @@ crenya_restaurant registers its own with `register_product`.
 
 The retail till pushes expenses through the same handler (`expenses/sync.py`, aggregate `POS Expense`,
 operations `submit`, `amend`, `cancel`, built in): the device's type picks the product. Retail tills
-also pull `expense_category` and `expense_supplier` (empty while the outlet's Expenses switch is off),
+also pull `expense_category` and `expense_supplier` (empty while the outlet's Expenses switch is off, and for a kitchen display or waiter phone)
+and, from 0.13.2, `expense_booking` (the booking state of the outlet's recent till expenses:
+`{id: local_id, name, status, purchase_invoice, posting_error}`, so a Retry on app.crenya.com reaches the
+till; only the outlet's expenses of the last 62 days by business date, so an older one retried on the
+web is not delivered, and nothing for a kitchen display or waiter phone, which have no expense product; an older till never asks, an older server answers unknown entity and the till skips it),
 send the bill photo to `crenya_pos_api.api.expenses.attach_photo`, and read the bootstrap's `expenses`
 block with `features.retail_expenses`, all only on a site with erptrue_app's POS Expense. A retail
 outlet's approvers are the holders of Crenya POS Manager on the POS Profile's *Applicable for Users*

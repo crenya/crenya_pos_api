@@ -21,7 +21,7 @@ from decimal import Decimal
 from unittest import mock
 
 import frappe
-from frappe.utils import add_to_date, now_datetime, nowdate
+from frappe.utils import add_days, add_to_date, now_datetime, nowdate
 
 from crenya_pos_api.api import device as device_api
 from crenya_pos_api.api import expenses as expenses_api
@@ -398,6 +398,117 @@ class TestRetailExpenses(RetailExpenseCase):
 			for row in self._pull_all("expense_category", 100, cursor=cursors["expense_category"])[0]
 		}
 		self.assertIn(GAS, ids)
+
+	def test_the_booking_pull_carries_a_web_retry_to_the_till(self):
+		"""A failed booking pulls as `Not booked` with its error; after the owner's Retry on the
+		web the same expense pulls again as `Booked` with its invoice and no error. Another
+		outlet's expense, one made on the desk (no local_id) and an expense past the window are
+		not sent."""
+		mode = f"_Test Crenya Pullpetty {uuid.uuid4().hex[:6]}"
+		frappe.get_doc(
+			{"doctype": "Mode of Payment", "mode_of_payment": mode, "type": "Cash", "enabled": 1}
+		).insert(ignore_permissions=True)
+		profile = frappe.get_doc("POS Profile", self.profile.name)
+		profile.append("payments", {"mode_of_payment": mode})
+		profile.flags.ignore_validate = True
+		profile.save(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep
+		try:
+			p = self.payload(mode_of_payment=mode)
+			self.send(p)
+			doc = self.expense(p["local_id"])
+			first, cursor, _pages = self._pull_all("expense_booking", 100)
+			mine = [row for row in first if row["id"] == p["local_id"]]
+			self.assertEqual(len(mine), 1)
+			self.assertEqual(
+				(mine[0]["name"], mine[0]["status"], mine[0]["purchase_invoice"]),
+				(doc.name, "Not booked", None),
+			)
+			self.assertIn(mode, mine[0]["posting_error"])
+
+			mop = frappe.get_doc("Mode of Payment", mode)
+			mop.append("accounts", {"company": core.COMPANY, "default_account": cash_account()})
+			mop.save(ignore_permissions=True)
+			self.assertEqual(booking.retry(doc, product=RETAIL), booking.BOOKED)
+			doc.reload()
+			again, _cursor, _pages = self._pull_all("expense_booking", 100, cursor=cursor)
+			mine = [row for row in again if row["id"] == p["local_id"]]
+			self.assertEqual(len(mine), 1, "the retry is a change after the till's cursor")
+			self.assertEqual(
+				(mine[0]["status"], mine[0]["purchase_invoice"], mine[0]["posting_error"]),
+				("Booked", doc.purchase_invoice, None),
+			)
+
+			# only this outlet's till expenses, and not the old ones
+			frappe.db.set_value(AGGREGATE, doc.name, "expense_date", add_days(nowdate(), -400))
+			old, _cursor, _pages = self._pull_all("expense_booking", 100)
+			self.assertNotIn(p["local_id"], [row["id"] for row in old])
+			frappe.db.set_value(AGGREGATE, doc.name, {"expense_date": nowdate(), "outlet": "Elsewhere"})
+			other, _cursor, _pages = self._pull_all("expense_booking", 100)
+			self.assertNotIn(p["local_id"], [row["id"] for row in other])
+		finally:
+			profile = frappe.get_doc("POS Profile", self.profile.name)
+			profile.payments = [row for row in profile.payments if row.mode_of_payment != mode]
+			profile.flags.ignore_validate = True
+			profile.save(ignore_permissions=True)
+			frappe.db.commit()  # nosemgrep
+
+	def test_the_booking_pull_is_empty_while_the_outlet_switch_is_off(self):
+		self.send(self.payload())
+		self.assertTrue(self._pull("expense_booking"))
+		frappe.db.set_value("POS Profile", self.profile.name, "crenya_expenses_enabled", 0)
+		frappe.clear_document_cache("POS Profile", self.profile.name)
+		try:
+			self.assertEqual(self._pull("expense_booking"), [])
+		finally:
+			frappe.db.set_value("POS Profile", self.profile.name, "crenya_expenses_enabled", 1)
+			frappe.clear_document_cache("POS Profile", self.profile.name)
+			frappe.db.commit()  # nosemgrep
+
+	def _device_of_type(self, device_type):
+		device_id = new_id()
+		device_api.register_device(
+			device_id=device_id,
+			device_name=f"{device_type} device",
+			pos_profile=self.profile.name,
+			app_version="0.7.0",
+			platform="linux",
+			device_type=device_type,
+		)
+		return device_id
+
+	def test_a_device_without_an_expense_product_is_sent_no_expense_record(self):
+		"""A kitchen display or waiter phone of the outlet is sent no category, supplier or booking."""
+		self.send(self.payload())
+		for device_type in ("kds", "waiter_phone"):
+			device_id = self._device_of_type(device_type)
+			for entity in ("expense_category", "expense_supplier", "expense_booking"):
+				records = self._pull_all(entity, 100, device_id=device_id)[0]
+				self.assertEqual(records, [], msg=f"{device_type} {entity}")
+
+	def test_a_restaurant_till_is_sent_the_booking_of_its_outlets_expenses(self):
+		restaurant = self._device_of_type("restaurant_pos")
+		p = self.payload()
+		with stub_modules(restaurant_constants(("Crenya POS Manager",))):
+			self.send(p, device_id=restaurant)
+		rows = [
+			row
+			for row in self._pull_all("expense_booking", 100, device_id=restaurant)[0]
+			if row["id"] == p["local_id"]
+		]
+		self.assertEqual([(row["status"]) for row in rows], ["Booked"])
+		self.assertTrue(self._pull_all("expense_category", 100, device_id=restaurant)[0])
+
+	def test_the_booking_pull_looks_back_62_days_of_the_business_date(self):
+		inside, outside = self.payload(), self.payload()
+		self.send(inside)
+		self.send(outside)
+		for p, days in ((inside, 62), (outside, 63)):
+			name = frappe.db.get_value(AGGREGATE, {"local_id": p["local_id"]}, "name")
+			frappe.db.set_value(AGGREGATE, name, "expense_date", add_days(nowdate(), -days))
+		ids = {row["id"] for row in self._pull("expense_booking")}
+		self.assertIn(inside["local_id"], ids)
+		self.assertNotIn(outside["local_id"], ids)
 
 	def _pull(self, entity):
 		return self._pull_all(entity, 100)[0]

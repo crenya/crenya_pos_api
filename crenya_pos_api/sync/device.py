@@ -501,8 +501,8 @@ def bootstrap(ctx):
 		# credit sales (0.13.0): the capability and the outlet's switch; a restaurant till gets none
 		doc.setdefault("features", {})["credit_sales"] = 1
 		doc["credit"] = {"enabled": bool(cint(profile.get(CREDIT_SALES_FIELD)))}
-		# expenses paid out of the drawer (0.13.0): only on a site with erptrue_app's POS Expense, so
-		# the till hides Expenses everywhere else
+		# expenses paid out of the drawer (0.13.0): only on a site with POS Expense (this app's doctype,
+		# migrated), so the till hides Expenses before the migrate
 		if expenses_supported():
 			doc["features"][RETAIL.capability] = 1
 			doc[RETAIL.bootstrap_key] = settings_block(RETAIL, profile)

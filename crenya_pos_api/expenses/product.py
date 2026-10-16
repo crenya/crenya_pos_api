@@ -55,7 +55,7 @@ RETAIL = ExpenseProduct(
 	device_types=(DEFAULT_DEVICE_TYPE,),
 	bootstrap_key="expenses",
 	capability="retail_expenses",
-	settings_hint="Shops → Settings → Expenses",
+	settings_hint="POS Profile → Expenses",
 	approver_roles=manager_roles,
 	outlet_users=applicable_users,
 )

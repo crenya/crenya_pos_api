@@ -8,6 +8,7 @@ down here from crenya_restaurant, 0.13.0):
 - `product`: the seam, one `ExpenseProduct` per product (wording, device types, approvers);
 - `reports`: the Z report's expense rows.
 
-erptrue_app owns the doctypes (POS Expense, its lines and log, POS Expense Category); this app
-reaches them by name only (`booking.expenses_supported`).
+On the erpnext branch this app ships the doctypes (POS Expense, its lines and log, POS Expense
+Category) in crenya_pos_api/doctype; the engine reaches them by name only
+(`booking.expenses_supported`).
 """

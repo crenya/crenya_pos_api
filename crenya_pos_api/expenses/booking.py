@@ -4,10 +4,11 @@ Purchase Invoice with `is_paid=1`, paid from the mode's account (Rulings 1-8 of 
 plan). Product-neutral: the retail and the restaurant till share it, and every sentence that names
 a settings page takes it from the product (`product.ExpenseProduct.settings_hint`).
 
-The record is erptrue_app's **POS Expense** (with its lines and log) and the categories are its
-**POS Expense Category**. This app reaches them only by DocType name: erptrue_app is not in
-`required_apps` and is never imported (`expenses_supported` gates everything). Without them the
-till hides Expenses (no capability of the product, `product.ExpenseProduct.capability`), the bootstrap says why and the push
+The record is **POS Expense** (with its lines and log) and the categories are **POS Expense
+Category**. On the erpnext branch this app ships those doctypes itself (crenya_pos_api/doctype,
+taken from erptrue_app), so a plain ERPNext site has them after `bench migrate`; the engine still
+reaches them by DocType name only (`expenses_supported` gates everything). Without them (before
+the migrate) the till hides Expenses (no capability of the product, `product.ExpenseProduct.capability`), the bootstrap says why and the push
 handler refuses with the same words.
 
 The Purchase Invoice:
@@ -50,7 +51,7 @@ BOOKED = "Booked"
 NOT_BOOKED = "Not booked"
 CANCELLED = "Cancelled"
 
-# the log's actions (erptrue_app POS Expense Log `action`)
+# the log's actions (POS Expense Log `action`)
 ADD, EDIT, DELETE = "add", "edit", "delete"
 LOG_BOOKED, LOG_FAILED = "booked", "booking failed"
 CHANGES = (ADD, EDIT, DELETE)
@@ -67,7 +68,7 @@ ADD_PIN_FIELD = "crenya_expense_add_needs_pin"
 PHOTO_MAX_SIDE = 1600
 PHOTO_MAX_BYTES = 1024 * 1024
 
-UNSUPPORTED = "Expenses need crenya erp's Expenses module on this workspace"
+UNSUPPORTED = "Expenses need the POS Expense doctype of crenya_pos_api: run bench migrate on this site"
 BOOKING_SAVEPOINT = "crenya_expense_booking"
 MAX_ERROR_LENGTH = 1000
 
@@ -77,8 +78,7 @@ class BookingError(Exception):
 
 
 def expenses_supported():
-	"""Whether this site has erptrue_app's POS Expense with the till's fields (erptrue_app 0.0.3,
-	migrated)."""
+	"""Whether this site has POS Expense with the till's fields (this app's doctype, migrated)."""
 	return bool(frappe.db.exists("DocType", EXPENSE)) and frappe.get_meta(EXPENSE).has_field("local_id")
 
 
@@ -723,7 +723,7 @@ def ensure_cash_supplier(profile, may_enable=True):
 	return name, created
 
 
-# setup checks (app.crenya.com's Settings → Expenses)
+# setup checks (app.crenya.com's Settings → Expenses; the switch itself is POS Profile → Expenses)
 
 
 def setup_checks(profile):
@@ -736,7 +736,7 @@ def setup_checks(profile):
 		check(
 			"module",
 			"ok" if supported else "missing",
-			_("crenya erp's Expenses module"),
+			_("The POS Expense doctype (crenya_pos_api)"),
 			None if supported else _(UNSUPPORTED),
 		)
 	)

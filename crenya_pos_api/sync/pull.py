@@ -699,7 +699,7 @@ class SyncRetrySpec(EntitySpec):
 
 
 # the till's expense pulls (moved down from crenya_restaurant, 0.13.0). Both refuse on a site without
-# erptrue_app's POS Expense. A retail outlet whose Expenses switch is off gets none (the records come
+# POS Expense (this app's doctype, before its migrate). A retail outlet whose Expenses switch is off gets none (the records come
 # back, once, when it is switched on: the cursor scope changes); a restaurant outlet's pulls are what
 # they were.
 EXPENSE_OFF_SCOPE = "off"
@@ -720,7 +720,7 @@ def _expenses_withheld(ctx):
 
 
 class ExpenseCategorySpec(EntitySpec):
-	"""The site's expense categories (erptrue_app POS Expense Category): {id, name, name_ar,
+	"""The site's expense categories (POS Expense Category): {id, name, name_ar,
 	active}. An inactive one stays in the pull with `active` 0 (an expense may still name it)."""
 
 	doctype = expenses_booking.CATEGORY

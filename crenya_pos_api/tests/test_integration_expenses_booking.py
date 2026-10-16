@@ -4,8 +4,8 @@ bill number, the photo, the Z rows and the setup checks.
 
 The restaurant's booking cases moved here; the push handler stays in crenya_restaurant until the
 retail slice's Task 6, so these cases create the POS Expense the way the handler does and call the
-engine. erptrue_app is not a dependency: the cases need its POS Expense (CI's `expenses` job installs
-it); without it they are skipped and `TestExpensesOff` runs.
+engine. On the erpnext branch this app ships POS Expense itself: the cases run on every migrated site
+(`TestExpensesOff` only before the migrate).
 
 Run with: bench --site <test-site> run-tests --app crenya_pos_api --module
 crenya_pos_api.tests.test_integration_expenses_booking
@@ -125,7 +125,7 @@ class ExpenseCase(SyncCase):
 
 	@classmethod
 	def setUpClass(cls):
-		# erptrue_app's entitlement hook reads a plan the test site does not have: no plan, no caps
+		# no entitlement hook on a plain ERPNext site; patched anyway so another app's cannot cap the test
 		# (before the base class registers the device)
 		for target in (entitlement_module, device_sync):
 			patcher = patch.object(target, "get_entitlement", return_value=None)
@@ -250,8 +250,9 @@ class TestExpenseBooking(ExpenseCase):
 	@classmethod
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
+		# erpnext branch: this app ships POS Expense, so a migrated test site always has it
 		if not booking.expenses_supported():
-			raise unittest.SkipTest("erptrue_app's POS Expense with the till fields is not installed")
+			raise AssertionError("POS Expense with the till fields is missing: run bench migrate")
 		super().setUpClass()
 
 	def test_the_precision_is_the_sites_currency_decimals(self):
@@ -368,7 +369,7 @@ class TestExpenseBooking(ExpenseCase):
 			doc = self.make_expense()
 			with self.assertRaises(booking.BookingError) as retail:
 				booking.build_purchase_invoice(doc, self.outlet())
-			self.assertIn("Shops → Settings → Expenses", str(retail.exception))
+			self.assertIn("POS Profile → Expenses", str(retail.exception))
 			with self.assertRaises(booking.BookingError) as restaurant:
 				booking.build_purchase_invoice(doc, self.outlet(), product=RESTAURANT)
 			self.assertIn("Restaurants → Settings → Expenses", str(restaurant.exception))
@@ -563,16 +564,17 @@ class TestExpenseBooking(ExpenseCase):
 
 
 class TestExpensesOff(ExpenseCase):
-	"""A site without erptrue_app's POS Expense (or before its migrate): no expenses at all."""
+	"""A site without POS Expense (before this app's migrate): no expenses at all."""
 
 	@classmethod
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
 		if booking.expenses_supported():
-			raise unittest.SkipTest("erptrue_app's POS Expense is installed on this site")
+			# erpnext branch: this app ships POS Expense, so only a site before its migrate runs these
+			raise unittest.SkipTest("POS Expense is installed (crenya_pos_api ships it)")
 		super().setUpClass()
 
-	def test_expenses_off_without_erptrue_app(self):
+	def test_expenses_off_without_pos_expense(self):
 		self.assertFalse(booking.expenses_supported())
 		checks = {row["key"]: row for row in booking.setup_checks(self.outlet())}
 		self.assertEqual(checks["module"]["status"], "missing")

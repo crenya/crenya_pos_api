@@ -138,9 +138,9 @@ class TestFields(unittest.TestCase):
 
 class TestProducts(unittest.TestCase):
 	def test_messages_name_the_products_settings_page(self):
-		self.assertIn("Shops → Settings → Expenses", booking.off_reason(RETAIL))
+		self.assertIn("POS Profile → Expenses", booking.off_reason(RETAIL))
 		self.assertIn("Restaurants → Settings → Expenses", booking.off_reason(RESTAURANT))
-		self.assertIn("Shops → Settings → Expenses", booking.no_cash_supplier_reason(RETAIL))
+		self.assertIn("POS Profile → Expenses", booking.no_cash_supplier_reason(RETAIL))
 		# the restaurant's English text is what it was before the move
 		self.assertEqual(
 			booking.off_reason(RESTAURANT),

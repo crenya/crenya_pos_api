@@ -3,7 +3,7 @@ P1 task 12: the Not booked list scoped to the shops a user manages, Retry that b
 tells the engine the product, one expense for a manager with no POS Expense right, the Cash Supplier
 button, and the Z report's ON ACCOUNT and EXPENSES sections at OMR's 3 decimals.
 
-The cases need erptrue_app's POS Expense (CI's `expenses` job installs it); without it they skip.
+On the erpnext branch this app ships POS Expense itself, so the cases run on every migrated site.
 
 Run with: bench --site <test-site> run-tests --app crenya_pos_api --module
 crenya_pos_api.tests.test_integration_web_admin_expenses
@@ -33,8 +33,9 @@ class TestWebAdminExpenses(RetailExpenseCase):
 	@classmethod
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
+		# erpnext branch: this app ships POS Expense, so a migrated test site always has it
 		if not booking.expenses_supported():
-			raise unittest.SkipTest("erptrue_app's POS Expense with the till fields is not installed")
+			raise AssertionError("POS Expense with the till fields is missing: run bench migrate")
 		super().setUpClass()
 		ensure_user(SHOP2_CASHIER, [POS_USER_ROLE])
 		ensure_user(SHOP2_MANAGER, [POS_USER_ROLE, APPROVER_ROLE])

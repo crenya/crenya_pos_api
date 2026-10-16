@@ -4,8 +4,8 @@ the outlet's switch, and a restaurant till (crenya_restaurant 0.15.6, whose hook
 ignores) goes through the same handler with its own wording and approvers.
 
 Every call into the booking engine passes the product explicitly (book and rebook swallow a missing
-product into "Not booked"): the cases assert it. The cases need erptrue_app's POS Expense (CI's
-`expenses` job installs it); without it they are skipped and `TestRetailExpensesOff` runs.
+product into "Not booked"): the cases assert it. On the erpnext branch this app ships POS
+Expense itself: the cases run on every migrated site (`TestRetailExpensesOff` only before the migrate).
 
 Run with: bench --site <test-site> run-tests --app crenya_pos_api --module
 crenya_pos_api.tests.test_integration_expenses_retail
@@ -140,8 +140,9 @@ class TestRetailExpenses(RetailExpenseCase):
 	@classmethod
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
+		# erpnext branch: this app ships POS Expense, so a migrated test site always has it
 		if not booking.expenses_supported():
-			raise unittest.SkipTest("erptrue_app's POS Expense with the till fields is not installed")
+			raise AssertionError("POS Expense with the till fields is missing: run bench migrate")
 		super().setUpClass()
 
 	def test_expense_submit_idempotent_by_event_and_local_id(self):
@@ -365,7 +366,7 @@ class TestRetailExpenses(RetailExpenseCase):
 			doc = device_api.get_bootstrap(device_id=self.device_id)
 			self.assertEqual(doc["features"]["retail_expenses"], 1)
 			self.assertIs(doc["expenses"]["enabled"], False)
-			self.assertIn("Shops → Settings → Expenses", doc["expenses"]["reason"])
+			self.assertIn("POS Profile → Expenses", doc["expenses"]["reason"])
 		finally:
 			frappe.db.set_value("POS Profile", self.profile.name, "crenya_expenses_enabled", 1)
 			frappe.clear_document_cache("POS Profile", self.profile.name)
@@ -563,8 +564,9 @@ class TestRetailExpensePhoto(RetailExpenseCase):
 	@classmethod
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
+		# erpnext branch: this app ships POS Expense, so a migrated test site always has it
 		if not booking.expenses_supported():
-			raise unittest.SkipTest("erptrue_app's POS Expense with the till fields is not installed")
+			raise AssertionError("POS Expense with the till fields is missing: run bench migrate")
 		super().setUpClass()
 
 	def attach(self, local_id, content, sha=None, device_id=None):
@@ -679,13 +681,14 @@ class TestRetailExpensePhoto(RetailExpenseCase):
 
 
 class TestRetailExpensesOff(SyncCase):
-	"""A site without erptrue_app's POS Expense (or before its migrate): no capability, nothing to book."""
+	"""A site without POS Expense (before this app's migrate): no capability, nothing to book."""
 
 	@classmethod
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
 		if booking.expenses_supported():
-			raise unittest.SkipTest("erptrue_app's POS Expense is installed on this site")
+			# erpnext branch: this app ships POS Expense, so only a site before its migrate runs these
+			raise unittest.SkipTest("POS Expense is installed (crenya_pos_api ships it)")
 		super().setUpClass()
 
 	def test_site_without_pos_expense_hides_capability(self):

@@ -20,6 +20,19 @@ env:
   ERPTRUE_APP_REF: ${{ vars.ERPTRUE_APP_REF || 'main' }}
 
 jobs:
+  # Seconds, no bench: every doctype's controller defines the class Frappe imports
+  # (a wrong class name is a desk 500 for every user who can see the doctype).
+  doctype-guards:
+    runs-on: ubuntu-latest
+    name: Doctype guards (no site)
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Doctype controllers
+        run: python -I -m unittest discover -s crenya_pos_api/tests -p 'test_doctype_*.py' -v
+
   tests:
     runs-on: ubuntu-latest
     strategy:

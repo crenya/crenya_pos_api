@@ -12,6 +12,10 @@ exactly as for invoices entered in the desk.
 
 Supported: ERPNext / Frappe v15 (written to stay compatible with v16).
 
+**`erpnext` branch:** for plain ERPNext sites without erptrue_app. This app ships the expense
+doctypes itself (POS Expense, POS Expense Line, POS Expense Log, POS Expense Category), so till
+expenses work after `bench migrate`; see *Expenses* below.
+
 #### What the app adds
 
 - DocType **Crenya POS Device**: one row per till (`device_id` UUID, stable
@@ -265,8 +269,8 @@ deletes) a device user that holds any role beyond `Crenya POS Device`.
 
 #### Expenses (the booking engine, 0.13.0)
 
-What a cashier pays out of the drawer is booked as one paid Purchase Invoice of erptrue_app's POS
-Expense. The engine moved down from crenya_restaurant and is shared by the retail and the restaurant
+What a cashier pays out of the drawer is recorded as a POS Expense and booked as one paid
+Purchase Invoice. The engine moved down from crenya_restaurant and is shared by the retail and the restaurant
 till: `expenses/booking.py` (the booking, its retry, the setup checks), `expenses/fields.py` (the
 outlet's `crenya_expense*` POS Profile fields and their check), `expenses/reports.py` (the Z rows) and
 `expenses/product.py`, the seam: one `ExpenseProduct` per product (device types, bootstrap key,
@@ -281,9 +285,31 @@ and, from 0.13.2, `expense_booking` (the booking state of the outlet's recent ti
 till; only the outlet's expenses of the last 62 days by business date, so an older one retried on the
 web is not delivered, and nothing for a kitchen display or waiter phone, which have no expense product; an older till never asks, an older server answers unknown entity and the till skips it),
 send the bill photo to `crenya_pos_api.api.expenses.attach_photo`, and read the bootstrap's `expenses`
-block with `features.retail_expenses`, all only on a site with erptrue_app's POS Expense. A retail
+block with `features.retail_expenses`, all only on a site with POS Expense (shipped by this app on
+the erpnext branch, so after its migrate). A retail
 outlet's approvers are the holders of Crenya POS Manager on the POS Profile's *Applicable for Users*
 (empty: every holder).
+
+**The doctypes on the erpnext branch.** POS Expense, POS Expense Line, POS Expense Log and POS
+Expense Category are this app's (`crenya_pos_api/crenya_pos_api/doctype/pos_expense*`, module
+*Crenya Pos Api*), taken from erptrue_app under the same names so the engine's by-name lookups are
+unchanged. Left out: erptrue_app's legacy `erptrue_expense` link to *ERPTrue Expense* and its
+"booked once" check; every row here is a till row (`local_id`) booked as a Purchase Invoice.
+Permissions: System Manager full; Accounts Manager and Accounts User read POS Expense (the engine
+writes it); Accounts Manager manages POS Expense Category, Accounts User reads it. A site that
+already has erptrue_app's doctypes of the same names is not a target of this branch (the two apps
+would claim the same DocTypes); use `main` there.
+
+**Setting up expenses in the ERPNext desk (erpnext branch).** On each retail outlet's **POS Profile**,
+open the collapsible **Expenses** section (custom fields this app makes on install and every migrate):
+tick *Expenses on the Till*, pick the *Cash Supplier* (a Supplier for payees who are not suppliers),
+optionally *Expense Suppliers* (a Supplier Group offered on the till), *Expense VAT* (a Purchase Taxes
+and Charges Template of the outlet's company) and *Manager PIN to Add an Expense*. Then add at least
+one **POS Expense Category** (desk: `/app/pos-expense-category`, ideally with an *Expense Account* of
+the company), and check that the company has a *Default Payable Account* and *Default Expense
+Account*, the POS Profile has a Cash-type mode of payment with an account for the company, and Stock
+Settings has a *Default Unit of Measure*. Messages that name the settings page say
+`POS Profile → Expenses`. No entitlement hook is needed: without one nothing is capped.
 
 crenya_restaurant before 0.15.7 still hooks `POS Expense`, `expense_category` and `expense_supplier`.
 A hook entry that repeats one of these built-ins is ignored and logged once, so this release can be
@@ -1324,11 +1350,11 @@ bench --site <test-site> set-config allow_tests true
 bench --site <test-site> run-tests --app crenya_pos_api
 ```
 
-The expenses booking tests (`tests/test_integration_expenses_booking`, `test_integration_expenses_retail`) need erptrue_app's POS Expense
-(this app reaches it by DocType name and never depends on it); without it they skip and
-`TestExpensesOff` runs. CI's `expenses` job installs erptrue_app over SSH with a read-only deploy key
-kept in the repository secret `ERPTRUE_APP_DEPLOY_KEY` (the same key as crenya_restaurant's); without
-the secret the job fails (only a fork's pull request, which gets no secrets, skips).
+The expenses booking tests (`tests/test_integration_expenses_booking`, `test_integration_expenses_retail`,
+`test_integration_web_admin_expenses`) run on any migrated test site on the erpnext branch, since this
+app ships POS Expense (a site without it fails their setup); `TestExpensesOff` / `TestRetailExpensesOff`
+only run before the migrate and skip otherwise. The expense doctype JSONs have a pure check,
+`python -m unittest discover -s crenya_pos_api/tests -p 'test_doctype_*.py'` (no site, no Frappe).
 
 #### Contributing
 

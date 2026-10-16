@@ -1,0 +1,87 @@
+{
+ "actions": [],
+ "autoname": "field:category_name",
+ "creation": "2026-03-19 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "category_name",
+  "category_name_ar",
+  "is_active",
+  "expense_account"
+ ],
+ "fields": [
+  {
+   "fieldname": "category_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Category Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "expense_account",
+   "fieldtype": "Link",
+   "options": "Account",
+   "label": "Expense Account",
+   "description": "GL account this category posts to. Left blank, the company's default expense account is used."
+  },
+  {
+   "fieldname": "category_name_ar",
+   "fieldtype": "Data",
+   "label": "Category Name (Arabic)"
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Active",
+   "default": "1",
+   "in_list_view": 1,
+   "description": "Inactive categories are hidden from the till's Expenses screen. Existing expenses keep them."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-16 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Crenya Pos Api",
+ "name": "POS Expense Category",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "role": "Accounts Manager",
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "share": 1,
+   "write": 1
+  },
+  {
+   "role": "Accounts User",
+   "read": 1,
+   "report": 1,
+   "print": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

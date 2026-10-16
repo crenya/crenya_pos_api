@@ -1,0 +1,49 @@
+{
+ "actions": [],
+ "creation": "2026-10-12 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "category",
+  "description",
+  "amount"
+ ],
+ "fields": [
+  {
+   "fieldname": "category",
+   "fieldtype": "Link",
+   "label": "Category",
+   "options": "POS Expense Category",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 3
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Data",
+   "label": "Description",
+   "in_list_view": 1,
+   "columns": 4
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Net Amount",
+   "options": "currency",
+   "in_list_view": 1,
+   "columns": 3
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-16 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Crenya Pos Api",
+ "name": "POS Expense Line",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

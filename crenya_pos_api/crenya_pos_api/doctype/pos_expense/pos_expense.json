@@ -1,0 +1,321 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-03-19 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "expense_date",
+  "category",
+  "column_break_1",
+  "amount",
+  "employee",
+  "user",
+  "section_break_1",
+  "description",
+  "shift",
+  "posting_error",
+  "till_section",
+  "local_id",
+  "company",
+  "outlet",
+  "device",
+  "approved_by",
+  "column_break_till",
+  "status",
+  "purchase_invoice",
+  "photo",
+  "bill_section",
+  "supplier",
+  "payee_name",
+  "bill_no",
+  "bill_date",
+  "mode_of_payment",
+  "column_break_bill",
+  "currency",
+  "net_amount",
+  "tax_amount",
+  "taxes_and_charges",
+  "lines_section",
+  "lines",
+  "log_section",
+  "log"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Data",
+   "default": "EXP-.####",
+   "label": "Naming Series",
+   "hidden": 1
+  },
+  {
+   "fieldname": "expense_date",
+   "fieldtype": "Date",
+   "default": "Today",
+   "in_list_view": 1,
+   "label": "Expense Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Category",
+   "options": "POS Expense Category",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount",
+   "reqd": 1
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Data",
+   "label": "Employee"
+  },
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "default": "__user"
+  },
+  {
+   "fieldname": "section_break_1",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "shift",
+   "fieldtype": "Data",
+   "label": "Shift"
+  },
+  {
+   "fieldname": "posting_error",
+   "fieldtype": "Small Text",
+   "label": "Not Posted Because",
+   "read_only": 1,
+   "description": "Set when the payout was recorded on the shift but could not reach the books."
+  },
+  {
+   "fieldname": "till_section",
+   "fieldtype": "Section Break",
+   "label": "Till",
+   "collapsible": 1,
+   "depends_on": "eval:doc.local_id"
+  },
+  {
+   "fieldname": "local_id",
+   "fieldtype": "Data",
+   "label": "Till ID",
+   "unique": 1,
+   "no_copy": 1,
+   "description": "The till's own id for this expense. Set only on till expenses; legacy rows leave it empty.",
+   "read_only": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "outlet",
+   "fieldtype": "Link",
+   "label": "Outlet",
+   "options": "POS Profile",
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "device",
+   "fieldtype": "Data",
+   "label": "Device",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approved_by",
+   "fieldtype": "Link",
+   "label": "Approved By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_till",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "\nBooked\nNot booked\nCancelled",
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "purchase_invoice",
+   "fieldtype": "Link",
+   "label": "Purchase Invoice",
+   "options": "Purchase Invoice",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "photo",
+   "fieldtype": "Attach",
+   "label": "Bill Photo",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "bill_section",
+   "fieldtype": "Section Break",
+   "label": "Bill",
+   "depends_on": "eval:doc.local_id"
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payee_name",
+   "fieldtype": "Data",
+   "label": "Payee Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bill_no",
+   "fieldtype": "Data",
+   "label": "Bill No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bill_date",
+   "fieldtype": "Date",
+   "label": "Bill Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mode_of_payment",
+   "fieldtype": "Link",
+   "label": "Mode of Payment",
+   "options": "Mode of Payment",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_bill",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "net_amount",
+   "fieldtype": "Currency",
+   "label": "Net Amount",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tax_amount",
+   "fieldtype": "Currency",
+   "label": "Tax Amount",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "taxes_and_charges",
+   "fieldtype": "Link",
+   "label": "Purchase Taxes and Charges Template",
+   "options": "Purchase Taxes and Charges Template",
+   "read_only": 1
+  },
+  {
+   "fieldname": "lines_section",
+   "fieldtype": "Section Break",
+   "label": "Lines",
+   "depends_on": "eval:doc.local_id"
+  },
+  {
+   "fieldname": "lines",
+   "fieldtype": "Table",
+   "label": "Lines",
+   "options": "POS Expense Line",
+   "read_only": 1
+  },
+  {
+   "fieldname": "log_section",
+   "fieldtype": "Section Break",
+   "label": "Log",
+   "collapsible": 1,
+   "depends_on": "eval:doc.local_id"
+  },
+  {
+   "fieldname": "log",
+   "fieldtype": "Table",
+   "label": "Log",
+   "options": "POS Expense Log",
+   "no_copy": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-16 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Crenya Pos Api",
+ "name": "POS Expense",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "role": "Accounts Manager",
+   "read": 1,
+   "report": 1,
+   "print": 1
+  },
+  {
+   "role": "Accounts User",
+   "read": 1,
+   "report": 1,
+   "print": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

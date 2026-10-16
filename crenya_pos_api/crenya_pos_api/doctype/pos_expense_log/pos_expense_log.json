@@ -1,0 +1,85 @@
+{
+ "actions": [],
+ "creation": "2026-10-12 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "action",
+  "at",
+  "user",
+  "approver",
+  "device",
+  "before",
+  "after",
+  "reason"
+ ],
+ "fields": [
+  {
+   "fieldname": "action",
+   "fieldtype": "Select",
+   "label": "Action",
+   "options": "add\nedit\ndelete\nbooked\nbooking failed",
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "at",
+   "fieldtype": "Datetime",
+   "label": "At",
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "approver",
+   "fieldtype": "Link",
+   "label": "Approver",
+   "options": "User",
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "device",
+   "fieldtype": "Data",
+   "label": "Device"
+  },
+  {
+   "fieldname": "before",
+   "fieldtype": "Code",
+   "label": "Before",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "after",
+   "fieldtype": "Code",
+   "label": "After",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason",
+   "in_list_view": 1,
+   "columns": 2
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-16 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Crenya Pos Api",
+ "name": "POS Expense Log",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

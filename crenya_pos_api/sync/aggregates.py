@@ -147,7 +147,10 @@ class SalesInvoiceHandler(AggregateHandler):
 		else:
 			return None
 		customer = frappe.db.get_value(AGGREGATE_SALES_INVOICE, filters, "customer")
-		return f"customer:{customer}" if customer else None
+		# imported here: customer_payment imports this module
+		from crenya_pos_api.sync.customer_payment import customer_lock_key
+
+		return customer_lock_key(customer) if customer else None
 
 	def result_fields(self, doc):
 		return invoice_result_fields(doc)

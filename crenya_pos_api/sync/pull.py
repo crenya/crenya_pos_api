@@ -356,9 +356,9 @@ class CustomerSpec(EntitySpec):
 			for row in rows
 		]
 		if self._sends_limit(ctx):
-			# an outlet that sells on account, to a device that may take credit: the limit as ERPNext reads it (null: no limit); a limit
-			# edited on the Customer bumps its `modified`, one on the group or company does not (the
-			# online status corrects it at the next check)
+			# an outlet that sells on account, to a device that may take credit: the limit as ERPNext
+			# reads it (null: no limit); a limit edited on the Customer bumps its `modified`, one on
+			# the group or company does not (the online status corrects it at the next check)
 			precision = money_precision(ctx.currency)
 			limits = customer_credit_limits(rows, ctx.company)
 			for record in records:

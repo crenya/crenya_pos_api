@@ -302,6 +302,15 @@ that cannot be booked (a mode of payment without an account for the company, a c
 refused sync event: it shows on app.crenya.com's Refused page with the account hint and Retry books it once.
 The outlet's credit switch only governs new credit sales; a receipt is taken whatever it says.
 
+From 0.14.0 (capability and till bootstrap feature `credit_settle_invoices`) a receipt may name the bills it
+settles: `invoices`, at most 200, in the order the cashier ticked them, each an ERPNext name or `local:` + the
+till's id of a sale it made. They are re-read at booking: a bill no longer outstanding, not the customer's or the
+company's, a return, or a `local:` id no Sales Invoice has yet is skipped with a Sync Event note, never refused,
+and its money stays an advance (never spread over bills that were not ticked). The result's `payment` then adds
+`skipped`. `advance_confirmed` only goes into the remarks. A payload without `invoices` is booked as before. The
+web books through the same `post_payment_entry` under `events.named_lock(customer_lock_key(customer))`, the
+database lock a till's receipt of that customer takes.
+
 #### Device ids
 
 A device id is the device's UUID. Ids that differ only in case are the same

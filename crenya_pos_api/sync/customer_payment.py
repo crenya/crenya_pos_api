@@ -5,11 +5,18 @@ Payload (money as a decimal string at the currency's decimals; all keys the till
 local_id, pos_profile, company, shift_local_id, business_date (YYYY-MM-DD), cashier,
 customer_local_id (a customer made at the till) or customer (a name), mode_of_payment, amount,
 currency, reference, note, received_at (ISO-8601 UTC). The outlet and company are the device's.
+Optional (0.14.0, capability `credit_settle_invoices`): `invoices`, the bills the cashier ticked in
+the order ticked (an ERPNext name, or `local:` + the till's id of a sale it made), and
+`advance_confirmed`, which only goes into the remarks (a receipt is never refused for it).
 
-The Payment Entry is allocated to the customer's submitted, outstanding Sales Invoices of the company
-(not returns), `posting_date` then `creation` oldest first, each up to its outstanding amount; what is
-left stays unallocated, an advance on the customer's account. The result adds
-`payment` {allocated, unallocated, invoices}.
+Without `invoices` (every till before 0.14.0) the Payment Entry is allocated to the customer's
+submitted, outstanding Sales Invoices of the company (not returns), `posting_date` then `creation`
+oldest first, each up to its outstanding amount. With them, only to the ticked bills, re-read at
+booking and in the order given; a ticked bill that is no longer outstanding, not the customer's or
+the company's, a return, or a `local:` id no Sales Invoice has yet is skipped with a note (never a
+refusal). What is left stays unallocated, an advance on the customer's account, never spread over
+bills that were not ticked. The result adds `payment` {allocated, unallocated, invoices}, and
+`skipped` for a payment that named bills.
 
 The Payment Entry's `reference_no` is the reference the cashier typed (a card slip or transfer number, so
 the bank statement can be reconciled), or the till's `local_id` when none was typed; the remarks keep both.
@@ -22,6 +29,8 @@ drawer and the till's Z report counts it, and Retry books it once the account ex
 """
 
 from contextlib import contextmanager
+from decimal import Decimal
+from typing import NamedTuple
 
 import frappe
 from frappe.utils import cint, flt
@@ -33,6 +42,7 @@ from crenya_pos_api.sync.credit import customer_in_outlet, is_credit_device
 from crenya_pos_api.sync.errors import PERMISSION, VALIDATION, SyncError
 from crenya_pos_api.sync.invoice_builder import mode_of_payment_account, resolve_customer
 from crenya_pos_api.sync.validation import (
+	MAX_ID_LENGTH,
 	_decimal,
 	_fail,
 	_optional_str,
@@ -47,6 +57,57 @@ AGGREGATE_CUSTOMER_PAYMENT = "Customer Payment"
 PAYMENT_ENTRY = "Payment Entry"
 LOCAL_ID_FIELD = "crenya_local_id"
 MAX_NOTE_LENGTH = 500
+# the capability (get_sync_capabilities) and the till bootstrap's feature: the server books the bills
+# a receipt names in `invoices` (0.14.0)
+FEATURE_SETTLE_INVOICES = "credit_settle_invoices"
+# at most this many bills named by one receipt
+MAX_TICKED_INVOICES = 200
+# a ticked bill the till sold itself and may not know the ERPNext name of: "local:" + its local id
+LOCAL_INVOICE_PREFIX = "local:"
+# the last part of the remarks of a payment that skipped ticked bills (`payment_result` reads it back)
+SKIPPED_REMARK = "skipped ticked invoices: "
+
+
+def customer_lock_key(customer):
+	"""The lock key of the work that allocates to a customer's invoices (receipts at a till, a credit
+	return, a settlement on the web): `events.lock_name` of it is one database lock per customer."""
+	return f"customer:{customer}"
+
+
+def _invoices(payload):
+	"""The ticked bills (pure): None when absent, else a list of at most MAX_TICKED_INVOICES names, each
+	an ERPNext name or `local:` + a till id, stripped, duplicates dropped keeping the first."""
+	value = payload.get("invoices")
+	if value is None:
+		return None
+	if not isinstance(value, list):
+		_fail("invoices must be a list")
+	if len(value) > MAX_TICKED_INVOICES:
+		_fail(f"invoices may name at most {MAX_TICKED_INVOICES} bills")
+	names = []
+	for entry in value:
+		if not isinstance(entry, str) or not entry.strip():
+			_fail("invoices must be a list of invoice names")
+		entry = entry.strip()
+		if entry.startswith(LOCAL_INVOICE_PREFIX):
+			local_id = entry[len(LOCAL_INVOICE_PREFIX) :].strip()
+			if not local_id or len(local_id) > MAX_ID_LENGTH:
+				_fail(f"invoices entry {entry[:40]!r}: a till id of 1 to {MAX_ID_LENGTH} characters")
+			entry = LOCAL_INVOICE_PREFIX + local_id
+		elif len(entry) > MAX_ID_LENGTH:
+			_fail(f"invoices entry is longer than {MAX_ID_LENGTH} characters")
+		if entry not in names:
+			names.append(entry)
+	return names
+
+
+def _flag(value):
+	"""True only for a clear yes (True, 1, "1", "true"); anything else is no, never a refusal."""
+	if isinstance(value, bool):
+		return value
+	if isinstance(value, int):
+		return value == 1
+	return isinstance(value, str) and value.strip().lower() in ("1", "true")
 
 
 def validate_customer_payment_payload(payload):
@@ -75,6 +136,8 @@ def validate_customer_payment_payload(payload):
 		"reference": _optional_str(payload, "reference", max_length=140),
 		"note": _optional_str(payload, "note", max_length=MAX_NOTE_LENGTH),
 		"received_at": _validate_utc_datetime(received_at, "received_at") if received_at else None,
+		"invoices": _invoices(payload),
+		"advance_confirmed": _flag(payload.get("advance_confirmed")),
 	}
 
 
@@ -124,6 +187,71 @@ def open_invoices(customer, company):
 	]
 
 
+def ticked_invoices(customer, company, names, notes):
+	"""(rows in `open_invoices`' shape in the order of `names`, skipped names) of the bills a receipt
+	ticked, read now: a bill that is not a submitted, outstanding Sales Invoice (not a return) of
+	`customer` and `company` is skipped, and so is a `local:` id no Sales Invoice has yet; each skip
+	is noted on the Sync Event."""
+	local_ids = [name[len(LOCAL_INVOICE_PREFIX) :] for name in names if name.startswith(LOCAL_INVOICE_PREFIX)]
+	by_local_id = {}
+	if local_ids:
+		for row in frappe.get_all(
+			"Sales Invoice",
+			filters={"crenya_local_id": ["in", local_ids]},
+			fields=["name", "crenya_local_id"],
+		):
+			by_local_id[row.crenya_local_id] = row.name
+	resolved = []
+	skipped = []
+	for name in names:
+		if name.startswith(LOCAL_INVOICE_PREFIX):
+			erp_name = by_local_id.get(name[len(LOCAL_INVOICE_PREFIX) :])
+			if not erp_name:
+				skipped.append(name)
+				notes.append(f"Ticked invoice {name} skipped: no Sales Invoice has this till id yet")
+				continue
+		else:
+			erp_name = name
+		resolved.append((name, erp_name))
+	found = {}
+	erp_names = sorted({erp_name for _name, erp_name in resolved})
+	if erp_names:
+		for row in frappe.get_all(
+			"Sales Invoice",
+			filters={
+				"name": ["in", erp_names],
+				"customer": customer,
+				"company": company,
+				"docstatus": 1,
+				"is_return": 0,
+				"outstanding_amount": [">", 0],
+			},
+			fields=["name", "grand_total", "outstanding_amount", "due_date"],
+		):
+			found[row.name] = row
+	rows = []
+	for name, erp_name in resolved:
+		if any(row["name"] == erp_name for row in rows):
+			notes.append(f"Ticked invoice {name} is {erp_name}, ticked already")
+			continue
+		row = found.get(erp_name)
+		if row is None:
+			skipped.append(name)
+			notes.append(
+				f"Ticked invoice {name} skipped: not an outstanding invoice of {customer} in {company}"
+			)
+			continue
+		rows.append(
+			{
+				"name": row.name,
+				"total": row.grand_total,
+				"outstanding": row.outstanding_amount,
+				"due_date": row.due_date,
+			}
+		)
+	return rows, skipped
+
+
 def payment_for_local_id(local_id, device_id=None):
 	"""The name of the Payment Entry that holds a till's `local_id`, or None (an empty id matches
 	nothing: entries not made at a till keep NULL). With `device_id`, only an entry that device made
@@ -151,6 +279,8 @@ def _remarks(ctx, data, cashier):
 		parts.append(f"reference {data['reference']}")
 	if data["note"]:
 		parts.append(data["note"])
+	if data.get("advance_confirmed"):
+		parts.append("advance confirmed at the till")
 	return "; ".join(parts)
 
 
@@ -166,8 +296,26 @@ def _as_administrator():
 		frappe.set_user(user)  # nosemgrep  # back to the device user
 
 
+class PaymentBooking(NamedTuple):
+	"""One customer payment to book as a Payment Entry (Receive), from a till or from the web."""
+
+	company: str
+	customer: str
+	mode_of_payment: str
+	amount: Decimal
+	currency: str
+	posting_date: str
+	# the idempotency key, kept in `crenya_local_id`
+	local_id: str
+	# what the cashier typed (card slip, transfer number), or None
+	reference: str | None
+	remarks: str
+	# the ticked bills in order (names or `local:` ids); None or empty: oldest first
+	invoices: list[str] | None
+
+
 def book_payment(ctx, data, notes):
-	"""The submitted Payment Entry of a till's payment."""
+	"""The submitted Payment Entry of a till's payment: the device's checks, then `post_payment_entry`."""
 	if not is_credit_device(ctx.device_type):
 		raise SyncError(
 			PERMISSION, f"Customer payments are taken at a till, not on a {ctx.device_type} device"
@@ -197,53 +345,82 @@ def book_payment(ctx, data, notes):
 	if not customer_in_outlet(ctx, customer):
 		raise SyncError(VALIDATION, f"Customer {customer} is not a customer of outlet {ctx.profile.name}")
 
-	account = mode_of_payment_account(data["mode_of_payment"], ctx.company)
+	cashier = enabled_user(data["cashier"]) or frappe.session.user
+	booking = PaymentBooking(
+		company=ctx.company,
+		customer=customer,
+		mode_of_payment=data["mode_of_payment"],
+		amount=data["amount"],
+		currency=ctx.currency,
+		posting_date=data["business_date"],
+		local_id=data["local_id"],
+		reference=data["reference"],
+		remarks=_remarks(ctx, data, cashier),
+		invoices=data.get("invoices"),
+	)
+	return post_payment_entry(booking, notes)
+
+
+def post_payment_entry(booking, notes):
+	"""The submitted Payment Entry (Receive) of `booking`: the accounts checked, allocated to the
+	ticked bills in order (or oldest first when none are named), the rest an advance; posted as
+	Administrator and owned by the session user. Refusals are SyncError(VALIDATION) with a hint."""
+	precision = money_precision(booking.currency)
+	account = mode_of_payment_account(booking.mode_of_payment, booking.company)
 	if not account:
 		raise SyncError(
 			VALIDATION,
-			f"Mode of payment {data['mode_of_payment']} has no account for company {ctx.company}: "
+			f"Mode of payment {booking.mode_of_payment} has no account for company {booking.company}: "
 			"add the account to the mode of payment",
 		)
 	from erpnext.accounts.party import get_party_account
 
-	party_account = get_party_account("Customer", customer, ctx.company)
+	customer = booking.customer
+	party_account = get_party_account("Customer", customer, booking.company)
 	if not party_account:
-		raise SyncError(VALIDATION, f"Customer {customer} has no receivable account for {ctx.company}")
+		raise SyncError(VALIDATION, f"Customer {customer} has no receivable account for {booking.company}")
 	account_currency = frappe.db.get_value("Account", party_account, "account_currency")
-	if account_currency and account_currency != ctx.currency:
+	if account_currency and account_currency != booking.currency:
 		raise SyncError(
 			VALIDATION,
 			f"The receivable account {party_account} is in {account_currency}, not in the outlet's "
-			f"{ctx.currency}: a payment in the outlet's currency cannot be booked to it",
+			f"{booking.currency}: a payment in the outlet's currency cannot be booked to it",
 		)
 
-	cashier = enabled_user(data["cashier"]) or frappe.session.user
-	rows, _left = allocate(data["amount"], open_invoices(customer, ctx.company), precision)
+	skipped = None
+	remarks = booking.remarks
+	if booking.invoices:
+		candidates, skipped = ticked_invoices(customer, booking.company, booking.invoices, notes)
+		if skipped:
+			remarks = f"{remarks}; {SKIPPED_REMARK}{', '.join(skipped)}"
+	else:
+		candidates = open_invoices(customer, booking.company)
+	rows, _left = allocate(booking.amount, candidates, precision)
 	doc = frappe.new_doc(PAYMENT_ENTRY)
 	doc.update(
 		{
 			"payment_type": "Receive",
 			"party_type": "Customer",
 			"party": customer,
-			"company": ctx.company,
-			"posting_date": data["business_date"],
-			"mode_of_payment": data["mode_of_payment"],
+			"company": booking.company,
+			"posting_date": booking.posting_date,
+			"mode_of_payment": booking.mode_of_payment,
 			"paid_from": party_account,
 			"paid_to": account,
-			"paid_amount": flt(data["amount"], precision),
-			"received_amount": flt(data["amount"], precision),
+			"paid_amount": flt(booking.amount, precision),
+			"received_amount": flt(booking.amount, precision),
 			"source_exchange_rate": 1,
 			"target_exchange_rate": 1,
 			# the till's id is the idempotency key (`crenya_local_id`); the reference a bank account's
 			# entry requires is the one the cashier typed (card slip, transfer number) so the bank
 			# statement can be matched, and only when none was typed the till's id (cash needs none)
-			LOCAL_ID_FIELD: data["local_id"],
-			"reference_no": data["reference"] or data["local_id"],
-			"reference_date": data["business_date"],
+			LOCAL_ID_FIELD: booking.local_id,
+			"reference_no": booking.reference or booking.local_id,
+			"reference_date": booking.posting_date,
 			# ERPNext writes its own "Amount ... received from ..." over the remarks unless told these
 			# are custom: they carry the till's id (`payment_for_local_id` reads the device from them)
 			"custom_remarks": 1,
-			"remarks": _remarks(ctx, data, cashier),
+			"remarks": remarks,
 		}
 	)
 	for row in rows:
@@ -274,18 +451,37 @@ def book_payment(ctx, data, notes):
 			PAYMENT_ENTRY, doc.name, {"owner": user, "modified_by": user}, update_modified=False
 		)
 		doc.owner = doc.modified_by = user
+	if skipped is not None:
+		doc.flags.crenya_skipped = list(skipped)
 	return doc
+
+
+def skipped_invoices(doc):
+	"""The ticked bills a booked Payment Entry skipped: from the booking itself, else read back from the
+	remarks' last part; None for a payment that skipped none it can tell (no `skipped` in the result)."""
+	if doc.flags.get("crenya_skipped") is not None:
+		return list(doc.flags.crenya_skipped)
+	_head, mark, tail = (doc.get("remarks") or "").rpartition(f"; {SKIPPED_REMARK}")
+	if not mark or "; " in tail:
+		return None
+	return [name for name in tail.split(", ") if name]
 
 
 def payment_result(doc):
 	"""{allocated, unallocated, invoices} of a booked Payment Entry, as decimal strings."""
 	precision = money_precision()
 	allocated = sum((as_decimal(row.allocated_amount) for row in doc.get("references") or []), as_decimal(0))
-	return {
+	result = {
 		"allocated": format_money(allocated, precision),
 		"unallocated": format_money(as_decimal(doc.get("unallocated_amount") or 0), precision),
 		"invoices": [row.reference_name for row in doc.get("references") or [] if row.reference_name],
 	}
+	# a payment that named bills (0.14.0) says which it skipped; a payment without `invoices` answers
+	# exactly as before
+	skipped = skipped_invoices(doc)
+	if skipped is not None:
+		result["skipped"] = skipped
+	return result
 
 
 class CustomerPaymentHandler(AggregateHandler):
@@ -323,7 +519,7 @@ class CustomerPaymentHandler(AggregateHandler):
 			customer = frappe.db.get_value("Customer", {"crenya_local_id": local_id}, "name") or customer
 			if not customer:
 				return f"customer-local:{local_id}"
-		return f"customer:{customer}" if customer and isinstance(customer, str) else None
+		return customer_lock_key(customer) if customer and isinstance(customer, str) else None
 
 	def result_fields(self, doc):
 		return {

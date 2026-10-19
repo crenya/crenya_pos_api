@@ -447,15 +447,23 @@ def _device_types(hook, base):
 					_ignored_entry(hook, entry)
 			return frozenset(types)
 		except Exception as exc:
-			_ignored_entry(hook, f"{type(exc).__name__}: {exc}")
+			_unreadable_hook(hook, exc)
 			return frozenset(base)
 
 	return _cached((hook, tuple(sorted(base))), load)
 
 
 def _ignored_entry(hook, entry):
+	_warn(f"{hook}: {entry!r} is not a device type; ignored")
+
+
+def _unreadable_hook(hook, exc):
+	_warn(f"{hook} could not be read ({type(exc).__name__}: {exc}); only the base device types apply")
+
+
+def _warn(message):
 	try:
-		frappe.logger("crenya_pos_api").warning(f"{hook}: {entry!r} is not a device type; ignored")
+		frappe.logger("crenya_pos_api").warning(message)
 	except Exception:
 		# no site (plain unit tests): nothing to log to
 		pass

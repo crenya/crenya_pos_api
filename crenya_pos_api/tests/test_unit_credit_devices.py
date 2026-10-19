@@ -2,6 +2,7 @@
 `crenya_pos_credit_device_types` hook. No site (hooks are faked)."""
 
 import unittest
+from unittest import mock
 
 from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.credit import credit_device_types, is_credit_device
@@ -49,14 +50,22 @@ class TestCreditDeviceTypes(unittest.TestCase):
 			self.assertEqual(credit_device_types(), frozenset({"till", "restaurant_pos"}))
 
 	def test_a_hook_that_raises_is_ignored(self):
-		def broken(self, *args, **kwargs):
+		def broken(*args, **kwargs):
 			raise RuntimeError("boom")
 
-		from unittest import mock
-
-		with listing("restaurant_pos"), mock.patch.object(registry, "_hook", broken):
+		with (
+			listing("restaurant_pos"),
+			mock.patch.object(registry, "_hook", broken),
+			mock.patch.object(registry.frappe, "logger") as logger,
+		):
 			registry.clear_cache()
 			self.assertEqual(credit_device_types(), frozenset({"till"}))
+		warning = logger.return_value.warning
+		warning.assert_called_once()
+		message = warning.call_args.args[0]
+		self.assertIn("crenya_pos_credit_device_types could not be read", message)
+		self.assertIn("RuntimeError: boom", message)
+		self.assertNotIn("is not a device type", message)
 
 	def test_read_once_per_request(self):
 		with listing("restaurant_pos"):

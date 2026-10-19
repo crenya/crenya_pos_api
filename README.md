@@ -311,6 +311,18 @@ and its money stays an advance (never spread over bills that were not ticked). T
 web books through the same `post_payment_entry` under `events.named_lock(customer_lock_key(customer))`, the
 database lock a till's receipt of that customer takes.
 
+#### House Account facility (0.14.0)
+
+Customer custom fields `crenya_credit_enabled` (Check, default 0, "House Account (credit facility)") and
+`crenya_credit_changed_at` (read-only Datetime). The Customer `validate` hook stamps `crenya_credit_changed_at`
+with the save's own `modified` whenever the flag or `disabled` changes, whoever saves it. A device type listed in
+the `crenya_pos_credit_customer_flag_device_types` hook (never a retail `till`) of an outlet that sells on account
+gets `credit_enabled` (flag and not disabled) on every customer pull record (cursor scope `credit_flag`, so a
+device whose cursor sat at `credit` is sent every customer once) and in `api.credit.get_status`; a retail till's
+answers are 0.13.2's. A sale may carry `credit_customer_as_of` (the pulled record's `modified`) and a return an
+`approval` {action, approved_by, approved_at}; the validated payload keeps both (None when absent) for the invoice
+extenders, which own the rule (crenya_restaurant). This app never refuses a sale over the facility.
+
 #### Device ids
 
 A device id is the device's UUID. Ids that differ only in case are the same
@@ -1070,6 +1082,7 @@ in as a System Manager.
 | `day_closes(from_date, to_date, outlet)`, `day_close(shift)` | the shop's shifts (Z reports): sections `sales`, `payments` (per mode: expected, counted, difference), `returns`, `store_controls`, `paid_out`; every row has `kind` money or count, money as strings at the currency's decimals |
 | `refused_sales(outlet)`, `retry_sale(name)` | what the shop's tills pushed and ERPNext refused (newest 200), with a hint in English and Arabic; Retry asks the till to send it again (`retry_pending` until the till has, so Retry is offered again once a re-push is refused) |
 | `credit_customers(outlet)`, `save_credit_limit(outlet, customer, credit_limit, modified)` | the shop's customers with a credit limit or a balance (`credit_limit` / `available` null = "No limit"; `limit_source` says whether the limit is the customer's own, its group's or the company's; over the limit first; at most 200, `more` says it was cut); read by the shop's managers. The edit is a System Manager's or an Accounts Manager's only (a shop manager approves at the till, he does not set the limit): it writes the Customer's own *Credit Limit* row for the shop's company (0 or blank clears it, a bypass flag on the row is kept; clearing it is not "no limit" when the group or the company has one), comments old and new value and the web user |
+| `save_credit_facility(outlet, customer, enabled)` | switch a customer's House Account facility on or off (`enabled` 1 / 0): a System Manager's or an Accounts Manager's only, from a browser session. The customer must be one the outlet's tills may sell to (inside its customer groups; ERPNext's Customer has no company), not the outlet's default customer, not an internal customer of another company; a disabled customer can be switched off, not on. Answers `{customer, credit_enabled, changed_at}` (UTC ISO, null when never changed); a Version of the Customer and a Comment naming the web user |
 | `credit_shops()` | the shops the user may open the Credit page of: `{shops: [{name, outlet_name, company, currency, credit_view, credit_enabled, can_edit}]}`. A System Manager or an Accounts Manager gets every shop of the companies they may use (User Permission on Company honoured, none = all) without being a Crenya POS Manager of it, and may edit (`can_edit`); a shop manager the shops they manage, read only; a cashier none. `credit_customers` and `save_credit_limit` follow the same rule; every other Shops method still needs the user to manage the shop |
 | `ensure_cash_supplier(outlet)`, `expenses_not_booked(outlet?)`, `till_expense(name)`, `retry_expense_booking(name)` | the shop's till expenses: the Cash Supplier button, the Not booked list scoped to the shops the user manages, one expense with its lines and log, and Retry (the engine is told the product); a manager needs no POS Expense right |
 | `promotions(outlet)`, `save_promotion(outlet, promotion)`, `set_promotion_enabled(outlet, name, enabled, modified)` | the shop's promotions: Pricing Rules of its company for its price list (or for every price list, a System Manager's), only the shapes a till evaluates (item code / group / brand; % or amount off, a rate, or buy X get Y, optionally repeating; min / max qty, dates, priority); coupons refused |

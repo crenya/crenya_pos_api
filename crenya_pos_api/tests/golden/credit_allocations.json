@@ -1,0 +1,419 @@
+[
+  {
+    "name": "no_ticks_oldest_first",
+    "precision": 3,
+    "amount": "12.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      },
+      {
+        "key": "B3",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": null,
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B1",
+          "allocated": "6.000",
+          "left": "0.000"
+        },
+        {
+          "key": "B2",
+          "allocated": "6.000",
+          "left": "4.000"
+        }
+      ],
+      "advance": "0.000",
+      "skipped": []
+    }
+  },
+  {
+    "name": "spec_15_3_ticks_2_and_3",
+    "precision": 3,
+    "amount": "15.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      },
+      {
+        "key": "B3",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": [
+      "B2",
+      "B3"
+    ],
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B2",
+          "allocated": "10.000",
+          "left": "0.000"
+        },
+        {
+          "key": "B3",
+          "allocated": "5.000",
+          "left": "8.000"
+        }
+      ],
+      "advance": "0.000",
+      "skipped": []
+    }
+  },
+  {
+    "name": "spec_15_3_no_ticks_advance",
+    "precision": 3,
+    "amount": "30.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      },
+      {
+        "key": "B3",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": null,
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B1",
+          "allocated": "6.000",
+          "left": "0.000"
+        },
+        {
+          "key": "B2",
+          "allocated": "10.000",
+          "left": "0.000"
+        },
+        {
+          "key": "B3",
+          "allocated": "13.000",
+          "left": "0.000"
+        }
+      ],
+      "advance": "1.000",
+      "skipped": []
+    }
+  },
+  {
+    "name": "ticked_partial_first_only",
+    "precision": 3,
+    "amount": "4.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      },
+      {
+        "key": "B3",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": [
+      "B2",
+      "B3"
+    ],
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B2",
+          "allocated": "4.000",
+          "left": "6.000"
+        }
+      ],
+      "advance": "0.000",
+      "skipped": []
+    }
+  },
+  {
+    "name": "ticked_more_than_owed_advance",
+    "precision": 3,
+    "amount": "20.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      },
+      {
+        "key": "B3",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": [
+      "B1"
+    ],
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B1",
+          "allocated": "6.000",
+          "left": "0.000"
+        }
+      ],
+      "advance": "14.000",
+      "skipped": []
+    }
+  },
+  {
+    "name": "ticked_order_is_kept",
+    "precision": 3,
+    "amount": "15.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      },
+      {
+        "key": "B3",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": [
+      "B3",
+      "B1"
+    ],
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B3",
+          "allocated": "13.000",
+          "left": "0.000"
+        },
+        {
+          "key": "B1",
+          "allocated": "2.000",
+          "left": "4.000"
+        }
+      ],
+      "advance": "0.000",
+      "skipped": []
+    }
+  },
+  {
+    "name": "ticked_gone_skipped_to_advance",
+    "precision": 3,
+    "amount": "10.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      },
+      {
+        "key": "B3",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": [
+      "B2"
+    ],
+    "gone": [
+      "B2"
+    ],
+    "expect": {
+      "rows": [],
+      "advance": "10.000",
+      "skipped": [
+        "B2"
+      ]
+    }
+  },
+  {
+    "name": "unknown_and_foreign_skipped",
+    "precision": 3,
+    "amount": "8.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      },
+      {
+        "key": "B3",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": [
+      "B9",
+      "FOREIGN-1",
+      "B1"
+    ],
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B1",
+          "allocated": "6.000",
+          "left": "0.000"
+        }
+      ],
+      "advance": "2.000",
+      "skipped": [
+        "B9",
+        "FOREIGN-1"
+      ]
+    }
+  },
+  {
+    "name": "local_resolved",
+    "precision": 3,
+    "amount": "13.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "local:6f1c",
+        "outstanding": "13.000"
+      }
+    ],
+    "ticked": [
+      "local:6f1c"
+    ],
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "local:6f1c",
+          "allocated": "13.000",
+          "left": "0.000"
+        }
+      ],
+      "advance": "0.000",
+      "skipped": []
+    }
+  },
+  {
+    "name": "local_unresolved_skipped",
+    "precision": 3,
+    "amount": "5.000",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      }
+    ],
+    "ticked": [
+      "local:7a2b"
+    ],
+    "gone": [],
+    "expect": {
+      "rows": [],
+      "advance": "5.000",
+      "skipped": [
+        "local:7a2b"
+      ]
+    }
+  },
+  {
+    "name": "inr_two_decimals",
+    "precision": 2,
+    "amount": "120.00",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "100.50"
+      },
+      {
+        "key": "B2",
+        "outstanding": "49.75"
+      }
+    ],
+    "ticked": null,
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B1",
+          "allocated": "100.50",
+          "left": "0.00"
+        },
+        {
+          "key": "B2",
+          "allocated": "19.50",
+          "left": "30.25"
+        }
+      ],
+      "advance": "0.00",
+      "skipped": []
+    }
+  },
+  {
+    "name": "exact_to_the_baisa",
+    "precision": 3,
+    "amount": "16.001",
+    "open": [
+      {
+        "key": "B1",
+        "outstanding": "6.000"
+      },
+      {
+        "key": "B2",
+        "outstanding": "10.000"
+      }
+    ],
+    "ticked": null,
+    "gone": [],
+    "expect": {
+      "rows": [
+        {
+          "key": "B1",
+          "allocated": "6.000",
+          "left": "0.000"
+        },
+        {
+          "key": "B2",
+          "allocated": "10.000",
+          "left": "0.000"
+        }
+      ],
+      "advance": "0.001",
+      "skipped": []
+    }
+  }
+]

@@ -86,6 +86,18 @@ class TestOpenInvoices(OpenInvoicesCase):
 		# a customer who paid nothing ahead has none
 		self.assertEqual(self.open_invoices(make_customer("noadvance", limit=None))["advance"], "0.000")
 
+	def test_advance_includes_credit_notes_left_on_the_account(self):
+		"""A bill settled and then cancelled to the account leaves a negative outstanding (CC12): it
+		is advance, and the bill is not listed."""
+		customer = make_customer("creditnote", limit=None)
+		invoice = self.sell(customer, "20.000")
+		self.assertOk(self.pay(self.payment(customer, "20.000")))
+		self.assertEqual(self.open_invoices(customer)["advance"], "0.000")
+		frappe.db.set_value("Sales Invoice", invoice, "outstanding_amount", -5)
+		answer = self.open_invoices(customer)
+		self.assertEqual(answer["advance"], "5.000")
+		self.assertEqual(answer["invoices"], [])
+
 	def test_more_flag_at_limit(self):
 		customer = make_customer("more", limit=None)
 		names = [self.sell(customer, "10.000") for _ in range(3)]

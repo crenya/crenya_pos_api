@@ -74,7 +74,8 @@ def approvals_bootstrap(profile, roles=None, actions=None) -> dict:
 
 	approver_roles = list(roles) if roles is not None else [APPROVER_ROLE]
 	if actions is not None:
-		keys = set(actions)
+		# one action may be named alone: a bare string is that action, never its letters
+		keys = {actions} if isinstance(actions, str) else set(actions)
 		return {
 			"approver_roles": approver_roles,
 			"max_discount_percent": None,

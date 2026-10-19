@@ -40,6 +40,7 @@ from crenya_pos_api.sync.cashier import enabled_user
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.credit import customer_in_outlet, is_credit_device
 from crenya_pos_api.sync.errors import PERMISSION, VALIDATION, SyncError
+from crenya_pos_api.sync.events import customer_lock_key
 from crenya_pos_api.sync.invoice_builder import mode_of_payment_account, resolve_customer
 from crenya_pos_api.sync.validation import (
 	MAX_ID_LENGTH,
@@ -66,12 +67,6 @@ MAX_TICKED_INVOICES = 200
 LOCAL_INVOICE_PREFIX = "local:"
 # the last part of the remarks of a payment that skipped ticked bills (`payment_result` reads it back)
 SKIPPED_REMARK = "skipped ticked invoices: "
-
-
-def customer_lock_key(customer):
-	"""The lock key of the work that allocates to a customer's invoices (receipts at a till, a credit
-	return, a settlement on the web): `events.lock_name` of it is one database lock per customer."""
-	return f"customer:{customer}"
 
 
 def _invoices(payload):
@@ -451,16 +446,19 @@ def post_payment_entry(booking, notes):
 			PAYMENT_ENTRY, doc.name, {"owner": user, "modified_by": user}, update_modified=False
 		)
 		doc.owner = doc.modified_by = user
-	if skipped is not None:
-		doc.flags.crenya_skipped = list(skipped)
+	# the answer of this booking (`payment_result`): whether bills were named, and which were skipped
+	doc.flags.crenya_ticked = bool(booking.invoices)
+	doc.flags.crenya_skipped = list(skipped or [])
 	return doc
 
 
 def skipped_invoices(doc):
-	"""The ticked bills a booked Payment Entry skipped: from the booking itself, else read back from the
-	remarks' last part; None for a payment that skipped none it can tell (no `skipped` in the result)."""
-	if doc.flags.get("crenya_skipped") is not None:
-		return list(doc.flags.crenya_skipped)
+	"""The ticked bills a Payment Entry skipped, or None for a payment that named none (no `skipped`
+	in the result). A fresh booking answers from its own flags; only an entry loaded again (a resend)
+	reads them back from the remarks' last part."""
+	ticked = doc.flags.get("crenya_ticked")
+	if ticked is not None:
+		return list(doc.flags.get("crenya_skipped") or []) if ticked else None
 	_head, mark, tail = (doc.get("remarks") or "").rpartition(f"; {SKIPPED_REMARK}")
 	if not mark or "; " in tail:
 		return None

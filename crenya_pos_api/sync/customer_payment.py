@@ -28,8 +28,8 @@ from frappe.utils import cint, flt
 
 from crenya_pos_api.sync.aggregates import AggregateHandler
 from crenya_pos_api.sync.cashier import enabled_user
-from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, money_precision
-from crenya_pos_api.sync.credit import customer_in_outlet
+from crenya_pos_api.sync.context import money_precision
+from crenya_pos_api.sync.credit import customer_in_outlet, is_credit_device
 from crenya_pos_api.sync.errors import PERMISSION, VALIDATION, SyncError
 from crenya_pos_api.sync.invoice_builder import mode_of_payment_account, resolve_customer
 from crenya_pos_api.sync.validation import (
@@ -168,7 +168,7 @@ def _as_administrator():
 
 def book_payment(ctx, data, notes):
 	"""The submitted Payment Entry of a till's payment."""
-	if ctx.device_type != DEFAULT_DEVICE_TYPE:
+	if not is_credit_device(ctx.device_type):
 		raise SyncError(
 			PERMISSION, f"Customer payments are taken at a till, not on a {ctx.device_type} device"
 		)

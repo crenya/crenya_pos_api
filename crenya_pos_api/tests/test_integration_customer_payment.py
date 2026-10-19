@@ -23,6 +23,8 @@ from crenya_pos_api.sync import customer_payment as payments
 from crenya_pos_api.sync import events
 from crenya_pos_api.sync.approvals import APPROVER_ROLE
 from crenya_pos_api.sync.context import DEVICE_ROLE, POS_USER_ROLE
+from crenya_pos_api.sync.errors import PERMISSION
+from crenya_pos_api.tests import extension_dummy as dummy
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.sync_case import money, new_id
 from crenya_pos_api.tests.test_integration_credit import CreditCase, make_customer
@@ -298,6 +300,28 @@ class TestCustomerPayment(PaymentCase):
 		finally:
 			self.set_switch(1)
 		self.assertEqual(result["payment"]["invoices"], [invoice])
+
+	def test_customer_payment_from_unlisted_type_refused(self):
+		"""Waiters and kitchen displays never take a customer payment; a type an app lists does."""
+		customer = make_customer("types", limit=None)
+		self.sell(customer, "10.000")
+		restaurant = new_id()
+		device_api.register_device(
+			device_id=restaurant,
+			device_name="Dining",
+			pos_profile=self.profile.name,
+			device_type="restaurant_pos",
+		)
+		payload = self.payment(customer, "10.000")
+		event = self.event(payload, AGGREGATE)
+		result = sync_api.push_batch(device_id=restaurant, events=[event])[0]
+		self.assertEqual(result["status"], "error")
+		self.assertEqual(result["error"]["code"], PERMISSION)
+		self.assertIn("not on a restaurant_pos device", result["error"]["message"])
+		self.assertEqual(self.entries(payload["local_id"]), [])
+		with dummy.fake_hooks({"crenya_pos_credit_device_types": ["restaurant_pos"]}):
+			self.assertOk(sync_api.push_batch(device_id=restaurant, events=[event])[0])
+		self.assertEqual(len(self.entries(payload["local_id"])), 1)
 
 	def test_refused_list_includes_customer_payments(self):
 		customer = make_customer("refusedlist", limit=None)

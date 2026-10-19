@@ -40,6 +40,7 @@ INVOICE_EXTENDER_HOOK = "crenya_pos_invoice_extenders"
 DEVICE_ROLE_HOOK = "crenya_pos_device_roles"
 PROFILE_FLAG_HOOK = "crenya_pos_profile_flags"
 ENTITLEMENT_HOOK = "crenya_pos_entitlement"
+CREDIT_DEVICE_TYPES_HOOK = "crenya_pos_credit_device_types"
 
 # the hook entries of other apps that repeat a built-in this release took over: ignored, not an error
 MOVED_ENTITIES = frozenset({"expense_category", "expense_supplier"})
@@ -424,6 +425,40 @@ def _load_device_role_rules():
 		else:
 			rules[role] = types
 	return rules
+
+
+def _device_types(hook, base):
+	"""The device types a list hook adds to `base` (a frozenset): `base` plus every app's entries,
+	read once per request. An entry that is not a device type name is logged and ignored, and so
+	is a hook that cannot be read: a bad hook never takes a feature away from the base types."""
+
+	def load():
+		try:
+			entries = _hook(hook, [])
+			if isinstance(entries, str):
+				entries = [entries]
+			if not isinstance(entries, list | tuple):
+				raise TypeError(f"{type(entries).__name__}, not a list of device types")
+			types = set(base)
+			for entry in entries:
+				if isinstance(entry, str) and DEVICE_TYPE_RE.match(entry):
+					types.add(entry)
+				else:
+					_ignored_entry(hook, entry)
+			return frozenset(types)
+		except Exception as exc:
+			_ignored_entry(hook, f"{type(exc).__name__}: {exc}")
+			return frozenset(base)
+
+	return _cached((hook, tuple(sorted(base))), load)
+
+
+def _ignored_entry(hook, entry):
+	try:
+		frappe.logger("crenya_pos_api").warning(f"{hook}: {entry!r} is not a device type; ignored")
+	except Exception:
+		# no site (plain unit tests): nothing to log to
+		pass
 
 
 def device_role_rules():

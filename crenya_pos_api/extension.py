@@ -31,6 +31,10 @@ between releases. Register the extensions in your app's `hooks.py`:
         # (core keys win; profiles the function leaves out get nothing)
         crenya_pos_profile_flags = ["my_app.sync.profiles.flags"]
 
+        # device types besides "till" that may take credit (credit status, customer payments, the
+        # customer's credit_limit on the pull); list only types that sell: not a waiter or kds
+        crenya_pos_credit_device_types = ["my_app_pos"]
+
         # fn() -> {status, paid_until, max_outlets, max_terminals, addons}: the plan's caps on
         # new terminals and the licence state sent to every device (the last app's wins)
         crenya_pos_entitlement = "my_app.licence.entitlement"

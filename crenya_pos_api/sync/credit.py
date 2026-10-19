@@ -161,8 +161,21 @@ def over_limit_note(status):
 	return f"Customer {status['customer']} is over the credit limit by {format_money(over, precision)}"
 
 
-def _require_till(ctx):
-	if ctx.device_type != DEFAULT_DEVICE_TYPE:
+def credit_device_types():
+	"""The device types that may take credit: "till" and every type an app lists in the
+	`crenya_pos_credit_device_types` hook (read once per request; a bad hook is logged and ignored)."""
+	from crenya_pos_api.sync import registry
+
+	return registry._device_types(registry.CREDIT_DEVICE_TYPES_HOOK, frozenset({DEFAULT_DEVICE_TYPE}))
+
+
+def is_credit_device(device_type):
+	"""Whether a device of `device_type` (blank = the default "till") may take credit."""
+	return (device_type or DEFAULT_DEVICE_TYPE) in credit_device_types()
+
+
+def _require_credit_device(ctx):
+	if not is_credit_device(ctx.device_type):
 		raise_api_error(InvalidRequestError, f"Credit is for tills, not for {ctx.device_type} devices")
 
 
@@ -196,7 +209,7 @@ def status_for(ctx, customer):
 	outlet's, so the call tells nothing about other customers. An outlet that no longer sells on
 	account still answers for a customer who owes (they can pay, and an old on-account invoice can be
 	returned); for any other it answers that credit is switched off."""
-	_require_till(ctx)
+	_require_credit_device(ctx)
 	if not customer_in_outlet(ctx, customer):
 		raise_api_error(InvalidRequestError, NOT_FOUND)
 	status = credit_status(customer, ctx.company)
@@ -209,7 +222,7 @@ def invoice_outstanding_for(ctx, invoice):
 	"""{name, grand_total, outstanding, as_of} of a submitted sale of this outlet (by name or by the
 	till's local id): what a return of it can credit to the account. Answered whatever the outlet's
 	credit switch says: invoices sold on account while it was on are returned after it is off."""
-	_require_till(ctx)
+	_require_credit_device(ctx)
 	if not invoice or not isinstance(invoice, str):
 		raise_api_error(InvalidRequestError, NOT_FOUND)
 	fields = ["name", "docstatus", "is_return", "company", "pos_profile", "grand_total", "outstanding_amount"]

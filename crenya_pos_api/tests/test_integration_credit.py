@@ -19,6 +19,8 @@ from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS
 from crenya_pos_api.sync.context import DEVICE_ROLE, POS_USER_ROLE, get_device_context
 from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, credit_limit_waived
 from crenya_pos_api.sync.errors import InvalidRequestError
+from crenya_pos_api.sync.pull import CREDIT_SCOPE, CustomerSpec
+from crenya_pos_api.tests import extension_dummy as dummy
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.sync_case import SyncCase, money, new_id
 from crenya_pos_api.tests.test_integration_device_users import PASSWORD, ensure_user
@@ -275,6 +277,22 @@ class TestCreditStatus(CreditCase):
 		customer = make_customer("kds", limit=150)
 		with self.assertRaises(InvalidRequestError):
 			credit_api.get_status(device_id=kds, customer=customer)
+
+	def test_get_status_from_hooked_type_allowed(self):
+		restaurant = new_id()
+		device_api.register_device(
+			device_id=restaurant,
+			device_name="Dining",
+			pos_profile=self.profile.name,
+			device_type="restaurant_pos",
+		)
+		customer = make_customer("hooked", limit=150)
+		with self.assertRaises(InvalidRequestError):
+			credit_api.get_status(device_id=restaurant, customer=customer)
+		with dummy.fake_hooks({"crenya_pos_credit_device_types": ["restaurant_pos"]}):
+			status = credit_api.get_status(device_id=restaurant, customer=customer)
+		self.assertEqual(status["customer"], customer)
+		self.assertEqual(status["credit_limit"], "150.000")
 
 	def test_invoice_outstanding_api(self):
 		customer = make_customer("out", limit=500)
@@ -800,6 +818,51 @@ class TestCreditSync(CreditCase):
 		self.assertEqual(frappe.db.get_value("POS Profile", self.profile.name, fields, as_dict=True), before)
 		self.assertEqual(frappe.db.get_value("POS Profile", self.profile.name, CREDIT_SALES_FIELD), 1)
 		self.assertTrue(frappe.get_meta("Payment Entry").has_field("crenya_local_id"))
+
+	def test_pull_credit_limit_only_for_credit_device(self):
+		limited = make_customer("pulltype", limit=500)
+		other = new_id()
+		device_api.register_device(
+			device_id=other, device_name="Waiter", pos_profile=self.profile.name, device_type="waiter"
+		)
+		till_records = self.pull()
+		self.assertEqual(till_records[limited]["credit_limit"], "500.000")
+		first = sync_api.pull_changes(device_id=other, entity="customer", limit=500)
+		self.assertNotIn(CREDIT_SCOPE, first["next_cursor"] or "")
+		records = {row["name"]: row for row in first["records"]}
+		self.assertIn(limited, records)
+		self.assertNotIn("credit_limit", records[limited])
+		# a type the hook lists gets the limit and the credit scope, as a till does
+		with dummy.fake_hooks({"crenya_pos_credit_device_types": ["waiter"]}):
+			listed = {row["name"]: row for row in self.pull(device_id=other)}
+		self.assertEqual(listed[limited]["credit_limit"], "500.000")
+
+	def test_retail_till_pull_unchanged(self):
+		"""A till's record shape is 0.13.2's: the limit key on every customer, the credit scope."""
+		limited = make_customer("pulltill", limit=500)
+		unlimited = make_customer("pulltillnone", limit=None)
+		with dummy.fake_hooks({"crenya_pos_credit_device_types": ["restaurant_pos"]}):
+			records = self.pull()
+		self.assertEqual(records[limited]["credit_limit"], "500.000")
+		self.assertIsNone(records[unlimited]["credit_limit"])
+		self.assertEqual(
+			sorted(records[unlimited]),
+			sorted(
+				[
+					"name",
+					"customer_name",
+					"customer_group",
+					"mobile_no",
+					"email_id",
+					"tax_id",
+					"disabled",
+					"crenya_local_id",
+					"modified",
+					"credit_limit",
+				]
+			),
+		)
+		self.assertEqual(CustomerSpec().cursor_scope(get_device_context(self.device_id)), CREDIT_SCOPE)
 
 	def test_an_outlet_without_credit_sends_no_limit(self):
 		limited = make_customer("pulloff", limit=500)

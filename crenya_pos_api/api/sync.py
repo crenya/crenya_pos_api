@@ -10,6 +10,7 @@ from crenya_pos_api.sync.context import (
 	get_device_context,
 	require_login,
 )
+from crenya_pos_api.sync.customer_payment import FEATURE_SETTLE_INVOICES
 from crenya_pos_api.sync.device_user import acting_user, key_kind
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.events import process_batch
@@ -68,6 +69,8 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			# device user and the key `pull_changes(pin_seal=1)` seals PIN hashes with
 			"device_users": True,
 			"pin_seal": True,
+			# 0.14.0: a `Customer Payment` may name the bills it settles, in order (`invoices`)
+			FEATURE_SETTLE_INVOICES: 1,
 		},
 	}
 	# other apps' crenya_pos_capabilities hooks add their own flags; core flags are kept

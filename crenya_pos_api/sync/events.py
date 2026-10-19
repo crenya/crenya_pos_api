@@ -9,6 +9,7 @@ once (DEADLOCK_ATTEMPTS, within DEADLOCK_BUDGET_SECONDS) before it becomes such 
 import hashlib
 import random
 import time
+from contextlib import contextmanager
 
 import frappe
 from frappe.utils import cint, now
@@ -246,7 +247,27 @@ def _lock_name(raw_event):
 		key = handler.lock_key(payload) if handler is not None and isinstance(payload, dict) else None
 	except Exception:
 		return None
-	return f"crenya_pos:{hashlib.sha1(key.encode()).hexdigest()}" if key else None
+	return lock_name(key) if key else None
+
+
+def lock_name(key):
+	"""The database lock name of a lock key: the one rule, so a till's event and a booking on the web
+	(`named_lock`) of the same key wait for each other."""
+	return f"crenya_pos:{hashlib.sha1(key.encode()).hexdigest()}"
+
+
+@contextmanager
+def named_lock(key):
+	"""Run the block under the database lock of `key` (`lock_name`), the one a till's event of the same
+	key takes. The transaction is committed before the wait (see `_acquire_lock`); raises
+	frappe.ValidationError("busy") when the lock is not had within LOCK_WAIT_SECONDS."""
+	name = lock_name(key)
+	if not _acquire_lock(name):
+		raise frappe.ValidationError("busy")
+	try:
+		yield
+	finally:
+		_release_lock(name)
 
 
 def _acquire_lock(name):

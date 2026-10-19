@@ -165,12 +165,23 @@ class TestOpenInvoices(OpenInvoicesCase):
 		self.assertEqual(answer["advance"], "0.000")
 
 
+BANK = "_Test Crenya Open Bank"
+
+
 class TestSettlements(OpenInvoicesCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# a Bank-type mode with an account for the company (the card mode of the terminal fixtures may
+		# not be set up when this module runs alone)
+		company = frappe.get_doc("Company", fixtures.COMPANY)
+		fixtures.ensure_mode_of_payment(BANK, "Bank", company)
+
 	def web_settlement(self, customer, invoice, amount):
 		booking = PaymentBooking(
 			company=fixtures.COMPANY,
 			customer=customer,
-			mode_of_payment=fixtures.CARD,
+			mode_of_payment=BANK,
 			amount=Decimal(amount),
 			currency=fixtures.CURRENCY,
 			posting_date=nowdate(),
@@ -215,7 +226,7 @@ class TestSettlements(OpenInvoicesCase):
 			],
 			[
 				(till, fixtures.CASH, "Cash", True, "5.000"),
-				(web, fixtures.CARD, "Bank", False, "3.000"),
+				(web, BANK, "Bank", False, "3.000"),
 				(desk, fixtures.CASH, "Cash", False, "2.000"),
 			],
 		)

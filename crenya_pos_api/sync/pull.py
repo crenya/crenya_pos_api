@@ -27,7 +27,7 @@ from crenya_pos_api.sync.context import (
 	money_precision,
 	profile_users,
 )
-from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, customer_credit_limits
+from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, customer_credit_limits, is_credit_device
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.promotions import rule_is_active
@@ -355,8 +355,8 @@ class CustomerSpec(EntitySpec):
 			}
 			for row in rows
 		]
-		if cint(ctx.profile.get(CREDIT_SALES_FIELD)):
-			# an outlet that sells on account: the limit as ERPNext reads it (null: no limit); a limit
+		if self._sends_limit(ctx):
+			# an outlet that sells on account, to a device that may take credit: the limit as ERPNext reads it (null: no limit); a limit
 			# edited on the Customer bumps its `modified`, one on the group or company does not (the
 			# online status corrects it at the next check)
 			precision = money_precision(ctx.currency)
@@ -369,7 +369,12 @@ class CustomerSpec(EntitySpec):
 	def cursor_scope(self, ctx):
 		# the records carry `credit_limit` only while the outlet sells on account: switching it on (or
 		# off) sends every customer again once, so a till never keeps a customer without the limit
-		return CREDIT_SCOPE if cint(ctx.profile.get(CREDIT_SALES_FIELD)) else None
+		return CREDIT_SCOPE if self._sends_limit(ctx) else None
+
+	@staticmethod
+	def _sends_limit(ctx):
+		# a device that never takes credit (waiter, kds) gets today's record and cursor
+		return bool(cint(ctx.profile.get(CREDIT_SALES_FIELD))) and is_credit_device(ctx.device_type)
 
 
 class StockSpec(EntitySpec):

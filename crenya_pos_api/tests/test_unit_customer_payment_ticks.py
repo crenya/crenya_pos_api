@@ -51,7 +51,7 @@ def refused(test, **over):
 class TestTickedPayload(unittest.TestCase):
 	def test_feature_name(self):
 		self.assertEqual(FEATURE_SETTLE_INVOICES, "credit_settle_invoices")
-		self.assertEqual(MAX_TICKED_INVOICES, 200)
+		self.assertEqual(MAX_TICKED_INVOICES, 1000)
 
 	def test_without_invoices_the_payload_reads_as_before(self):
 		data = validate_customer_payment_payload(payload())
@@ -70,9 +70,11 @@ class TestTickedPayload(unittest.TestCase):
 		self.assertEqual(validate_customer_payment_payload(payload(invoices=names))["invoices"], names)
 
 	def test_invoices_list_too_long_refused(self):
-		self.assertIn("200", refused(self, invoices=[f"SINV-{n}" for n in range(201)]))
-		ok = validate_customer_payment_payload(payload(invoices=[f"SINV-{n}" for n in range(200)]))
-		self.assertEqual(len(ok["invoices"]), 200)
+		self.assertIn("1000", refused(self, invoices=[f"SINV-{n}" for n in range(1001)]))
+		# the till lists up to 1000 bills and may tick them all: 201 and 1000 are taken
+		for count in (201, 1000):
+			ok = validate_customer_payment_payload(payload(invoices=[f"SINV-{n}" for n in range(count)]))
+			self.assertEqual(len(ok["invoices"]), count)
 
 	def test_what_is_refused(self):
 		self.assertIn("list", refused(self, invoices="SINV-1"))

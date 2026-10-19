@@ -312,3 +312,83 @@ class TestPaymentsAndReceipt(TotalsCase):
 			(row.doc_type, row.module, row.standard, row.print_format_type, row.disabled),
 			(PAYMENT_ENTRY, "Crenya Pos Api", "Yes", "Jinja", 0),
 		)
+
+
+class TestOwingAndDisabled(TotalsCase):
+	def test_ordinary_unpaid_invoice_shows_no_tab_on_a_credit_off_outlet(self):
+		"""F2: a desk invoice that is unpaid does not make the House Account tab appear; a till bill
+		left on account does, and so does a customer with the facility on."""
+		from crenya_pos_api.api.web_admin import credit as web_credit
+
+		frappe.set_user("Administrator")
+		restaurant = RESTAURANT_A
+		saved = frappe.db.get_value("POS Profile", restaurant, "crenya_credit_sales_enabled")
+		self.addCleanup(
+			lambda: (
+				frappe.db.set_value("POS Profile", restaurant, "crenya_credit_sales_enabled", saved or 0),
+				frappe.db.commit(),  # nosemgrep
+			)
+		)
+		frappe.db.set_value("POS Profile", restaurant, "crenya_credit_sales_enabled", 0)
+		frappe.clear_document_cache("POS Profile", restaurant)
+		frappe.db.commit()  # nosemgrep
+		# everything uncommitted below is undone at the end of the test
+		self.addCleanup(frappe.db.rollback)
+		frappe.db.sql(
+			"update `tabSales Invoice` set pos_profile = NULL where company = %s", (fixtures.COMPANY,)
+		)
+		frappe.db.sql("update `tabCustomer` set crenya_credit_enabled = 0")
+		desk = make_customer("deskowes", limit=None)
+		doc = self.desk_invoice(desk)
+		doc.insert(ignore_permissions=True)
+		doc.submit()
+		self.assertGreater(frappe.db.get_value("Sales Invoice", doc.name, "outstanding_amount"), 0)
+		self.assertEqual(web_credit.owing_companies({fixtures.COMPANY}), set())
+		frappe.set_user(ACCOUNTS)
+		answer = web_admin.credit_shops("restaurant")
+		self.assertNotIn(restaurant, [shop["name"] for shop in answer["shops"]])
+		# a customer with the facility on brings the tab
+		frappe.db.set_value("Customer", desk, CREDIT_ENABLED_FIELD, 1)
+		self.assertEqual(web_credit.owing_companies({fixtures.COMPANY}), {fixtures.COMPANY})
+		frappe.db.set_value("Customer", desk, CREDIT_ENABLED_FIELD, 0)
+		self.assertEqual(web_credit.owing_companies({fixtures.COMPANY}), set())
+		# a till bill still outstanding brings it too
+		frappe.db.set_value("Sales Invoice", doc.name, "pos_profile", restaurant)
+		self.assertEqual(web_credit.owing_companies({fixtures.COMPANY}), {fixtures.COMPANY})
+
+	def test_disabled_customer_who_owes_stays_listed_and_counted(self):
+		"""F7: disabling a customer who still owes does not remove them from the page or the Grand
+		total; a disabled customer who owes nothing is not listed."""
+		owing = make_customer("disowes", limit=None)
+		clear = make_customer("disclear", limit=None)
+		self.bills(owing, "30.000")
+		frappe.db.set_value("Customer", clear, CREDIT_ENABLED_FIELD, 1)
+		frappe.db.commit()  # nosemgrep
+		frappe.set_user(REST_MANAGER)
+		before = web_admin.credit_customers(RESTAURANT_A)
+		frappe.set_user("Administrator")
+		for name in (owing, clear):
+			frappe.db.set_value("Customer", name, "disabled", 1)
+		frappe.db.commit()  # nosemgrep
+		self.addCleanup(self.enable, owing, clear)
+		frappe.set_user(REST_MANAGER)
+		after = web_admin.credit_customers(RESTAURANT_A)
+		rows = rows_by_customer(after)
+		self.assertIn(owing, rows)
+		self.assertIs(rows[owing]["disabled"], True)
+		self.assertEqual(rows[owing]["outstanding"], "30.000")
+		self.assertNotIn(clear, rows)
+		self.assertIn(clear, rows_by_customer(before))
+		self.assertEqual(
+			Decimal(after["totals"]["outstanding"]),
+			sum((Decimal(row["outstanding"]) for row in after["rows"]), Decimal(0)),
+		)
+		self.assertGreaterEqual(Decimal(after["totals"]["outstanding"]), Decimal("30.000"))
+		# a shop keeps its rule
+		frappe.set_user("Administrator")
+		self.assertNotIn(owing, rows_by_customer(web_admin.credit_customers(self.profile.name)))
+
+	def enable(self, *names):
+		for name in names:
+			frappe.db.set_value("Customer", name, "disabled", 0)
+		frappe.db.commit()  # nosemgrep

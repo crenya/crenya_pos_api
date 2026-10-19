@@ -270,9 +270,18 @@ class TestTickedReceipts(TicksCase):
 		# and without ticks (an untick overpay from a retail till sends no key at all)
 		self.assertOk(self.pay(self.payment(customer, "3.000", advance_confirmed=True)))
 
+	def test_two_hundred_and_one_ticked_bills_are_accepted(self):
+		"""The till may tick up to 1000 bills: a receipt naming 201 books (the unknown names are
+		skipped with notes, the money stays an advance), never refused for the count."""
+		customer = make_customer("manyticks", limit=None)
+		payload = self.payment(customer, "1.000", invoices=[f"SINV-NOPE-{n}" for n in range(201)])
+		result = self.assertOk(self.pay(payload))
+		self.assertEqual(len(result["skipped"]), 201)
+		self.assertEqual(result["payment"]["unallocated"], "1.000")
+
 	def test_invoices_list_too_long_refused(self):
 		customer = make_customer("toolong", limit=None)
-		payload = self.payment(customer, "1.000", invoices=[f"SINV-{n}" for n in range(201)])
+		payload = self.payment(customer, "1.000", invoices=[f"SINV-{n}" for n in range(1001)])
 		self.assertError(self.pay(payload), "validation", False)
 		self.assertEqual(self.entries(payload["local_id"]), [])
 		not_a_list = self.payment(customer, "1.000", invoices="SINV-1")

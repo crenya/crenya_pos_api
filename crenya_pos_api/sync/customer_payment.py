@@ -38,7 +38,7 @@ from frappe.utils import cint, flt
 from crenya_pos_api.sync.aggregates import AggregateHandler
 from crenya_pos_api.sync.cashier import enabled_user
 from crenya_pos_api.sync.context import money_precision
-from crenya_pos_api.sync.credit import customer_in_outlet, is_credit_device
+from crenya_pos_api.sync.credit import OPEN_INVOICES_MAX_LIMIT, customer_in_outlet, is_credit_device
 from crenya_pos_api.sync.errors import PERMISSION, VALIDATION, SyncError
 from crenya_pos_api.sync.events import customer_lock_key
 from crenya_pos_api.sync.invoice_builder import mode_of_payment_account, resolve_customer
@@ -62,7 +62,9 @@ MAX_NOTE_LENGTH = 500
 # a receipt names in `invoices` (0.14.0)
 FEATURE_SETTLE_INVOICES = "credit_settle_invoices"
 # at most this many bills named by one receipt
-MAX_TICKED_INVOICES = 200
+# as many as the till can tick: its list loads up to OPEN_INVOICES_MAX_LIMIT bills ("Show more"), and a
+# receipt it already took must never be refused at sync for the count
+MAX_TICKED_INVOICES = OPEN_INVOICES_MAX_LIMIT
 # a ticked bill the till sold itself and may not know the ERPNext name of: "local:" + its local id
 LOCAL_INVOICE_PREFIX = "local:"
 # the last part of the remarks of a payment that skipped ticked bills (`payment_result` reads it back)

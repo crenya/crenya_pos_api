@@ -313,10 +313,65 @@ def status_for(ctx, customer):
 	return status
 
 
+def invoice_settlements(invoice):
+	"""How a submitted sale was settled after it was sold (CC12, R20): one row per submitted Receive
+	Payment Entry that references it, oldest first: `[{payment_entry, mode_of_payment, mode_type,
+	from_till, allocated}]` (`allocated` a decimal string at the outlet's precision, summed when an entry
+	references the bill twice). `from_till` is true only for a till's `Customer Payment`: the entry
+	carries the till's id and its remarks name the device; a web settlement or a desk entry is false.
+	`mode_type` is the Mode of Payment's own `type` (Cash, Bank, ...)."""
+	from crenya_pos_api.sync.customer_payment import LOCAL_ID_FIELD, PAYMENT_ENTRY, TILL_REMARKS_PREFIX
+
+	refs = frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"parenttype": PAYMENT_ENTRY,
+			"reference_doctype": "Sales Invoice",
+			"reference_name": invoice,
+		},
+		fields=["parent", "allocated_amount"],
+	)
+	if not refs:
+		return []
+	allocated = {}
+	for ref in refs:
+		allocated[ref.parent] = allocated.get(ref.parent, Decimal(0)) + as_decimal(ref.allocated_amount)
+	entries = frappe.get_all(
+		PAYMENT_ENTRY,
+		filters={"name": ["in", list(allocated)], "docstatus": 1, "payment_type": "Receive"},
+		fields=["name", "mode_of_payment", LOCAL_ID_FIELD, "remarks"],
+		order_by="posting_date asc, creation asc, name asc",
+	)
+	modes = [entry.mode_of_payment for entry in entries if entry.mode_of_payment]
+	types = (
+		{
+			row.name: row.type
+			for row in frappe.get_all(
+				"Mode of Payment", filters={"name": ["in", modes]}, fields=["name", "type"]
+			)
+		}
+		if modes
+		else {}
+	)
+	precision = money_precision()
+	return [
+		{
+			"payment_entry": entry.name,
+			"mode_of_payment": entry.mode_of_payment,
+			"mode_type": types.get(entry.mode_of_payment),
+			"from_till": bool(entry.get(LOCAL_ID_FIELD))
+			and (entry.remarks or "").startswith(TILL_REMARKS_PREFIX),
+			"allocated": format_money(allocated[entry.name], precision),
+		}
+		for entry in entries
+	]
+
+
 def invoice_outstanding_for(ctx, invoice):
-	"""{name, grand_total, outstanding, as_of} of a submitted sale of this outlet (by name or by the
-	till's local id): what a return of it can credit to the account. Answered whatever the outlet's
-	credit switch says: invoices sold on account while it was on are returned after it is off."""
+	"""{name, grand_total, outstanding, as_of, settlements} of a submitted sale of this outlet (by name
+	or by the till's local id): what a return of it can credit to the account, and how it was settled
+	after the sale (`invoice_settlements`). Answered whatever the outlet's credit switch says:
+	invoices sold on account while it was on are returned after it is off."""
 	_require_credit_device(ctx)
 	if not invoice or not isinstance(invoice, str):
 		raise_api_error(InvalidRequestError, NOT_FOUND)
@@ -334,7 +389,76 @@ def invoice_outstanding_for(ctx, invoice):
 		"grand_total": format_money(row.grand_total, precision),
 		"outstanding": format_money(row.outstanding_amount, precision),
 		"as_of": utc_now_iso(),
+		"settlements": invoice_settlements(row.name),
 	}
+
+
+# the rows of one `get_open_invoices` answer: the default, and the most "Show more" may ask for (Q5)
+OPEN_INVOICES_DEFAULT_LIMIT = 200
+OPEN_INVOICES_MAX_LIMIT = 1000
+
+
+def customer_advance(customer, company):
+	"""What the customer has paid ahead (Decimal, unrounded): the unallocated part of its submitted
+	Receive Payment Entries of the company."""
+	rows = frappe.get_all(
+		"Payment Entry",
+		filters={
+			"party_type": "Customer",
+			"party": customer,
+			"company": company,
+			"docstatus": 1,
+			"payment_type": "Receive",
+		},
+		fields=["unallocated_amount"],
+	)
+	return sum((as_decimal(row.unallocated_amount) for row in rows), Decimal(0))
+
+
+def open_invoices_answer(customer, company, precision, limit=OPEN_INVOICES_DEFAULT_LIMIT):
+	"""The wire answer of `get_open_invoices` (money as decimal strings at `precision`): the customer's
+	open bills of the company (all its outlets, Q1: the debt is the customer's, each row names its
+	outlet) oldest first, at most `limit` (above 1000 cut to 1000), `more` when there are others;
+	`outstanding` is ERPNext's balance and `advance` the unallocated receipts (RC9)."""
+	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
+
+	from crenya_pos_api.sync.customer_payment import open_invoices
+
+	limit = max(1, min(cint(limit) or OPEN_INVOICES_DEFAULT_LIMIT, OPEN_INVOICES_MAX_LIMIT))
+	found = open_invoices(customer, company, limit + 1)
+	return {
+		"customer": customer,
+		"outstanding": format_money(get_customer_outstanding(customer, company), precision),
+		"advance": format_money(customer_advance(customer, company), precision),
+		"as_of": utc_now_iso(),
+		"more": len(found) > limit,
+		"invoices": [
+			{
+				"name": row["name"],
+				"local_id": row["local_id"] or None,
+				"offline_number": row["offline_number"] or None,
+				"outlet": row["pos_profile"],
+				"posting_date": str(row["posting_date"]),
+				"grand_total": format_money(row["total"], precision),
+				"outstanding": format_money(row["outstanding"], precision),
+			}
+			for row in found[:limit]
+		],
+	}
+
+
+def open_invoices_for(ctx, customer, limit=None):
+	"""`open_invoices_answer` for a customer of the device's outlet: the device must be allowed
+	credit and the outlet must sell on account; the walk-in and a customer that is not there or not
+	the outlet's get one answer (no tell about other customers)."""
+	_require_credit_device(ctx)
+	if not _credit_on(ctx):
+		raise_api_error(InvalidRequestError, SWITCHED_OFF)
+	if not customer_in_outlet(ctx, customer) or customer == ctx.profile.customer:
+		raise_api_error(InvalidRequestError, NOT_FOUND)
+	return open_invoices_answer(
+		customer, ctx.company, money_precision(ctx.currency), cint(limit) or OPEN_INVOICES_DEFAULT_LIMIT
+	)
 
 
 def _install_waiver():

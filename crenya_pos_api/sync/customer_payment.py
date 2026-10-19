@@ -154,9 +154,10 @@ def allocate(amount, invoices, precision):
 	return rows, left
 
 
-def open_invoices(customer, company):
+def open_invoices(customer, company, limit=None):
 	"""The customer's submitted Sales Invoices of the company with something outstanding, oldest
-	first. Two receipts of one customer never read this at once: the handler's `lock_key` makes
+	first (at most `limit` of them when given). Each row also names the bill's outlet, date and the
+	till's ids, for `credit.get_open_invoices`; the allocation ignores them. Two receipts of one customer never read this at once: the handler's `lock_key` makes
 	`events.process_event` run them one after another, each starting its snapshot after the previous
 	commit (under REPEATABLE READ a lock taken after a plain read would still see the old balances)."""
 	rows = frappe.get_all(
@@ -168,8 +169,18 @@ def open_invoices(customer, company):
 			"is_return": 0,
 			"outstanding_amount": [">", 0],
 		},
-		fields=["name", "grand_total", "outstanding_amount", "due_date"],
+		fields=[
+			"name",
+			"grand_total",
+			"outstanding_amount",
+			"due_date",
+			"pos_profile",
+			"posting_date",
+			"crenya_local_id",
+			"crenya_offline_number",
+		],
 		order_by="posting_date asc, creation asc, name asc",
+		limit_page_length=limit or 0,
 	)
 	return [
 		{
@@ -177,6 +188,10 @@ def open_invoices(customer, company):
 			"total": row.grand_total,
 			"outstanding": row.outstanding_amount,
 			"due_date": row.due_date,
+			"pos_profile": row.pos_profile,
+			"posting_date": row.posting_date,
+			"local_id": row.crenya_local_id,
+			"offline_number": row.crenya_offline_number,
 		}
 		for row in rows
 	]
@@ -262,8 +277,12 @@ def payment_for_local_id(local_id, device_id=None):
 	return row.name
 
 
+# every till receipt's remarks open with this and the device's id (`_remarks_start`)
+TILL_REMARKS_PREFIX = "Received at the till "
+
+
 def _remarks_start(device_id):
-	return f"Received at the till {device_id} "
+	return f"{TILL_REMARKS_PREFIX}{device_id} "
 
 
 def _remarks(ctx, data, cashier):

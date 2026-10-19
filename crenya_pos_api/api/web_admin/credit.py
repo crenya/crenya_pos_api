@@ -148,8 +148,11 @@ def is_restaurant(ctx) -> bool:
 
 
 def _outlet_customer_filter(ctx):
-	"""Filters for the customers the outlet serves: not disabled, inside its customer groups."""
-	filters = {"disabled": 0}
+	"""Filters for the customers the outlet serves: inside its customer groups, and a shop's not
+	disabled. A restaurant's list keeps a disabled customer who still owes (F7: their bills can still
+	be settled and they stay in the Grand total); the candidates of the list already leave out a
+	disabled customer who owes nothing."""
+	filters = {} if is_restaurant(ctx) else {"disabled": 0}
 	roots = [row.customer_group for row in ctx.profile.get("customer_groups") or []]
 	if roots:
 		from crenya_pos_api.sync.pull import _descendants
@@ -276,7 +279,15 @@ def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 		CUSTOMER,
 		# the one customer just saved is answered whatever its state; a list is the outlet's live ones
 		filters=filters if only else {**_outlet_customer_filter(ctx), **filters},
-		fields=["name", "customer_name", "customer_group", "modified", "mobile_no", CREDIT_ENABLED_FIELD],
+		fields=[
+			"name",
+			"customer_name",
+			"customer_group",
+			"modified",
+			"mobile_no",
+			"disabled",
+			CREDIT_ENABLED_FIELD,
+		],
 	)
 	limits = customer_credit_limit_sources(customers, ctx.company)
 	rows = [
@@ -306,6 +317,11 @@ def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 		for row in rows
 	]
 	exact.sort(key=_sort_key)
+	if is_restaurant(ctx):
+		# a disabled customer who still owes stays listed, marked so the page can say so
+		for row in exact:
+			if cint(by_name[row["customer"]].get("disabled")):
+				row["disabled"] = True
 	return exact, more
 
 
@@ -530,10 +546,14 @@ def credit_editor(outlet, refusal=None) -> WebAdminContext:
 
 
 def owing_companies(companies) -> set:
-	"""The companies of `companies` with a submitted sale still outstanding (a customer of theirs
-	owes)."""
+	"""The companies of `companies` where a House Account is in use: a submitted sale made at a till
+	(it has a POS Profile) that is still outstanding, or any customer with the House Account facility
+	on. An ordinary unpaid desk invoice does not count, so an outlet that never switched credit on
+	does not grow a House Account tab because the company has a B2B receivable."""
 	if not companies:
 		return set()
+	if frappe.db.exists(CUSTOMER, {CREDIT_ENABLED_FIELD: 1, "disabled": 0}):
+		return set(companies)
 	invoice = frappe.qb.DocType("Sales Invoice")
 	rows = (
 		frappe.qb.from_(invoice)
@@ -543,6 +563,8 @@ def owing_companies(companies) -> set:
 			& (invoice.docstatus == 1)
 			& (invoice.is_return == 0)
 			& (invoice.outstanding_amount > 0)
+			& invoice.pos_profile.isnotnull()
+			& (invoice.pos_profile != "")
 		)
 		.groupby(invoice.company)
 		.run()
@@ -561,7 +583,7 @@ def credit_shops(product: str = "shop") -> dict:
 	tab to an accountant who cannot open the outlet's other pages.
 
 	`credit_on` (= `credit_enabled`) is the outlet's sell-on-account switch, `owing` whether a
-	customer of its company still owes. A shop is listed either way; a restaurant outlet only when
+	House Account is in use in its company (`owing_companies`: a till sale still unpaid, or a customer with the facility on). A shop is listed either way; a restaurant outlet only when
 	one of the two is true (RC16: switched off, the page stays while somebody owes). A product that
 	is not registered lists nothing."""
 	require_web_session()

@@ -400,7 +400,11 @@ OPEN_INVOICES_MAX_LIMIT = 1000
 
 def customer_advance(customer, company):
 	"""What the customer has paid ahead (Decimal, unrounded): the unallocated part of its submitted
-	Receive Payment Entries of the company."""
+	Receive Payment Entries of the company, plus the absolute value of its negative Sales Invoice
+	outstandings there (credit notes left on the account, e.g. a House Account cancel of a settled
+	bill, CC12), the latter in one aggregate query."""
+	from frappe.query_builder.functions import Sum
+
 	rows = frappe.get_all(
 		"Payment Entry",
 		filters={
@@ -412,14 +416,31 @@ def customer_advance(customer, company):
 		},
 		fields=["unallocated_amount"],
 	)
-	return sum((as_decimal(row.unallocated_amount) for row in rows), Decimal(0))
+	paid_ahead = sum((as_decimal(row.unallocated_amount) for row in rows), Decimal(0))
+	invoice = frappe.qb.DocType("Sales Invoice")
+	owed_back = (
+		frappe.qb.from_(invoice)
+		.select(Sum(invoice.outstanding_amount))
+		.where(
+			(invoice.customer == customer)
+			& (invoice.company == company)
+			& (invoice.docstatus == 1)
+			& (invoice.outstanding_amount < 0)
+		)
+		.run()
+	)
+	credit_notes = as_decimal(owed_back[0][0]) if owed_back and owed_back[0][0] is not None else Decimal(0)
+	return paid_ahead + abs(credit_notes)
 
 
 def open_invoices_answer(customer, company, precision, limit=OPEN_INVOICES_DEFAULT_LIMIT):
 	"""The wire answer of `get_open_invoices` (money as decimal strings at `precision`): the customer's
 	open bills of the company (all its outlets, Q1: the debt is the customer's, each row names its
 	outlet) oldest first, at most `limit` (above 1000 cut to 1000), `more` when there are others;
-	`outstanding` is ERPNext's balance and `advance` the unallocated receipts (RC9)."""
+	`outstanding` is ERPNext's net account balance (`get_customer_outstanding`, as `get_status`
+	gives it), already net of the advance and not the sum of the rows: a screen shows it beside
+	`advance` and never subtracts the advance again. `advance` is the unallocated receipts plus
+	credit notes left on the account (RC9)."""
 	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
 
 	from crenya_pos_api.sync.customer_payment import open_invoices

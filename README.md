@@ -290,6 +290,15 @@ A hook entry that repeats one of these built-ins is ignored and logged once, so 
 deployed first: the restaurant tills keep working through the built-in handler (the restaurant's
 approver roles are read from the installed crenya_restaurant until it registers its product).
 
+#### Open bills (0.14.0)
+
+`api.credit.get_open_invoices(device_id, customer, limit)` lists a customer's open bills of the company (all
+outlets, each row names its outlet), oldest first, at most `limit` rows (default 200, never above 1000; `more` says
+there are others). `outstanding` is ERPNext's net account balance (the figure `get_status` gives), already net of
+the advance and not the sum of the rows: a screen must not subtract the advance again. `advance` is the
+unallocated Receive Payment Entries plus any credit notes left on the account. `get_invoice_outstanding` also
+returns `settlements` (how the bill was settled after the sale).
+
 #### Customer payments (credit sales, 0.13.0)
 
 A till takes a customer's payment on account as the push aggregate `Customer Payment` (`sync/customer_payment.py`),

@@ -157,7 +157,8 @@ def allocate(amount, invoices, precision):
 def open_invoices(customer, company, limit=None):
 	"""The customer's submitted Sales Invoices of the company with something outstanding, oldest
 	first (at most `limit` of them when given). Each row also names the bill's outlet, date and the
-	till's ids, for `credit.get_open_invoices`; the allocation ignores them. Two receipts of one customer never read this at once: the handler's `lock_key` makes
+	till's ids, for `credit.get_open_invoices`; the allocation ignores them. Two receipts of one customer never read this at once: the
+	handler's `lock_key` makes
 	`events.process_event` run them one after another, each starting its snapshot after the previous
 	commit (under REPEATABLE READ a lock taken after a plain read would still see the old balances)."""
 	rows = frappe.get_all(

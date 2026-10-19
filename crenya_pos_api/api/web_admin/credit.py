@@ -409,7 +409,8 @@ def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) 
 		invalid(_("Customer {0} is disabled: enable the customer first").format(customer))
 	if bool(cint(doc.get(CREDIT_ENABLED_FIELD))) != flag:
 		doc.set(CREDIT_ENABLED_FIELD, 1 if flag else 0)
-		doc.save(ignore_permissions=True)
+		# always a Version (Frappe skips it under tests unless asked): the audit of D6 / K
+		doc.save(ignore_permissions=True, ignore_version=False)
 		doc.add_comment("Info", facility_audit_text(flag, ctx.source, ctx.approver))
 	changed_at = doc.get(CREDIT_CHANGED_AT_FIELD)
 	return {

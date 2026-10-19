@@ -73,7 +73,10 @@ class TestFacilityFields(WebCreditCase):
 		customer = make_customer("facility new")
 		row = facility(customer)
 		self.assertEqual((row[CREDIT_ENABLED_FIELD], row[CREDIT_CHANGED_AT_FIELD]), (0, None))
-		self.assertEqual(frappe.db.count("Customer", {CREDIT_ENABLED_FIELD: ["is", "not set"]}), 0)
+		# the column is NOT NULL with default 0: every existing customer reads 0, never null
+		table = frappe.qb.DocType("Customer")
+		nulls = frappe.qb.from_(table).select(table.name).where(table[CREDIT_ENABLED_FIELD].isnull()).run()
+		self.assertFalse(nulls)
 
 	def test_patch_idempotent_on_existing_site(self):
 		from crenya_pos_api.patches.v0_14 import credit_customer_fields

@@ -10,7 +10,7 @@ from datetime import date, time
 from decimal import Decimal
 
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
-from crenya_pos_api.utils.dates import parse_iso_utc
+from crenya_pos_api.utils.dates import is_db_datetime, parse_iso_utc
 from crenya_pos_api.utils.decimal import DecimalParseError, parse_decimal
 
 AGGREGATE_CUSTOMER = "Customer"
@@ -374,6 +374,50 @@ def _validate_credit_offset(value, is_return, original):
 	return amount
 
 
+def _validate_credit_customer_as_of(value, is_return):
+	"""Optional `credit_customer_as_of` (0.14.0, restaurant D6, R5): on a sale, the `modified` of the
+	customer's record the till pulled last, echoed as the pull sent it (the database form
+	"YYYY-MM-DD HH:MM:SS.ffffff", the server's clock) or an ISO-8601 timestamp with an offset. Kept as
+	the stripped string for the invoice extenders; absent: None. A return carries none."""
+	if value is None or (isinstance(value, str) and not value.strip()):
+		return None
+	if is_return:
+		_fail("credit_customer_as_of is only allowed on a sale")
+	if not isinstance(value, str):
+		_fail("credit_customer_as_of must be a string")
+	value = value.strip()
+	if is_db_datetime(value):
+		return value
+	try:
+		parse_iso_utc(value)
+	except ValueError:
+		_fail("credit_customer_as_of must be the customer record's modified or an ISO-8601 timestamp")
+	return value
+
+
+def _validate_approval(value, is_return):
+	"""Optional `approval` (0.14.0, restaurant D8, R4): on a return, the manager's approval of it,
+	{action, approved_by, approved_at (ISO-8601 with an offset)}. Kept as that dict of stripped
+	strings for the invoice extenders, which decide what it allows; absent: None. A sale carries
+	none."""
+	if value is None:
+		return None
+	if not is_return:
+		_fail("approval is only allowed on a return")
+	if not isinstance(value, dict):
+		_fail("approval must be an object")
+	approval = {
+		"action": _required_str(value, "action", "approval.action"),
+		"approved_by": _required_str(value, "approved_by", "approval.approved_by"),
+		"approved_at": _required_str(value, "approved_at", "approval.approved_at"),
+	}
+	try:
+		parse_iso_utc(approval["approved_at"])
+	except ValueError:
+		_fail("approval.approved_at must be an ISO-8601 UTC timestamp, e.g. 2026-09-29T12:05:00Z")
+	return approval
+
+
 def _validate_parent_lines(lines):
 	"""parent_line_no names another line of the invoice, and parents never loop."""
 	parents = {line["line_no"]: line["parent_line_no"] for line in lines}
@@ -478,6 +522,12 @@ def validate_invoice_payload(payload):
 		"credit_offset": credit_offset,
 		# optional (protocol 2): passed as is to crenya_pos_invoice_extenders
 		"extensions": _validate_extensions(payload.get("extensions")),
+		# optional (0.14.0), read by the invoice extenders only (crenya_restaurant's House Account
+		# rules): a sale's credit_customer_as_of, a return's manager approval. Absent: None
+		"credit_customer_as_of": _validate_credit_customer_as_of(
+			payload.get("credit_customer_as_of"), is_return
+		),
+		"approval": _validate_approval(payload.get("approval"), is_return),
 	}
 
 

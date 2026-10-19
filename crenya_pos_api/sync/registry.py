@@ -10,6 +10,8 @@ Other Frappe apps plug into the till protocol from their `hooks.py`:
         crenya_pos_device_roles = ["<role>", {"role": "<role>", "device_types": ["<device_type>", ...]}]
         crenya_pos_profile_flags = ["<dotted path of fn(names) -> {profile name: {flag: value}}>"]
         crenya_pos_entitlement = "<dotted path of fn() -> dict>"       # the plan's caps, last app wins
+        crenya_pos_credit_device_types = ["<device_type>", ...]        # besides "till", may take credit
+        crenya_pos_credit_customer_flag_device_types = ["<device_type>", ...]   # get `credit_enabled`
 
 Built-ins always come first and cannot be replaced; hook entries follow in app install
 order. A hook entry that only repeats a built-in the app used to register itself (crenya_restaurant
@@ -41,6 +43,8 @@ DEVICE_ROLE_HOOK = "crenya_pos_device_roles"
 PROFILE_FLAG_HOOK = "crenya_pos_profile_flags"
 ENTITLEMENT_HOOK = "crenya_pos_entitlement"
 CREDIT_DEVICE_TYPES_HOOK = "crenya_pos_credit_device_types"
+# device types whose customers carry the House Account facility flag (`credit_enabled`, 0.14.0)
+CREDIT_CUSTOMER_FLAG_HOOK = "crenya_pos_credit_customer_flag_device_types"
 
 # the hook entries of other apps that repeat a built-in this release took over: ignored, not an error
 MOVED_ENTITIES = frozenset({"expense_category", "expense_supplier"})

@@ -166,6 +166,10 @@ doc_events = {
 			"crenya_pos_api.expenses.fields.validate_expenses",
 		],
 	},
+	"Customer": {
+		# the House Account facility: when crenya_credit_enabled or disabled changes, whoever changes it
+		"validate": "crenya_pos_api.sync.credit.stamp_credit_change",
+	},
 	"Sales Invoice": {
 		# till invoices: promotion names go onto the item rows after ERPNext's last validation
 		"before_submit": "crenya_pos_api.sync.invoice_builder.restore_pricing_rules",

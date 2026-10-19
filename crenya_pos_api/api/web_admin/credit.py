@@ -13,7 +13,8 @@ be a Crenya POS Manager of the shop: for them the boundary is the company (a Use
 Company is honoured; none means every company). **Changing a limit is for a System Manager or an
 Accounts Manager only** (founder decisions 2026-10-14): the manager who approves an over-limit sale
 at the till does not set the limit that approval is measured against. `credit_shops` lists the
-shops a user may open the Credit page of.
+shops a user may open the Credit page of. The same two roles alone switch a customer's House
+Account facility on or off (`save_credit_facility`, restaurant spec D6 and P4).
 """
 
 from decimal import Decimal
@@ -22,12 +23,18 @@ import frappe
 from frappe import _
 from frappe.query_builder import Order
 from frappe.query_builder.functions import Count, Sum
-from frappe.utils import cint
+from frappe.utils import cint, get_system_timezone
 
 from crenya_pos_api.api.web_admin.scope import manages, shop_profiles, user_may_use_company
 from crenya_pos_api.sync.context import money_precision, profile_users
-from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, customer_credit_limit_sources, customer_in_outlet
-from crenya_pos_api.utils.dates import format_db_datetime
+from crenya_pos_api.sync.credit import (
+	CREDIT_CHANGED_AT_FIELD,
+	CREDIT_ENABLED_FIELD,
+	CREDIT_SALES_FIELD,
+	customer_credit_limit_sources,
+	customer_in_outlet,
+)
+from crenya_pos_api.utils.dates import format_db_datetime, site_naive_to_utc_iso
 from crenya_pos_api.utils.decimal import (
 	DecimalParseError,
 	as_decimal,
@@ -38,7 +45,9 @@ from crenya_pos_api.utils.decimal import (
 from crenya_pos_api.web.context import (
 	WebAdminContext,
 	check_modified,
+	checked,
 	invalid,
+	parse_flag,
 	refuse,
 	require_web_session,
 )
@@ -240,12 +249,13 @@ def credit_view(outlet) -> WebAdminContext:
 	return ctx
 
 
-def credit_editor(outlet) -> WebAdminContext:
-	"""`credit_view` for a user who may change the shop's limits: a System Manager or an Accounts
-	Manager (Crenya POS Manager is not enough). frappe.PermissionError otherwise."""
+def credit_editor(outlet, refusal=None) -> WebAdminContext:
+	"""`credit_view` for a user who may change the shop's limits (or a customer's House Account
+	facility): a System Manager or an Accounts Manager (Crenya POS Manager is not enough).
+	frappe.PermissionError otherwise, with `refusal` (default: the credit limits' words)."""
 	require_web_session()
 	if not _is_credit_editor():
-		refuse(_("Credit limits are changed by a System Manager or an Accounts Manager"))
+		refuse(refusal or _("Credit limits are changed by a System Manager or an Accounts Manager"))
 	return credit_view(outlet)
 
 
@@ -346,3 +356,64 @@ def save_credit_limit(outlet: str, customer: str, credit_limit: str | None, modi
 	doc.add_comment("Info", audit_text(ctx.company, old, limit, ctx.source, ctx.approver, precision))
 	rows, _more = credit_rows(ctx, only=customer)
 	return rows[0]
+
+
+def facility_customer_refusal(ctx, customer):
+	"""Why `customer` cannot have its House Account facility changed for the outlet (a refusal in
+	the user's words), or None.
+
+	ERPNext's Customer has no company: one customer may buy from every company of the site. "A
+	customer of the outlet's company" is therefore a customer the outlet's tills may sell to, the
+	same set the till's customer pull sends and the Credit page lists (`customer_in_outlet`: an
+	existing customer inside the outlet's customer groups, any when the POS Profile limits none),
+	less two that are never a House Account of this outlet: the outlet's default (walk-in)
+	customer, and an internal customer that stands for another company (`represents_company`)."""
+	if not customer_in_outlet(ctx, customer):
+		return _("Customer {0} is not a customer of {1}").format(customer, ctx.outlet)
+	if customer == ctx.profile.get("customer"):
+		return _("{0} is the outlet's default customer and cannot have a House Account").format(customer)
+	internal, company = frappe.db.get_value(
+		CUSTOMER, customer, ["is_internal_customer", "represents_company"]
+	)
+	if cint(internal) and company and company != ctx.company:
+		return _("Customer {0} is a customer of {1}, not of {2}").format(customer, company, ctx.company)
+	return None
+
+
+def facility_audit_text(enabled, source, user) -> str:
+	"""The comment a facility change leaves on the Customer (pure)."""
+	state = "switched on" if enabled else "switched off"
+	return f"House Account (credit facility) {state} from {source} by {user}"
+
+
+@frappe.whitelist(methods=["POST"])
+def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) -> dict:
+	"""Switch the customer's House Account facility (`crenya_credit_enabled`) on or off, a System
+	Manager's or an Accounts Manager's only (P4), from a browser session: {customer, credit_enabled,
+	changed_at}. `enabled` is 1 / 0 (true / false). The customer must be one of the outlet's
+	(`facility_customer_refusal`); a disabled customer can be switched off, not on. The save is a
+	Version of the Customer (it tracks changes) and leaves a Comment naming the web user; saving the
+	state it already has changes nothing. `changed_at` (UTC ISO-8601, null when never changed) is
+	when the facility or `disabled` last changed, stamped by the Customer validate hook."""
+	ctx = credit_editor(
+		outlet, _("A House Account is switched on or off by a System Manager or an Accounts Manager")
+	)
+	flag = checked(parse_flag, enabled, "enabled")
+	if flag is None:
+		invalid(_("enabled is required"))
+	refusal = facility_customer_refusal(ctx, customer)
+	if refusal:
+		refuse(refusal)
+	doc = frappe.get_doc(CUSTOMER, customer)
+	if flag and cint(doc.disabled):
+		invalid(_("Customer {0} is disabled: enable the customer first").format(customer))
+	if bool(cint(doc.get(CREDIT_ENABLED_FIELD))) != flag:
+		doc.set(CREDIT_ENABLED_FIELD, 1 if flag else 0)
+		doc.save(ignore_permissions=True)
+		doc.add_comment("Info", facility_audit_text(flag, ctx.source, ctx.approver))
+	changed_at = doc.get(CREDIT_CHANGED_AT_FIELD)
+	return {
+		"customer": doc.name,
+		"credit_enabled": bool(cint(doc.get(CREDIT_ENABLED_FIELD))),
+		"changed_at": site_naive_to_utc_iso(changed_at, get_system_timezone()) if changed_at else None,
+	}

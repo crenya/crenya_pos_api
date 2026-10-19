@@ -11,13 +11,22 @@ The server never refuses a sale the customer already took (spec C5): ERPNext's c
 done credit sale, or a cash sale to an already over-limit customer, into a refused one. The invoice
 is therefore posted inside `credit_limit_waived()`, and a note says when the customer ended above the
 limit. The till's manager PIN is the approval; the web lists such customers.
+
+**The House Account facility (0.14.0, restaurant spec D6/RC14).** A customer may be put on a House
+Account only when its Customer `crenya_credit_enabled` is set and it is not disabled
+(`credit_enabled_for`). `crenya_credit_changed_at` records, on the server's clock, when either of the
+two last changed (`stamp_credit_change`, the Customer `validate` hook): it is the record's own
+`modified` of that save, so a till that pulled the changed record echoes exactly that time back as
+the sale's `credit_customer_as_of`. Only the device types an app lists in
+`crenya_pos_credit_customer_flag_device_types` get `credit_enabled` (never a retail "till"), and
+which sales are refused for it is that app's rule (crenya_restaurant's invoice extender).
 """
 
 from contextlib import contextmanager
 from decimal import Decimal
 
 import frappe
-from frappe.utils import cint
+from frappe.utils import cint, now_datetime
 
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, money_precision
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
@@ -174,6 +183,57 @@ def is_credit_device(device_type):
 	return (device_type or DEFAULT_DEVICE_TYPE) in credit_device_types()
 
 
+# Customer fields of the House Account facility (setup/install.py CREDIT_CUSTOMER_FIELDS)
+CREDIT_ENABLED_FIELD = "crenya_credit_enabled"
+CREDIT_CHANGED_AT_FIELD = "crenya_credit_changed_at"
+# a change of either is a change of the facility
+FACILITY_FIELDS = (CREDIT_ENABLED_FIELD, "disabled")
+
+
+def customer_flag_device_types():
+	"""The device types whose customer records and credit status carry `credit_enabled`: every type
+	an app lists in the `crenya_pos_credit_customer_flag_device_types` hook (read once per request; a
+	bad hook is logged and ignored), never "till": a retail till keeps 0.13.2's answers."""
+	from crenya_pos_api.sync import registry
+
+	return registry._device_types(registry.CREDIT_CUSTOMER_FLAG_HOOK, frozenset()) - {DEFAULT_DEVICE_TYPE}
+
+
+def is_customer_flag_device(device_type):
+	"""Whether a device of `device_type` (blank = the default "till", which never is) gets
+	`credit_enabled`."""
+	return (device_type or DEFAULT_DEVICE_TYPE) in customer_flag_device_types()
+
+
+def sends_credit_flag(ctx):
+	"""Whether the device is told each customer's `credit_enabled` (pull and status): the gate of
+	`credit_limit` (an outlet that sells on account, a device that may take credit) and a
+	customer-flag device type."""
+	return _credit_on(ctx) and is_credit_device(ctx.device_type) and is_customer_flag_device(ctx.device_type)
+
+
+def credit_enabled_for(customer):
+	"""Whether a Customer (a Document or a dict / row with `crenya_credit_enabled` and `disabled`) may
+	be put on a House Account: the facility is on and the customer is not disabled."""
+	return bool(cint(customer.get(CREDIT_ENABLED_FIELD))) and not cint(customer.get("disabled"))
+
+
+def stamp_credit_change(doc, method=None):
+	"""Customer `validate`: set `crenya_credit_changed_at` when `crenya_credit_enabled` or `disabled`
+	changed (a new customer: when it is created enabled or disabled), whoever saves it (web, desk,
+	import). The time is the save's own `modified` (Frappe sets it before `validate`), so it is the
+	`modified` a till pulls with the changed record; any other edit leaves it as it was."""
+	if not doc.meta.has_field(CREDIT_CHANGED_AT_FIELD):
+		return
+	before = doc.get_doc_before_save()
+	if before is None:
+		changed = any(cint(doc.get(field)) for field in FACILITY_FIELDS)
+	else:
+		changed = any(cint(doc.get(field)) != cint(before.get(field)) for field in FACILITY_FIELDS)
+	if changed:
+		doc.set(CREDIT_CHANGED_AT_FIELD, doc.modified or now_datetime())
+
+
 def _require_credit_device(ctx):
 	if not is_credit_device(ctx.device_type):
 		raise_api_error(InvalidRequestError, f"Credit is for tills, not for {ctx.device_type} devices")
@@ -208,13 +268,19 @@ def status_for(ctx, customer):
 	groups, when it limits them). One answer for a customer that is not there and one that is not the
 	outlet's, so the call tells nothing about other customers. An outlet that no longer sells on
 	account still answers for a customer who owes (they can pay, and an old on-account invoice can be
-	returned); for any other it answers that credit is switched off."""
+	returned); for any other it answers that credit is switched off. A customer-flag device of an
+	outlet that sells on account also gets `credit_enabled` (`sends_credit_flag`)."""
 	_require_credit_device(ctx)
 	if not customer_in_outlet(ctx, customer):
 		raise_api_error(InvalidRequestError, NOT_FOUND)
 	status = credit_status(customer, ctx.company)
 	if not _credit_on(ctx) and quantize(status["outstanding"], money_precision()) <= 0:
 		raise_api_error(InvalidRequestError, SWITCHED_OFF)
+	if sends_credit_flag(ctx):
+		# a customer-flag device of an outlet that sells on account (restaurant D6): the facility
+		# as the booking rule reads it
+		row = frappe.db.get_value("Customer", customer, list(FACILITY_FIELDS), as_dict=True)
+		status["credit_enabled"] = credit_enabled_for(row)
 	return status
 
 

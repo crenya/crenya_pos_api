@@ -246,8 +246,10 @@ class TestSettle(SettleCase):
 			frappe.db.get_value(PAYMENT_ENTRY, first["payment_entry"], "crenya_local_id"), request_id
 		)
 		self.assertEqual(outstanding(bill), Decimal("6.000"))
+		frappe.set_user("Administrator")
 		other = make_customer("webonceother", limit=None)
 		self.bills(other, "3.000")
+		frappe.set_user(REST_MANAGER)
 		with self.assertRaises(frappe.PermissionError):
 			self.settle(other, "1.000", request_id=request_id)
 		self.assertEqual(self.entries_of(other), [])

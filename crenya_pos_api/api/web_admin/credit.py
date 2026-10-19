@@ -1117,16 +1117,18 @@ def _receipt_entry(ctx, payment_entry):
 
 def receipt_data(doc, ctx, lang) -> dict:
 	"""What the receipt prints (CC9): the entry's customer, date, mode, reference and amount, the
-	bills it cleared and part paid (from its references), the advance it kept, the customer's
-	balance now (ERPNext's) and who recorded it, with the words of `lang`."""
+	bills it cleared and part paid (from its references, with what each still owed after it), the
+	advance it kept, the customer's balance now (ERPNext's) and who recorded it, with the words of
+	`lang`."""
 	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
 
 	precision = money_precision(ctx.currency)
 	cleared, part_paid = [], []
 	for row in doc.get("references") or []:
-		owed = quantize(row.outstanding_amount, precision)
 		paid = quantize(row.allocated_amount, precision)
-		left = max(owed - paid, Decimal(0))
+		# ERPNext writes each reference's outstanding again when the entry is submitted
+		# (`update_outstanding_amounts`, v15 and v16): what the bill still owed right after this payment
+		left = max(quantize(row.outstanding_amount, precision), Decimal(0))
 		line = {
 			"name": row.reference_name,
 			"paid": format_money(paid, precision),

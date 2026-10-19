@@ -181,26 +181,21 @@ BANK = "_Test Crenya Open Bank"
 
 
 class TestAdvanceFromRealReturns(OpenInvoicesCase):
-	def returned(self, customer, total, refund):
-		"""A sale wholly on account, paid in full, then a return of 50.000 (`refund` of it back to the
-		customer when a mode is given, else credited to the account). The sale payload and the
-		return's name."""
+	def returned(self, customer, total):
+		"""A sale wholly on account and paid in full, then a return of 50.000 credited to the account
+		(`credit_offset`, `update_outstanding_for_self` 0). The return's name."""
 		sale = self.on_account_sale(customer, total=total)
 		self.post(sale)
 		self.assertOk(self.pay(self.payment(customer, total)))
-		if refund is None:
-			ret = self.return_payload(sale, [(fixtures.MILK, "-1", "50.000", 1)], credit_offset="50.000")
-			ret["payments"] = []
-		else:
-			ret = self.return_payload(sale, [(fixtures.MILK, "-1", "50.000", 1)])
-			ret["payments"] = [{"mode_of_payment": fixtures.CASH, "amount": f"-{refund}"}]
+		ret = self.return_payload(sale, [(fixtures.MILK, "-1", "50.000", 1)], credit_offset="50.000")
+		ret["payments"] = []
 		return self.post(ret)["name"]
 
 	def test_a_credit_offset_return_counts_once(self):
 		"""The original carries the credit (-50.000); the return's own stored negative has no ledger
 		entry behind it and is not counted a second time."""
 		customer = make_customer("realoffset", limit=None)
-		name = self.returned(customer, "100.000", None)
+		name = self.returned(customer, "100.000")
 		self.assertEqual(
 			frappe.db.get_value("Sales Invoice", name, ["is_return", "update_outstanding_for_self"]),
 			(1, 0),
@@ -216,14 +211,23 @@ class TestAdvanceFromRealReturns(OpenInvoicesCase):
 		)
 
 	def test_a_credit_note_keeping_its_own_outstanding_counts(self):
-		"""A return that is not a credit offset (`update_outstanding_for_self` 1) and was only partly
-		refunded keeps a negative outstanding of its own: that is credit on the account."""
+		"""A desk credit note of a paid bill (`update_outstanding_for_self` 1, nothing refunded) keeps a
+		negative outstanding of its own: that is credit on the account."""
+		from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
 		customer = make_customer("realown", limit=None)
-		name = self.returned(customer, "100.000", "20.000")
+		invoice = self.sell(customer, "100.000")
+		self.assertOk(self.pay(self.payment(customer, "100.000")))
+		note = make_return_doc("Sales Invoice", invoice)
+		note.insert(ignore_permissions=True)
+		note.submit()
 		kept = frappe.db.get_value(
-			"Sales Invoice", name, ["update_outstanding_for_self", "outstanding_amount"], as_dict=True
+			"Sales Invoice",
+			note.name,
+			["is_return", "update_outstanding_for_self", "outstanding_amount"],
+			as_dict=True,
 		)
-		self.assertEqual(kept.update_outstanding_for_self, 1)
+		self.assertEqual((kept.is_return, kept.update_outstanding_for_self), (1, 1))
 		self.assertLess(kept.outstanding_amount, 0)
 		self.assertEqual(self.open_invoices(customer)["advance"], f"{abs(kept.outstanding_amount):.3f}")
 

@@ -37,6 +37,22 @@ def shop_profiles(outlet: str | None = None) -> list:
 	return [row for row in rows if not cint(row.get(RESTAURANT_MODE_FIELD))]
 
 
+def outlet_product(outlet) -> str | None:
+	"""The product of a POS Profile by crenya_restaurant's field: "restaurant" when it is a restaurant
+	outlet, "shop" for any other, None for no such profile (or no name). Which product's pages then
+	open it is that product's own rule (`credit.CreditProduct`)."""
+	if not outlet or not isinstance(outlet, str):
+		return None
+	fields = ["name"]
+	restaurant_field = frappe.get_meta("POS Profile").has_field(RESTAURANT_MODE_FIELD)
+	if restaurant_field:
+		fields.append(RESTAURANT_MODE_FIELD)
+	row = frappe.db.get_value("POS Profile", outlet, fields, as_dict=True)
+	if not row:
+		return None
+	return "restaurant" if restaurant_field and cint(row.get(RESTAURANT_MODE_FIELD)) else "shop"
+
+
 def managed_shops() -> list:
 	"""The shops the session user manages ([{name, company}], by name). From a browser session
 	only (`require_web_session`)."""

@@ -1,0 +1,85 @@
+{#- crenya Payment Receipt (CC9): "PAYMENT RECEIVED / سند قبض" for a customer's Receive Payment Entry.
+    From app.crenya.com (crenya_pos_api.api.web_admin.credit.payment_receipt_pdf) `receipt` carries the
+    words of the language asked for, the bills cleared and part paid, the advance kept, the balance at
+    print time and who recorded it. Printed from the desk (no `receipt`) it shows the entry alone. -#}
+{%- set r = receipt if receipt is defined else none -%}
+<style>
+	.crenya-receipt { font-family: "Noto Sans Arabic", "Noto Sans", "DejaVu Sans", Arial, sans-serif; font-size: 12px; color: #111; }
+	.crenya-receipt h1 { font-size: 18px; text-align: center; margin: 0 0 2px; letter-spacing: 1px; }
+	.crenya-receipt h2 { font-size: 13px; margin: 14px 0 4px; }
+	.crenya-receipt .company { text-align: center; margin-bottom: 12px; }
+	.crenya-receipt table { width: 100%; border-collapse: collapse; }
+	.crenya-receipt td, .crenya-receipt th { padding: 4px 6px; border-bottom: 1px solid #ddd; text-align: start; }
+	.crenya-receipt th { font-weight: 600; }
+	.crenya-receipt .num { text-align: end; white-space: nowrap; }
+	.crenya-receipt .total td { font-weight: 700; }
+	.crenya-receipt .footer { margin-top: 14px; }
+</style>
+{%- if r %}
+<div class="crenya-receipt" dir="{{ r.dir }}" lang="{{ r.lang }}">
+	<h1>{{ r.labels.title }}</h1>
+	<div class="company">{{ r.company | e }}</div>
+	<table>
+		<tr><td>{{ r.labels.receipt_no }}</td><td class="num">{{ r.receipt_no | e }}</td></tr>
+		<tr><td>{{ r.labels.date }}</td><td class="num">{{ r.date }}</td></tr>
+		<tr><td>{{ r.labels.customer }}</td><td class="num">{{ r.customer | e }}</td></tr>
+		<tr><td>{{ r.labels.mode }}</td><td class="num">{{ r.mode | e }}</td></tr>
+		{%- if r.reference %}
+		<tr><td>{{ r.labels.reference }}</td><td class="num">{{ r.reference | e }}</td></tr>
+		{%- endif %}
+		<tr class="total"><td>{{ r.labels.received }}</td><td class="num">{{ r.received }} {{ r.currency | e }}</td></tr>
+	</table>
+	{%- if r.cleared %}
+	<h2>{{ r.labels.cleared }}</h2>
+	<table>
+		<tr><th>{{ r.labels.bill }}</th><th class="num">{{ r.labels.paid }}</th></tr>
+		{%- for bill in r.cleared %}
+		<tr><td>{{ bill.name | e }}</td><td class="num">{{ bill.paid }}</td></tr>
+		{%- endfor %}
+	</table>
+	{%- endif %}
+	{%- if r.part_paid %}
+	<h2>{{ r.labels.part_paid }}</h2>
+	<table>
+		<tr><th>{{ r.labels.bill }}</th><th class="num">{{ r.labels.paid }}</th><th class="num">{{ r.labels.left }}</th></tr>
+		{%- for bill in r.part_paid %}
+		<tr><td>{{ bill.name | e }}</td><td class="num">{{ bill.paid }}</td><td class="num">{{ bill.left }}</td></tr>
+		{%- endfor %}
+	</table>
+	{%- endif %}
+	<table class="footer">
+		{%- if r.has_advance %}
+		<tr><td>{{ r.labels.advance }}</td><td class="num">{{ r.advance }} {{ r.currency | e }}</td></tr>
+		{%- endif %}
+		<tr class="total"><td>{{ r.labels.balance }}</td><td class="num">{{ r.balance }} {{ r.currency | e }}</td></tr>
+		{%- if r.recorded_by %}
+		<tr><td>{{ r.labels.recorded_by }}</td><td class="num">{{ r.recorded_by | e }}</td></tr>
+		{%- endif %}
+	</table>
+</div>
+{%- else %}
+<div class="crenya-receipt">
+	<h1>PAYMENT RECEIVED / سند قبض</h1>
+	<div class="company">{{ doc.company | e }}</div>
+	<table>
+		<tr><td>Receipt no. / رقم السند</td><td class="num">{{ doc.name | e }}</td></tr>
+		<tr><td>Date / التاريخ</td><td class="num">{{ doc.get_formatted("posting_date") }}</td></tr>
+		<tr><td>Customer / العميل</td><td class="num">{{ (doc.party_name or doc.party) | e }}</td></tr>
+		<tr><td>Paid by / طريقة الدفع</td><td class="num">{{ (doc.mode_of_payment or "") | e }}</td></tr>
+		<tr class="total"><td>Received / المبلغ المستلم</td><td class="num">{{ doc.get_formatted("paid_amount") }}</td></tr>
+	</table>
+	{%- if doc.references %}
+	<h2>Bills / الفواتير</h2>
+	<table>
+		{%- for row in doc.references %}
+		<tr><td>{{ row.reference_name | e }}</td><td class="num">{{ row.get_formatted("allocated_amount", doc) }}</td></tr>
+		{%- endfor %}
+	</table>
+	{%- endif %}
+	{%- if doc.unallocated_amount %}
+	<table class="footer">
+		<tr><td>Kept as advance / محفوظ كدفعة مقدمة</td><td class="num">{{ doc.get_formatted("unallocated_amount") }}</td></tr>
+	</table>
+	{%- endif %}
+</div>
+{%- endif %}

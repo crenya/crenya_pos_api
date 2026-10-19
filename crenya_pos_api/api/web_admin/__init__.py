@@ -8,8 +8,12 @@ re-exported here so `crenya_pos_api.api.web_admin.<name>` resolves. Who manages 
 from crenya_pos_api.api.web_admin.credit import (
 	credit_customers,
 	credit_shops,
+	customer_open_invoices,
+	customer_payments,
+	payment_receipt_pdf,
 	save_credit_facility,
 	save_credit_limit,
+	settle_customer,
 )
 from crenya_pos_api.api.web_admin.day_close import day_close, day_closes
 from crenya_pos_api.api.web_admin.expenses import (
@@ -40,6 +44,8 @@ __all__ = [
 	"company_wording",
 	"credit_customers",
 	"credit_shops",
+	"customer_open_invoices",
+	"customer_payments",
 	"day_close",
 	"day_closes",
 	"denominations",
@@ -50,6 +56,7 @@ __all__ = [
 	"loyalty_programs",
 	"outlet_settings",
 	"outlets",
+	"payment_receipt_pdf",
 	"promotions",
 	"refused_sales",
 	"retry_expense_booking",
@@ -66,6 +73,7 @@ __all__ = [
 	"scale_rules",
 	"set_device_enabled",
 	"set_promotion_enabled",
+	"settle_customer",
 	"staff_clear_pin",
 	"staff_get",
 	"staff_save",

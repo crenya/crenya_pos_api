@@ -401,8 +401,11 @@ OPEN_INVOICES_MAX_LIMIT = 1000
 def customer_advance(customer, company):
 	"""What the customer has paid ahead (Decimal, unrounded): the unallocated part of its submitted
 	Receive Payment Entries of the company, plus the absolute value of its negative Sales Invoice
-	outstandings there (credit notes left on the account, e.g. a House Account cancel of a settled
-	bill, CC12), the latter in one aggregate query."""
+	outstandings there (credit left on the account, e.g. a House Account cancel of a settled bill,
+	CC12), the latter in one aggregate query. A return posted with `update_outstanding_for_self` 0 (a
+	credit offset) is booked against its original, which already carries the credit; ERPNext still
+	stores a negative outstanding on the return itself with no ledger entry behind it, so it is left
+	out. A credit note that keeps its own outstanding (`update_outstanding_for_self` 1) counts."""
 	from frappe.query_builder.functions import Sum
 
 	rows = frappe.get_all(
@@ -426,6 +429,7 @@ def customer_advance(customer, company):
 			& (invoice.company == company)
 			& (invoice.docstatus == 1)
 			& (invoice.outstanding_amount < 0)
+			& ~((invoice.is_return == 1) & (invoice.update_outstanding_for_self == 0))
 		)
 		.run()
 	)

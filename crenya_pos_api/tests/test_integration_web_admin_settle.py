@@ -254,6 +254,53 @@ class TestSettle(SettleCase):
 			self.settle(other, "1.000", request_id=request_id)
 		self.assertEqual(self.entries_of(other), [])
 
+	def test_settle_request_id_with_other_details_refused(self):
+		"""The same request id sent with another amount, mode, customer or ticked bills is refused with
+		clear words, never answered with the first entry; the same details again still answer it."""
+		customer = make_customer("webdiff", limit=None)
+		first, second = self.bills(customer, "6.000", "10.000")
+		other_mode = "_Test Crenya Settle Card"
+		fixtures.ensure_mode_of_payment(other_mode, "Bank", frappe.get_doc("Company", fixtures.COMPANY))
+		profile = frappe.get_doc("POS Profile", RESTAURANT_A)
+		if other_mode not in {row.mode_of_payment for row in profile.payments}:
+			profile.append("payments", {"mode_of_payment": other_mode})
+			profile.save(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep
+
+		def drop_mode():
+			frappe.set_user("Administrator")
+			doc = frappe.get_doc("POS Profile", RESTAURANT_A)
+			doc.set("payments", [row for row in doc.payments if row.mode_of_payment != other_mode])
+			doc.save(ignore_permissions=True)
+			frappe.db.commit()  # nosemgrep
+
+		self.addCleanup(drop_mode)
+		request_id = str(uuid.uuid4())
+		frappe.set_user(REST_MANAGER)
+		booked = self.settle(customer, "4.000", invoices=[second, first], request_id=request_id)
+		for change in (
+			{"amount": "5.000"},
+			{"mode_of_payment": other_mode},
+			{"invoices": [first, second]},
+			{"invoices": [second]},
+			{"invoices": None},
+		):
+			args = {"invoices": [second, first], **change}
+			with self.assertRaises(frappe.ValidationError, msg=change) as caught:
+				self.settle(customer, args.pop("amount", "4.000"), request_id=request_id, **args)
+			self.assertIn("already recorded as", str(caught.exception))
+			self.assertIn(booked["payment_entry"], str(caught.exception))
+		frappe.set_user("Administrator")
+		other = make_customer("webdiffother", limit=None)
+		self.bills(other, "3.000")
+		frappe.set_user(REST_MANAGER)
+		with self.assertRaises(frappe.PermissionError):
+			self.settle(other, "4.000", invoices=[second, first], request_id=request_id)
+		again = self.settle(customer, "4.000", invoices=[second, first], request_id=request_id)
+		self.assertEqual(again, booked)
+		self.assertEqual(len(self.entries_of(customer)), 1)
+		self.assertEqual(self.entries_of(other), [])
+
 	def test_settle_when_outlet_credit_off(self):
 		"""Review Focus 1: switched off, a customer who still owes is settled on the web."""
 		saved = frappe.db.get_value("POS Profile", RESTAURANT_A, "crenya_credit_sales_enabled")

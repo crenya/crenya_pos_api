@@ -241,6 +241,24 @@ class TestPaymentsAndReceipt(TotalsCase):
 		frappe.set_user(REST_MANAGER_B)
 		with self.assertRaises(frappe.PermissionError):
 			self.receipt(RESTAURANT_A, entry)
+		# another company's entry, asked for through an outlet the user does manage
+		frappe.set_user("Administrator")
+		company = frappe.db.get_value(PAYMENT_ENTRY, entry, "company")
+		frappe.db.set_value(
+			PAYMENT_ENTRY, entry, "company", "_Test Crenya Other Company", update_modified=False
+		)
+		frappe.db.commit()  # nosemgrep
+		try:
+			frappe.set_user(REST_MANAGER)
+			with self.assertRaises(frappe.PermissionError) as caught:
+				self.receipt(RESTAURANT_A, entry)
+			self.assertIn("not on this outlet's House Account", str(caught.exception))
+		finally:
+			frappe.set_user("Administrator")
+			frappe.db.set_value(PAYMENT_ENTRY, entry, "company", company, update_modified=False)
+			frappe.db.commit()  # nosemgrep
+		frappe.set_user(REST_MANAGER)
+		self.assertIn(entry, self.receipt(RESTAURANT_A, entry)[0])
 		frappe.set_user(REST_MANAGER)
 		for name in ("No such entry", ""):
 			with self.assertRaises(frappe.PermissionError) as caught:

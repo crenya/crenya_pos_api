@@ -348,7 +348,11 @@ def credit_sales_of(customers, company, first, last, precision) -> dict:
 	"""{customer: Decimal} (CC8): over each customer's submitted sales of `company` posted in the
 	range, what they put on the account (`credit_sale_part`) less what returns of them credited back
 	to it (`credited_to_account`, a House Account cancel included; never below 0 per sale). A
-	cancelled sale is not submitted and counts nothing."""
+	cancelled sale is not submitted and counts nothing.
+
+	Left out: a credit note that is no return of a sale of the range (a standalone one, or one
+	against a sale posted before it) and anything booked outside Sales Invoices afterwards (a
+	Journal Entry write-off, a reconciliation): those move `outstanding`, never `credit_sales`."""
 	if not customers:
 		return {}
 	invoice = frappe.qb.DocType("Sales Invoice")
@@ -849,9 +853,27 @@ def parse_posting_date(value, company):
 	return day
 
 
-def settle_remarks(user, reference) -> str:
-	"""The remarks of a web settlement (pure): where it was made and by whom, and the reference."""
-	return f"{WEB_REMARKS_PREFIX}{WEB_SOURCE} by {user}; reference {reference}"
+# the part of a web settlement's remarks that names the bills ticked, in order
+TICKED_REMARK = "; ticked "
+
+
+def settle_remarks(user, reference, ticked=None) -> str:
+	"""The remarks of a web settlement (pure): where it was made and by whom, the reference, and the
+	bills ticked in order (`ticked_of` reads them back to check a resent request)."""
+	remarks = f"{WEB_REMARKS_PREFIX}{WEB_SOURCE} by {user}; reference {reference}"
+	if ticked:
+		remarks += TICKED_REMARK + ", ".join(ticked)
+	return remarks
+
+
+def ticked_of(remarks) -> list[str]:
+	"""The bills a web settlement ticked, from its remarks (pure): [] for none (oldest first)."""
+	from crenya_pos_api.sync.customer_payment import SKIPPED_REMARK
+
+	head = (remarks or "").rpartition(f"; {SKIPPED_REMARK}")
+	text = head[0] if head[1] else (remarks or "")
+	_before, mark, tail = text.rpartition(TICKED_REMARK)
+	return [name for name in tail.split(", ") if name] if mark else []
 
 
 def settle_comment(entry, amount, mode, reference, user) -> str:
@@ -859,9 +881,10 @@ def settle_comment(entry, amount, mode, reference, user) -> str:
 	return f"Payment {entry} of {amount} ({mode}, reference {reference}) recorded from {WEB_SOURCE} by {user}"
 
 
-def _settled_before(ctx, customer, request_id):
+def _settled_before(ctx, customer, request_id, booking, precision):
 	"""The submitted web settlement this request already booked, or None. An id another payment
-	holds (a till's, another customer's, a cancelled one) is refused."""
+	holds (a till's, another customer's, a cancelled one) is refused; so is the same request sent
+	again with another amount, mode or ticked bills (the dialog is opened again for a new one)."""
 	name = frappe.db.get_value(PAYMENT_ENTRY, {LOCAL_ID_FIELD: request_id}, "name")
 	if not name:
 		return None
@@ -874,6 +897,17 @@ def _settled_before(ctx, customer, request_id):
 		or not (doc.remarks or "").startswith(WEB_REMARKS_PREFIX)
 	):
 		refuse(_("This request was used for another payment: close the dialog and open it again"))
+	if (
+		quantize(doc.paid_amount, precision) != booking.amount
+		or doc.mode_of_payment != booking.mode_of_payment
+		or ticked_of(doc.remarks) != list(booking.invoices or [])
+	):
+		invalid(
+			_(
+				"This request was already recorded as {0} with another amount, mode or bills: close the "
+				"dialog and open it again"
+			).format(doc.name)
+		)
 	return doc
 
 
@@ -946,7 +980,7 @@ def settle_customer(
 		posting_date=str(day),
 		local_id=request,
 		reference=reference,
-		remarks=settle_remarks(user, reference),
+		remarks=settle_remarks(user, reference, ticked),
 		invoices=ticked,
 	)
 	entered = False
@@ -954,7 +988,7 @@ def settle_customer(
 		# the lock commits the open transaction first: nothing has been written before it
 		with named_lock(customer_lock_key(customer)):
 			entered = True
-			doc = _settled_before(ctx, customer, request)
+			doc = _settled_before(ctx, customer, request, booking, precision)
 			if doc is None:
 				doc = post_payment_entry(booking, [])
 				# with the entry, in the lock's one commit

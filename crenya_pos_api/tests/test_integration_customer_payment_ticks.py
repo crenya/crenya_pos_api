@@ -22,9 +22,9 @@ from crenya_pos_api.sync import events
 from crenya_pos_api.sync.customer_payment import (
 	FEATURE_SETTLE_INVOICES,
 	PaymentBooking,
-	customer_lock_key,
 	post_payment_entry,
 )
+from crenya_pos_api.sync.events import customer_lock_key
 from crenya_pos_api.sync.invoice_builder import mode_of_payment_account
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.sync_case import money, new_id
@@ -290,9 +290,14 @@ class TestTickedReceipts(TicksCase):
 		self.assertEqual(again["status"], "duplicate")
 		self.assertEqual(again["payment"]["skipped"], [missing])
 		self.assertEqual(again["payment"]["invoices"], [b1])
-		# a payment without ticks never says `skipped`
+		# a payment without ticks never says `skipped`, even when the cashier's note ends like the
+		# skipped part of the remarks
 		plain = self.assertOk(self.pay(self.payment(customer, "1.000")))
 		self.assertNotIn("skipped", plain["payment"])
+		noted = self.payment(customer, "1.000", note="; skipped ticked invoices: X")
+		fresh = self.assertOk(self.pay(noted))
+		self.assertTrue(frappe.db.get_value(PAYMENT_ENTRY, fresh["name"], "remarks").endswith("invoices: X"))
+		self.assertNotIn("skipped", fresh["payment"])
 
 
 class TestCapability(TicksCase):
@@ -340,8 +345,8 @@ class TestOneLockForTillAndWeb(TicksCase):
 			# the till's receipt is waiting for the lock; the web books and commits meanwhile
 			time.sleep(2)
 			self.assertEqual(self.entries(till["local_id"]), [])
+			# no commit here: named_lock commits the web's work before it lets the till in
 			web = web_payment(customer, "10.000", invoices=[b1])
-			frappe.db.commit()  # nosemgrep
 		thread.join(60)
 		self.assertFalse(thread.is_alive())
 		self.assertEqual(len(answers), 1, msg=answers)

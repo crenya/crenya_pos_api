@@ -18,11 +18,11 @@ from crenya_pos_api.sync.customer_payment import (
 	FEATURE_SETTLE_INVOICES,
 	MAX_TICKED_INVOICES,
 	allocate,
-	customer_lock_key,
 	ticked_invoices,
 	validate_customer_payment_payload,
 )
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
+from crenya_pos_api.sync.events import customer_lock_key
 from crenya_pos_api.utils.decimal import as_decimal, format_money
 
 GOLDEN = os.path.join(os.path.dirname(__file__), "golden", "credit_allocations.json")
@@ -192,16 +192,25 @@ class TestGoldenCreditAllocations(unittest.TestCase):
 
 
 class TestSkippedInResult(unittest.TestCase):
-	def doc(self, remarks, skipped=None, references=()):
-		doc = frappe._dict(remarks=remarks, references=list(references), unallocated_amount=0)
+	def doc(self, remarks, ticked=None, skipped=None):
+		"""A Payment Entry: `ticked` None is one loaded again (a resend), else a fresh booking."""
+		doc = frappe._dict(remarks=remarks, references=[], unallocated_amount=0)
 		doc.flags = frappe._dict()
-		if skipped is not None:
-			doc.flags.crenya_skipped = skipped
+		if ticked is not None:
+			doc.flags.crenya_ticked = ticked
+			doc.flags.crenya_skipped = skipped or []
 		return doc
 
 	def test_a_fresh_booking_answers_its_skips(self):
-		self.assertEqual(payments.skipped_invoices(self.doc("x", ["B2"])), ["B2"])
-		self.assertEqual(payments.skipped_invoices(self.doc("x", [])), [])
+		self.assertEqual(payments.skipped_invoices(self.doc("x", True, ["B2"])), ["B2"])
+		self.assertEqual(payments.skipped_invoices(self.doc("x", True, [])), [])
+
+	def test_a_fresh_booking_without_ticks_never_reads_the_remarks(self):
+		"""A cashier's note may end like the skipped part: a payment that named no bills has none."""
+		note = "Received at the till T1 by c; skipped ticked invoices: X"
+		self.assertIsNone(payments.skipped_invoices(self.doc(note, False)))
+		# a ticked booking answers its own skips, not the note's
+		self.assertEqual(payments.skipped_invoices(self.doc(note, True, [])), [])
 
 	def test_a_stored_entry_reads_them_from_the_remarks(self):
 		remarks = "Received at the till T1 by c; skipped ticked invoices: B2, local:7a2b"
@@ -223,18 +232,36 @@ class TestOneLockName(unittest.TestCase):
 		self.assertTrue(name.startswith("crenya_pos:"))
 		self.assertEqual(len(name), len("crenya_pos:") + 40)
 
-	def test_named_lock_takes_and_releases_that_name(self):
-		calls = []
-		with (
+	def locked(self, calls):
+		db = mock.Mock()
+		db.commit.side_effect = lambda: calls.append(("commit", None))
+		db.rollback.side_effect = lambda: calls.append(("rollback", None))
+		return (
 			mock.patch.object(
 				events, "_acquire_lock", side_effect=lambda n: calls.append(("get", n)) or True
 			),
 			mock.patch.object(events, "_release_lock", side_effect=lambda n: calls.append(("release", n))),
-		):
+			mock.patch.object(events.frappe, "db", db),
+		)
+
+	def test_named_lock_commits_the_work_before_it_releases(self):
+		calls = []
+		acquire, release, db = self.locked(calls)
+		with acquire, release, db:
 			with events.named_lock("customer:C"):
 				calls.append(("work", None))
 		name = events.lock_name("customer:C")
-		self.assertEqual(calls, [("get", name), ("work", None), ("release", name)])
+		self.assertEqual(calls, [("get", name), ("work", None), ("commit", None), ("release", name)])
+
+	def test_named_lock_rolls_back_then_releases_when_the_block_fails(self):
+		calls = []
+		acquire, release, db = self.locked(calls)
+		with acquire, release, db, self.assertRaises(RuntimeError):
+			with events.named_lock("customer:C"):
+				calls.append(("work", None))
+				raise RuntimeError("refused")
+		name = events.lock_name("customer:C")
+		self.assertEqual(calls, [("get", name), ("work", None), ("rollback", None), ("release", name)])
 
 	def test_named_lock_busy(self):
 		with (
@@ -298,6 +325,9 @@ class TestApprovalsBootstrapForAProduct(unittest.TestCase):
 		self.assertIsInstance(block["labels"], list)
 		# the switch does not decide the labels when the actions are named; a discount limit is never sent
 		bare = approvals.approvals_bootstrap(profile(), roles=["R"], actions=("credit_sale",))
+		# one action named alone, as a string or a list, is that action
+		for one in ("credit_sale", ["credit_sale"]):
+			self.assertEqual(approvals.approvals_bootstrap(profile(), roles=["R"], actions=one), bare)
 		self.assertEqual(
 			bare,
 			{

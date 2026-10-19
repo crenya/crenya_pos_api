@@ -828,13 +828,13 @@ class TestCreditSync(CreditCase):
 		till_records = self.pull()
 		self.assertEqual(till_records[limited]["credit_limit"], "500.000")
 		first = sync_api.pull_changes(device_id=other, entity="customer", limit=500)
-		self.assertNotIn(CREDIT_SCOPE, first["next_cursor"] or "")
+		self.assertIsNone(CustomerSpec().cursor_scope(get_device_context(other)))
 		records = {row["name"]: row for row in first["records"]}
 		self.assertIn(limited, records)
 		self.assertNotIn("credit_limit", records[limited])
 		# a type the hook lists gets the limit and the credit scope, as a till does
 		with dummy.fake_hooks({"crenya_pos_credit_device_types": ["waiter"]}):
-			listed = {row["name"]: row for row in self.pull(device_id=other)}
+			listed = self.pull(device_id=other)
 		self.assertEqual(listed[limited]["credit_limit"], "500.000")
 
 	def test_retail_till_pull_unchanged(self):

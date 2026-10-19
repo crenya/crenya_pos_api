@@ -378,20 +378,22 @@ def _validate_credit_customer_as_of(value, is_return):
 	"""Optional `credit_customer_as_of` (0.14.0, restaurant D6, R5): on a sale, the `modified` of the
 	customer's record the till pulled last, echoed as the pull sent it (the database form
 	"YYYY-MM-DD HH:MM:SS.ffffff", the server's clock) or an ISO-8601 timestamp with an offset. Kept as
-	the stripped string for the invoice extenders; absent: None. A return carries none."""
+	the stripped string for the invoice extenders; absent: None. A value that is neither is passed on
+	as None too, never refused here: the meal was eaten (C5), and the extender's rule for a missing
+	as_of decides. A return carries none."""
 	if value is None or (isinstance(value, str) and not value.strip()):
 		return None
 	if is_return:
 		_fail("credit_customer_as_of is only allowed on a sale")
 	if not isinstance(value, str):
-		_fail("credit_customer_as_of must be a string")
+		return None
 	value = value.strip()
 	if is_db_datetime(value):
 		return value
 	try:
 		parse_iso_utc(value)
 	except ValueError:
-		_fail("credit_customer_as_of must be the customer record's modified or an ISO-8601 timestamp")
+		return None
 	return value
 
 

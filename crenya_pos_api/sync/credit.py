@@ -188,6 +188,13 @@ CREDIT_ENABLED_FIELD = "crenya_credit_enabled"
 CREDIT_CHANGED_AT_FIELD = "crenya_credit_changed_at"
 # a change of either is a change of the facility
 FACILITY_FIELDS = (CREDIT_ENABLED_FIELD, "disabled")
+# who may change a credit limit or switch a customer's House Account facility (P4)
+CREDIT_EDITOR_ROLES = ("System Manager", "Accounts Manager")
+
+
+def facility_editor_refusal():
+	"""The words of a refused facility switch (the web method's and the Customer hook's)."""
+	return frappe._("A House Account is switched on or off by a System Manager or an Accounts Manager")
 
 
 def customer_flag_device_types():
@@ -218,18 +225,40 @@ def credit_enabled_for(customer):
 	return bool(cint(customer.get(CREDIT_ENABLED_FIELD))) and not cint(customer.get("disabled"))
 
 
+def _may_switch_facility():
+	"""Whether this save may change `crenya_credit_enabled`: Administrator, a System Manager or an
+	Accounts Manager (P4), or the app's own install, patch or migrate."""
+	flags = frappe.flags
+	if flags.in_install or flags.in_patch or flags.in_migrate:
+		return True
+	user = frappe.session.user if getattr(frappe.local, "session", None) else None
+	if user == "Administrator":
+		return True
+	return bool(set(frappe.get_roles(user)) & set(CREDIT_EDITOR_ROLES))
+
+
 def stamp_credit_change(doc, method=None):
-	"""Customer `validate`: set `crenya_credit_changed_at` when `crenya_credit_enabled` or `disabled`
-	changed (a new customer: when it is created enabled or disabled), whoever saves it (web, desk,
-	import). The time is the save's own `modified` (Frappe sets it before `validate`), so it is the
-	`modified` a till pulls with the changed record; any other edit leaves it as it was."""
+	"""Customer `validate`: refuse a change of `crenya_credit_enabled` (a new customer created
+	enabled counts) by anyone but Administrator, a System Manager or an Accounts Manager, whatever
+	the path (desk form, `frappe.client.set_value`, an import): Sales Users may write Customers, but
+	only accountants switch a House Account (P4). A change of `disabled` stays open to every writer:
+	it only ever turns the facility off. Then set `crenya_credit_changed_at` when `crenya_credit_enabled`
+	or `disabled` changed (a new customer: when it is created enabled or disabled). The time is the
+	save's own `modified` (Frappe sets it before `validate`), so it is the `modified` a till pulls with
+	the changed record; any other edit leaves it as it was. A write that skips the save
+	(`frappe.db.set_value`, `db_set`, SQL) is neither checked nor stamped: change the flag through a
+	save (`save_credit_facility`)."""
 	if not doc.meta.has_field(CREDIT_CHANGED_AT_FIELD):
 		return
 	before = doc.get_doc_before_save()
 	if before is None:
+		flag_changed = bool(cint(doc.get(CREDIT_ENABLED_FIELD)))
 		changed = any(cint(doc.get(field)) for field in FACILITY_FIELDS)
 	else:
+		flag_changed = cint(doc.get(CREDIT_ENABLED_FIELD)) != cint(before.get(CREDIT_ENABLED_FIELD))
 		changed = any(cint(doc.get(field)) != cint(before.get(field)) for field in FACILITY_FIELDS)
+	if flag_changed and not _may_switch_facility():
+		frappe.throw(facility_editor_refusal(), frappe.PermissionError)
 	if changed:
 		doc.set(CREDIT_CHANGED_AT_FIELD, doc.modified or now_datetime())
 

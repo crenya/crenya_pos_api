@@ -321,7 +321,17 @@ gets `credit_enabled` (flag and not disabled) on every customer pull record (cur
 device whose cursor sat at `credit` is sent every customer once) and in `api.credit.get_status`; a retail till's
 answers are 0.13.2's. A sale may carry `credit_customer_as_of` (the pulled record's `modified`) and a return an
 `approval` {action, approved_by, approved_at}; the validated payload keeps both (None when absent) for the invoice
-extenders, which own the rule (crenya_restaurant). This app never refuses a sale over the facility.
+extenders, which own the rule (crenya_restaurant). This app never refuses a sale over the facility: a malformed
+`credit_customer_as_of` is passed on as None (missing), never refused at intake.
+
+Only Administrator, a System Manager or an Accounts Manager may change `crenya_credit_enabled`: the Customer
+`validate` hook refuses anyone else (`frappe.PermissionError`) on every save path (desk form,
+`frappe.client.set_value`, an import); install, patch and migrate are exempt, and `disabled` stays open to every
+writer (it only turns the facility off). The flag changes **only through a document save**
+(`save_credit_facility` in this app's code): `frappe.db.set_value`, `db_set` or SQL skip both the check and the
+`crenya_credit_changed_at` stamp. The facility is **one per Customer for the whole site**, not per company or
+outlet: enabling a customer through one outlet enables it at every outlet, of any company, whose customer groups
+include it.
 
 #### Device ids
 

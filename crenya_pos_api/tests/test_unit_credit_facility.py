@@ -179,6 +179,23 @@ class TestStampCreditChange(unittest.TestCase):
 		enabled = FakeCustomer(None, modified=MODIFIED, **{CREDIT_ENABLED_FIELD: 1, "disabled": 0})
 		self.assertEqual(self.stamped(enabled), MODIFIED)
 
+	def test_flag_change_by_non_editor_refused(self):
+		before = {CREDIT_ENABLED_FIELD: 0, "disabled": 0}
+		with mock.patch.object(credit, "_may_switch_facility", return_value=False):
+			doc = FakeCustomer(before, modified=MODIFIED, **{CREDIT_ENABLED_FIELD: 1, "disabled": 0})
+			with self.assertRaises(frappe.PermissionError):
+				stamp_credit_change(doc)
+			new = FakeCustomer(None, modified=MODIFIED, **{CREDIT_ENABLED_FIELD: 1, "disabled": 0})
+			with self.assertRaises(frappe.PermissionError):
+				stamp_credit_change(new)
+			# disabling stays open: it only turns the facility off
+			gone = FakeCustomer(
+				{CREDIT_ENABLED_FIELD: 1, "disabled": 0},
+				modified=MODIFIED,
+				**{CREDIT_ENABLED_FIELD: 1, "disabled": 1},
+			)
+			self.assertEqual(self.stamped(gone), MODIFIED)
+
 	def test_a_site_without_the_field(self):
 		before = {CREDIT_ENABLED_FIELD: 0, "disabled": 0}
 		doc = FakeCustomer(before, has_field=False, modified=MODIFIED, disabled=1)
@@ -215,10 +232,12 @@ class TestInvoicePayloadKeys(unittest.TestCase):
 		payload["approval"] = dict(APPROVAL, extra="dropped")
 		self.assertEqual(validate_invoice_payload(payload)["approval"], APPROVAL)
 
-	def test_bad_as_of_refused(self):
-		self.refused(sale(credit_customer_as_of="yesterday"), "credit_customer_as_of")
-		self.refused(sale(credit_customer_as_of="2026-10-19T08:00:00"), "credit_customer_as_of")
-		self.refused(sale(credit_customer_as_of=1760860800), "credit_customer_as_of")
+	def test_bad_as_of_passed_on_as_missing(self):
+		"""Controller ruling F4 (C5): a sale is never refused at intake for a bad timestamp; the
+		extender's rule for a missing as_of decides."""
+		for bad in ("yesterday", "2026-10-19T08:00:00", 1760860800, {"at": MODIFIED}):
+			data = validate_invoice_payload(sale(credit_customer_as_of=bad))
+			self.assertIsNone(data["credit_customer_as_of"], bad)
 		payload = make_return()
 		payload["credit_customer_as_of"] = MODIFIED
 		self.refused(payload, "only allowed on a sale")

@@ -27,6 +27,7 @@ from crenya_pos_api.utils.dates import format_db_datetime
 FLAG_DEVICE = "restaurant_pos"
 RESTAURANT_MANAGER = "_test_crenya_restaurant_manager@example.com"
 OTHER_COMPANY = "_Test Crenya Other Company"
+SALES_USER = "_test_crenya_sales_user@example.com"
 
 
 def flag_hooks():
@@ -132,6 +133,57 @@ class TestChangedAt(WebCreditCase):
 		plain = make_customer("stamp never")
 		save_customer(plain, mobile_no="+96890000001")
 		self.assertIsNone(facility(plain)[CREDIT_CHANGED_AT_FIELD])
+
+
+class TestFacilityGuard(WebCreditCase):
+	"""Review F1 (P4 on the server): Sales Users may write Customers, not switch a House Account."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		ensure_user(SALES_USER, ["Sales User"])
+		frappe.db.commit()  # nosemgrep
+
+	def test_flag_change_by_non_editor_refused(self):
+		from frappe import client
+
+		customer = make_customer("guard")
+		frappe.set_user(SALES_USER)
+		doc = frappe.get_doc("Customer", customer)
+		doc.set(CREDIT_ENABLED_FIELD, 1)
+		with self.assertRaises(frappe.PermissionError) as caught:
+			doc.save()
+		self.assertIn("System Manager or an Accounts Manager", str(caught.exception))
+		with self.assertRaises(frappe.PermissionError) as caught:
+			client.set_value("Customer", customer, CREDIT_ENABLED_FIELD, 1)
+		self.assertIn("System Manager or an Accounts Manager", str(caught.exception))
+		frappe.set_user("Administrator")
+		self.assertEqual(facility(customer)[CREDIT_ENABLED_FIELD], 0)
+
+	def test_non_editor_may_still_disable_and_edit(self):
+		from frappe import client
+
+		customer = make_customer("guard disable")
+		save_customer(customer, **{CREDIT_ENABLED_FIELD: 1})
+		frappe.set_user(SALES_USER)
+		client.set_value("Customer", customer, "disabled", 1)
+		frappe.set_user("Administrator")
+		row = facility(customer)
+		self.assertEqual((row[CREDIT_ENABLED_FIELD], row.disabled), (1, 1))
+		self.assertEqual(format_db_datetime(row[CREDIT_CHANGED_AT_FIELD]), format_db_datetime(row.modified))
+
+	def test_editor_and_migrate_may_switch(self):
+		customer = make_customer("guard editor")
+		frappe.set_user(ACCOUNTS)
+		save_customer(customer, **{CREDIT_ENABLED_FIELD: 1})
+		frappe.set_user(SALES_USER)
+		frappe.flags.in_migrate = True
+		try:
+			save_customer(customer, **{CREDIT_ENABLED_FIELD: 0})
+		finally:
+			frappe.flags.in_migrate = False
+		frappe.set_user("Administrator")
+		self.assertEqual(facility(customer)[CREDIT_ENABLED_FIELD], 0)
 
 
 class TestFacilityStatus(WebCreditCase):

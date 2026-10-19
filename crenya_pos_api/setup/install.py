@@ -119,7 +119,8 @@ CREDIT_CUSTOMER_FIELDS = [
 		"default": "0",
 		"insert_after": "credit_limits",
 		"description": "The customer may be put on a House Account at a restaurant till (an active "
-		"customer only). Switched on or off by a System Manager or an Accounts Manager.",
+		"customer only), at every outlet of the site that serves the customer. Switched on or off by a "
+		"System Manager or an Accounts Manager, through a save only.",
 	},
 	{
 		"fieldname": CREDIT_CHANGED_AT_FIELD,

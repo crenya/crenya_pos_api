@@ -29,10 +29,12 @@ from crenya_pos_api.api.web_admin.scope import manages, shop_profiles, user_may_
 from crenya_pos_api.sync.context import money_precision, profile_users
 from crenya_pos_api.sync.credit import (
 	CREDIT_CHANGED_AT_FIELD,
+	CREDIT_EDITOR_ROLES,
 	CREDIT_ENABLED_FIELD,
 	CREDIT_SALES_FIELD,
 	customer_credit_limit_sources,
 	customer_in_outlet,
+	facility_editor_refusal,
 )
 from crenya_pos_api.utils.dates import format_db_datetime, site_naive_to_utc_iso
 from crenya_pos_api.utils.decimal import (
@@ -55,8 +57,6 @@ from crenya_pos_api.web.reports import money_view
 
 CUSTOMER = "Customer"
 CREDIT_LIMIT = "Customer Credit Limit"
-# who may change a limit
-CREDIT_EDITOR_ROLES = ("System Manager", "Accounts Manager")
 # the most customers listed, and the most candidates read before the list is cut
 MAX_CREDIT_ROWS = 200
 MAX_CANDIDATES = 1000
@@ -395,9 +395,7 @@ def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) 
 	Version of the Customer (it tracks changes) and leaves a Comment naming the web user; saving the
 	state it already has changes nothing. `changed_at` (UTC ISO-8601, null when never changed) is
 	when the facility or `disabled` last changed, stamped by the Customer validate hook."""
-	ctx = credit_editor(
-		outlet, _("A House Account is switched on or off by a System Manager or an Accounts Manager")
-	)
+	ctx = credit_editor(outlet, facility_editor_refusal())
 	flag = checked(parse_flag, enabled, "enabled")
 	if flag is None:
 		invalid(_("enabled is required"))

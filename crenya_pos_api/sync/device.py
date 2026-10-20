@@ -26,6 +26,7 @@ from crenya_pos_api.sync.context import (
 	user_can_use_profile,
 )
 from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
+from crenya_pos_api.sync.customer_payment import FEATURE_SETTLE_INVOICES
 from crenya_pos_api.sync.entitlement import device_rows, get_entitlement, registration_refusal
 from crenya_pos_api.sync.errors import (
 	DeviceNotRegisteredError,
@@ -500,6 +501,8 @@ def bootstrap(ctx):
 		doc["approvals"] = approvals_bootstrap(profile)
 		# credit sales (0.13.0): the capability and the outlet's switch; a restaurant till gets none
 		doc.setdefault("features", {})["credit_sales"] = 1
+		# 0.14.0: a receipt may name the bills it settles (`invoices`); older tills ignore the key
+		doc["features"][FEATURE_SETTLE_INVOICES] = 1
 		doc["credit"] = {"enabled": bool(cint(profile.get(CREDIT_SALES_FIELD)))}
 		# expenses paid out of the drawer (0.13.0): only on a site with erptrue_app's POS Expense, so
 		# the till hides Expenses everywhere else

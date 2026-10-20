@@ -10,6 +10,8 @@ Other Frappe apps plug into the till protocol from their `hooks.py`:
         crenya_pos_device_roles = ["<role>", {"role": "<role>", "device_types": ["<device_type>", ...]}]
         crenya_pos_profile_flags = ["<dotted path of fn(names) -> {profile name: {flag: value}}>"]
         crenya_pos_entitlement = "<dotted path of fn() -> dict>"       # the plan's caps, last app wins
+        crenya_pos_credit_device_types = ["<device_type>", ...]        # besides "till", may take credit
+        crenya_pos_credit_customer_flag_device_types = ["<device_type>", ...]   # get `credit_enabled`
 
 Built-ins always come first and cannot be replaced; hook entries follow in app install
 order. A hook entry that only repeats a built-in the app used to register itself (crenya_restaurant
@@ -40,6 +42,9 @@ INVOICE_EXTENDER_HOOK = "crenya_pos_invoice_extenders"
 DEVICE_ROLE_HOOK = "crenya_pos_device_roles"
 PROFILE_FLAG_HOOK = "crenya_pos_profile_flags"
 ENTITLEMENT_HOOK = "crenya_pos_entitlement"
+CREDIT_DEVICE_TYPES_HOOK = "crenya_pos_credit_device_types"
+# device types whose customers carry the House Account facility flag (`credit_enabled`, 0.14.0)
+CREDIT_CUSTOMER_FLAG_HOOK = "crenya_pos_credit_customer_flag_device_types"
 
 # the hook entries of other apps that repeat a built-in this release took over: ignored, not an error
 MOVED_ENTITIES = frozenset({"expense_category", "expense_supplier"})
@@ -424,6 +429,48 @@ def _load_device_role_rules():
 		else:
 			rules[role] = types
 	return rules
+
+
+def _device_types(hook, base):
+	"""The device types a list hook adds to `base` (a frozenset): `base` plus every app's entries,
+	read once per request. An entry that is not a device type name is logged and ignored, and so
+	is a hook that cannot be read: a bad hook never takes a feature away from the base types."""
+
+	def load():
+		try:
+			entries = _hook(hook, [])
+			if isinstance(entries, str):
+				entries = [entries]
+			if not isinstance(entries, list | tuple):
+				raise TypeError(f"{type(entries).__name__}, not a list of device types")
+			types = set(base)
+			for entry in entries:
+				if isinstance(entry, str) and DEVICE_TYPE_RE.match(entry):
+					types.add(entry)
+				else:
+					_ignored_entry(hook, entry)
+			return frozenset(types)
+		except Exception as exc:
+			_unreadable_hook(hook, exc)
+			return frozenset(base)
+
+	return _cached((hook, tuple(sorted(base))), load)
+
+
+def _ignored_entry(hook, entry):
+	_warn(f"{hook}: {entry!r} is not a device type; ignored")
+
+
+def _unreadable_hook(hook, exc):
+	_warn(f"{hook} could not be read ({type(exc).__name__}: {exc}); only the base device types apply")
+
+
+def _warn(message):
+	try:
+		frappe.logger("crenya_pos_api").warning(message)
+	except Exception:
+		# no site (plain unit tests): nothing to log to
+		pass
 
 
 def device_role_rules():

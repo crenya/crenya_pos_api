@@ -9,6 +9,7 @@ once (DEADLOCK_ATTEMPTS, within DEADLOCK_BUDGET_SECONDS) before it becomes such 
 import hashlib
 import random
 import time
+from contextlib import contextmanager
 
 import frappe
 from frappe.utils import cint, now
@@ -246,7 +247,43 @@ def _lock_name(raw_event):
 		key = handler.lock_key(payload) if handler is not None and isinstance(payload, dict) else None
 	except Exception:
 		return None
-	return f"crenya_pos:{hashlib.sha1(key.encode()).hexdigest()}" if key else None
+	return lock_name(key) if key else None
+
+
+def customer_lock_key(customer):
+	"""The lock key of the work that allocates to a customer's invoices (receipts at a till, a credit
+	return, a settlement on the web): `lock_name` of it is one database lock per customer."""
+	return f"customer:{customer}"
+
+
+def lock_name(key):
+	"""The database lock name of a lock key: the one rule, so a till's event and a booking on the web
+	(`named_lock`) of the same key wait for each other."""
+	return f"crenya_pos:{hashlib.sha1(key.encode()).hexdigest()}"
+
+
+@contextmanager
+def named_lock(key):
+	"""Run the block under the database lock of `key` (`lock_name`), the one a till's event of the same
+	key takes, as `process_event` does for an event:
+
+	- Taking the lock commits the caller's open transaction first (`_acquire_lock`), so the block's
+	  reads start after the lock is held (REPEATABLE READ). A caller must not write anything before
+	  it that it might still want to roll back.
+	- The block's work is committed before the lock is released, so whoever waits next reads it.
+	  When the block raises, its work is rolled back and then the lock is released.
+	- Raises frappe.ValidationError("busy") when the lock is not had within LOCK_WAIT_SECONDS."""
+	name = lock_name(key)
+	if not _acquire_lock(name):
+		raise frappe.ValidationError("busy")
+	try:
+		yield
+	except BaseException:
+		frappe.db.rollback()
+		_release_lock(name)
+		raise
+	frappe.db.commit()  # nosemgrep  # before the release: the next holder must see this work
+	_release_lock(name)
 
 
 def _acquire_lock(name):

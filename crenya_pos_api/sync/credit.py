@@ -11,13 +11,22 @@ The server never refuses a sale the customer already took (spec C5): ERPNext's c
 done credit sale, or a cash sale to an already over-limit customer, into a refused one. The invoice
 is therefore posted inside `credit_limit_waived()`, and a note says when the customer ended above the
 limit. The till's manager PIN is the approval; the web lists such customers.
+
+**The House Account facility (0.14.0, restaurant spec D6/RC14).** A customer may be put on a House
+Account only when its Customer `crenya_credit_enabled` is set and it is not disabled
+(`credit_enabled_for`). `crenya_credit_changed_at` records, on the server's clock, when either of the
+two last changed (`stamp_credit_change`, the Customer `validate` hook): it is the record's own
+`modified` of that save, so a till that pulled the changed record echoes exactly that time back as
+the sale's `credit_customer_as_of`. Only the device types an app lists in
+`crenya_pos_credit_customer_flag_device_types` get `credit_enabled` (never a retail "till"), and
+which sales are refused for it is that app's rule (crenya_restaurant's invoice extender).
 """
 
 from contextlib import contextmanager
 from decimal import Decimal
 
 import frappe
-from frappe.utils import cint
+from frappe.utils import cint, now_datetime
 
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, money_precision
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
@@ -161,8 +170,101 @@ def over_limit_note(status):
 	return f"Customer {status['customer']} is over the credit limit by {format_money(over, precision)}"
 
 
-def _require_till(ctx):
-	if ctx.device_type != DEFAULT_DEVICE_TYPE:
+def credit_device_types():
+	"""The device types that may take credit: "till" and every type an app lists in the
+	`crenya_pos_credit_device_types` hook (read once per request; a bad hook is logged and ignored)."""
+	from crenya_pos_api.sync import registry
+
+	return registry._device_types(registry.CREDIT_DEVICE_TYPES_HOOK, frozenset({DEFAULT_DEVICE_TYPE}))
+
+
+def is_credit_device(device_type):
+	"""Whether a device of `device_type` (blank = the default "till") may take credit."""
+	return (device_type or DEFAULT_DEVICE_TYPE) in credit_device_types()
+
+
+# Customer fields of the House Account facility (setup/install.py CREDIT_CUSTOMER_FIELDS)
+CREDIT_ENABLED_FIELD = "crenya_credit_enabled"
+CREDIT_CHANGED_AT_FIELD = "crenya_credit_changed_at"
+# a change of either is a change of the facility
+FACILITY_FIELDS = (CREDIT_ENABLED_FIELD, "disabled")
+# who may change a credit limit or switch a customer's House Account facility (P4)
+CREDIT_EDITOR_ROLES = ("System Manager", "Accounts Manager")
+
+
+def facility_editor_refusal():
+	"""The words of a refused facility switch (the web method's and the Customer hook's)."""
+	return frappe._("A House Account is switched on or off by a System Manager or an Accounts Manager")
+
+
+def customer_flag_device_types():
+	"""The device types whose customer records and credit status carry `credit_enabled`: every type
+	an app lists in the `crenya_pos_credit_customer_flag_device_types` hook (read once per request; a
+	bad hook is logged and ignored), never "till": a retail till keeps 0.13.2's answers."""
+	from crenya_pos_api.sync import registry
+
+	return registry._device_types(registry.CREDIT_CUSTOMER_FLAG_HOOK, frozenset()) - {DEFAULT_DEVICE_TYPE}
+
+
+def is_customer_flag_device(device_type):
+	"""Whether a device of `device_type` (blank = the default "till", which never is) gets
+	`credit_enabled`."""
+	return (device_type or DEFAULT_DEVICE_TYPE) in customer_flag_device_types()
+
+
+def sends_credit_flag(ctx):
+	"""Whether the device is told each customer's `credit_enabled` (pull and status): the gate of
+	`credit_limit` (an outlet that sells on account, a device that may take credit) and a
+	customer-flag device type."""
+	return _credit_on(ctx) and is_credit_device(ctx.device_type) and is_customer_flag_device(ctx.device_type)
+
+
+def credit_enabled_for(customer):
+	"""Whether a Customer (a Document or a dict / row with `crenya_credit_enabled` and `disabled`) may
+	be put on a House Account: the facility is on and the customer is not disabled."""
+	return bool(cint(customer.get(CREDIT_ENABLED_FIELD))) and not cint(customer.get("disabled"))
+
+
+def _may_switch_facility():
+	"""Whether this save may change `crenya_credit_enabled`: Administrator, a System Manager or an
+	Accounts Manager (P4), or the app's own install, patch or migrate."""
+	flags = frappe.flags
+	if flags.in_install or flags.in_patch or flags.in_migrate:
+		return True
+	user = frappe.session.user if getattr(frappe.local, "session", None) else None
+	if user == "Administrator":
+		return True
+	return bool(set(frappe.get_roles(user)) & set(CREDIT_EDITOR_ROLES))
+
+
+def stamp_credit_change(doc, method=None):
+	"""Customer `validate`: refuse a change of `crenya_credit_enabled` (a new customer created
+	enabled counts) by anyone but Administrator, a System Manager or an Accounts Manager, whatever
+	the path (desk form, `frappe.client.set_value`, an import): Sales Users may write Customers, but
+	only accountants switch a House Account (P4). A change of `disabled` stays open to every writer:
+	it only ever turns the facility off. Then set `crenya_credit_changed_at` when `crenya_credit_enabled`
+	or `disabled` changed (a new customer: when it is created enabled or disabled). The time is the
+	save's own `modified` (Frappe sets it before `validate`), so it is the `modified` a till pulls with
+	the changed record; any other edit leaves it as it was. A write that skips the save
+	(`frappe.db.set_value`, `db_set`, SQL) is neither checked nor stamped: change the flag through a
+	save (`save_credit_facility`)."""
+	if not doc.meta.has_field(CREDIT_CHANGED_AT_FIELD):
+		return
+	before = doc.get_doc_before_save()
+	if before is None:
+		flag_changed = bool(cint(doc.get(CREDIT_ENABLED_FIELD)))
+		changed = any(cint(doc.get(field)) for field in FACILITY_FIELDS)
+	else:
+		flag_changed = cint(doc.get(CREDIT_ENABLED_FIELD)) != cint(before.get(CREDIT_ENABLED_FIELD))
+		changed = any(cint(doc.get(field)) != cint(before.get(field)) for field in FACILITY_FIELDS)
+	if flag_changed and not _may_switch_facility():
+		frappe.throw(facility_editor_refusal(), frappe.PermissionError)
+	if changed:
+		doc.set(CREDIT_CHANGED_AT_FIELD, doc.modified or now_datetime())
+
+
+def _require_credit_device(ctx):
+	if not is_credit_device(ctx.device_type):
 		raise_api_error(InvalidRequestError, f"Credit is for tills, not for {ctx.device_type} devices")
 
 
@@ -195,21 +297,82 @@ def status_for(ctx, customer):
 	groups, when it limits them). One answer for a customer that is not there and one that is not the
 	outlet's, so the call tells nothing about other customers. An outlet that no longer sells on
 	account still answers for a customer who owes (they can pay, and an old on-account invoice can be
-	returned); for any other it answers that credit is switched off."""
-	_require_till(ctx)
+	returned); for any other it answers that credit is switched off. A customer-flag device of an
+	outlet that sells on account also gets `credit_enabled` (`sends_credit_flag`)."""
+	_require_credit_device(ctx)
 	if not customer_in_outlet(ctx, customer):
 		raise_api_error(InvalidRequestError, NOT_FOUND)
 	status = credit_status(customer, ctx.company)
 	if not _credit_on(ctx) and quantize(status["outstanding"], money_precision()) <= 0:
 		raise_api_error(InvalidRequestError, SWITCHED_OFF)
+	if sends_credit_flag(ctx):
+		# a customer-flag device of an outlet that sells on account (restaurant D6): the facility
+		# as the booking rule reads it
+		row = frappe.db.get_value("Customer", customer, list(FACILITY_FIELDS), as_dict=True)
+		status["credit_enabled"] = credit_enabled_for(row)
 	return status
 
 
+def invoice_settlements(invoice):
+	"""How a submitted sale was settled after it was sold (CC12, R20): one row per submitted Receive
+	Payment Entry that references it, oldest first: `[{payment_entry, mode_of_payment, mode_type,
+	from_till, allocated}]` (`allocated` a decimal string at the outlet's precision, summed when an entry
+	references the bill twice). `from_till` is true only for a till's `Customer Payment`: the entry
+	carries the till's id and its remarks name the device; a web settlement or a desk entry is false.
+	`mode_type` is the Mode of Payment's own `type` (Cash, Bank, ...)."""
+	from crenya_pos_api.sync.customer_payment import LOCAL_ID_FIELD, PAYMENT_ENTRY, TILL_REMARKS_PREFIX
+
+	refs = frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"parenttype": PAYMENT_ENTRY,
+			"reference_doctype": "Sales Invoice",
+			"reference_name": invoice,
+		},
+		fields=["parent", "allocated_amount"],
+	)
+	if not refs:
+		return []
+	allocated = {}
+	for ref in refs:
+		allocated[ref.parent] = allocated.get(ref.parent, Decimal(0)) + as_decimal(ref.allocated_amount)
+	entries = frappe.get_all(
+		PAYMENT_ENTRY,
+		filters={"name": ["in", list(allocated)], "docstatus": 1, "payment_type": "Receive"},
+		fields=["name", "mode_of_payment", LOCAL_ID_FIELD, "remarks"],
+		order_by="posting_date asc, creation asc, name asc",
+	)
+	modes = [entry.mode_of_payment for entry in entries if entry.mode_of_payment]
+	types = (
+		{
+			row.name: row.type
+			for row in frappe.get_all(
+				"Mode of Payment", filters={"name": ["in", modes]}, fields=["name", "type"]
+			)
+		}
+		if modes
+		else {}
+	)
+	precision = money_precision()
+	return [
+		{
+			"payment_entry": entry.name,
+			"mode_of_payment": entry.mode_of_payment,
+			"mode_type": types.get(entry.mode_of_payment),
+			"from_till": bool(entry.get(LOCAL_ID_FIELD))
+			and (entry.remarks or "").startswith(TILL_REMARKS_PREFIX),
+			"allocated": format_money(allocated[entry.name], precision),
+		}
+		for entry in entries
+	]
+
+
 def invoice_outstanding_for(ctx, invoice):
-	"""{name, grand_total, outstanding, as_of} of a submitted sale of this outlet (by name or by the
-	till's local id): what a return of it can credit to the account. Answered whatever the outlet's
-	credit switch says: invoices sold on account while it was on are returned after it is off."""
-	_require_till(ctx)
+	"""{name, grand_total, outstanding, as_of, settlements} of a submitted sale of this outlet (by name
+	or by the till's local id): what a return of it can credit to the account, and how it was settled
+	after the sale (`invoice_settlements`). Answered whatever the outlet's credit switch says:
+	invoices sold on account while it was on are returned after it is off."""
+	_require_credit_device(ctx)
 	if not invoice or not isinstance(invoice, str):
 		raise_api_error(InvalidRequestError, NOT_FOUND)
 	fields = ["name", "docstatus", "is_return", "company", "pos_profile", "grand_total", "outstanding_amount"]
@@ -226,7 +389,101 @@ def invoice_outstanding_for(ctx, invoice):
 		"grand_total": format_money(row.grand_total, precision),
 		"outstanding": format_money(row.outstanding_amount, precision),
 		"as_of": utc_now_iso(),
+		"settlements": invoice_settlements(row.name),
 	}
+
+
+# the rows of one `get_open_invoices` answer: the default, and the most "Show more" may ask for (Q5)
+OPEN_INVOICES_DEFAULT_LIMIT = 200
+OPEN_INVOICES_MAX_LIMIT = 1000
+
+
+def customer_advance(customer, company):
+	"""What the customer has paid ahead (Decimal, unrounded): the unallocated part of its submitted
+	Receive Payment Entries of the company, plus the absolute value of its negative Sales Invoice
+	outstandings there (credit left on the account, e.g. a House Account cancel of a settled bill,
+	CC12), the latter in one aggregate query. A return posted with `update_outstanding_for_self` 0 (a
+	credit offset) is booked against its original, which already carries the credit; ERPNext still
+	stores a negative outstanding on the return itself with no ledger entry behind it, so it is left
+	out. A credit note that keeps its own outstanding (`update_outstanding_for_self` 1) counts."""
+	from frappe.query_builder.functions import Sum
+
+	rows = frappe.get_all(
+		"Payment Entry",
+		filters={
+			"party_type": "Customer",
+			"party": customer,
+			"company": company,
+			"docstatus": 1,
+			"payment_type": "Receive",
+		},
+		fields=["unallocated_amount"],
+	)
+	paid_ahead = sum((as_decimal(row.unallocated_amount) for row in rows), Decimal(0))
+	invoice = frappe.qb.DocType("Sales Invoice")
+	owed_back = (
+		frappe.qb.from_(invoice)
+		.select(Sum(invoice.outstanding_amount))
+		.where(
+			(invoice.customer == customer)
+			& (invoice.company == company)
+			& (invoice.docstatus == 1)
+			& (invoice.outstanding_amount < 0)
+			& ~((invoice.is_return == 1) & (invoice.update_outstanding_for_self == 0))
+		)
+		.run()
+	)
+	credit_notes = as_decimal(owed_back[0][0]) if owed_back and owed_back[0][0] is not None else Decimal(0)
+	return paid_ahead + abs(credit_notes)
+
+
+def open_invoices_answer(customer, company, precision, limit=OPEN_INVOICES_DEFAULT_LIMIT):
+	"""The wire answer of `get_open_invoices` (money as decimal strings at `precision`): the customer's
+	open bills of the company (all its outlets, Q1: the debt is the customer's, each row names its
+	outlet) oldest first, at most `limit` (above 1000 cut to 1000), `more` when there are others;
+	`outstanding` is ERPNext's net account balance (`get_customer_outstanding`, as `get_status`
+	gives it), already net of the advance and not the sum of the rows: a screen shows it beside
+	`advance` and never subtracts the advance again. `advance` is the unallocated receipts plus
+	credit notes left on the account (RC9)."""
+	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
+
+	from crenya_pos_api.sync.customer_payment import open_invoices
+
+	limit = max(1, min(cint(limit) or OPEN_INVOICES_DEFAULT_LIMIT, OPEN_INVOICES_MAX_LIMIT))
+	found = open_invoices(customer, company, limit + 1)
+	return {
+		"customer": customer,
+		"outstanding": format_money(get_customer_outstanding(customer, company), precision),
+		"advance": format_money(customer_advance(customer, company), precision),
+		"as_of": utc_now_iso(),
+		"more": len(found) > limit,
+		"invoices": [
+			{
+				"name": row["name"],
+				"local_id": row["local_id"] or None,
+				"offline_number": row["offline_number"] or None,
+				"outlet": row["pos_profile"],
+				"posting_date": str(row["posting_date"]),
+				"grand_total": format_money(row["total"], precision),
+				"outstanding": format_money(row["outstanding"], precision),
+			}
+			for row in found[:limit]
+		],
+	}
+
+
+def open_invoices_for(ctx, customer, limit=None):
+	"""`open_invoices_answer` for a customer of the device's outlet: the device must be allowed
+	credit and the outlet must sell on account; the walk-in and a customer that is not there or not
+	the outlet's get one answer (no tell about other customers)."""
+	_require_credit_device(ctx)
+	if not _credit_on(ctx):
+		raise_api_error(InvalidRequestError, SWITCHED_OFF)
+	if not customer_in_outlet(ctx, customer) or customer == ctx.profile.customer:
+		raise_api_error(InvalidRequestError, NOT_FOUND)
+	return open_invoices_answer(
+		customer, ctx.company, money_precision(ctx.currency), cint(limit) or OPEN_INVOICES_DEFAULT_LIMIT
+	)
 
 
 def _install_waiver():

@@ -16,7 +16,9 @@ between releases. Register the extensions in your app's `hooks.py`:
         crenya_pos_capabilities = ["my_app.sync.capabilities.features"]
 
         # fn(ctx, doc, data, notes) -> None: after the Sales Invoice is built, before insert;
-        # `data` is the validated payload, `data["extensions"]["my_app"]` your app's raw data
+        # `data` is the validated payload, `data["extensions"]["my_app"]` your app's raw data;
+        # `data["credit_customer_as_of"]` (a sale: the customer record's `modified` the till had)
+        # and `data["approval"]` (a return: {action, approved_by, approved_at}) are None when absent
         crenya_pos_invoice_extenders = ["my_app.sync.invoice.extend"]
 
         # roles that may register and use a device besides Crenya POS User: a role name opens
@@ -30,6 +32,16 @@ between releases. Register the extensions in your app's `hooks.py`:
         # fn(names) -> {profile name: {flag: value}}: extra keys on list_pos_profiles rows
         # (core keys win; profiles the function leaves out get nothing)
         crenya_pos_profile_flags = ["my_app.sync.profiles.flags"]
+
+        # device types besides "till" that may take credit (credit status, customer payments, the
+        # customer's credit_limit on the pull); list only types that sell: not a waiter or kds
+        crenya_pos_credit_device_types = ["my_app_pos"]
+
+        # device types (of the credit device types) whose customer pull records and credit status
+        # carry `credit_enabled`: the Customer's House Account facility (crenya_credit_enabled) and
+        # not disabled, while the outlet sells on account; never a retail "till". Which sales the
+        # flag refuses is your invoice extender's rule
+        crenya_pos_credit_customer_flag_device_types = ["my_app_pos"]
 
         # fn() -> {status, paid_until, max_outlets, max_terminals, addons}: the plan's caps on
         # new terminals and the licence state sent to every device (the last app's wins)

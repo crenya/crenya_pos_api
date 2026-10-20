@@ -10,7 +10,7 @@ from crenya_pos_api.sync.approvals import (
 	APPROVER_ROLE,
 	MAX_DISCOUNT_FIELD,
 )
-from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
+from crenya_pos_api.sync.credit import CREDIT_CHANGED_AT_FIELD, CREDIT_ENABLED_FIELD, CREDIT_SALES_FIELD
 from crenya_pos_api.sync.tax_wording import (
 	DEFAULT_CREDIT_NOTE_TITLE,
 	DEFAULT_INVOICE_TITLE,
@@ -105,6 +105,31 @@ CREDIT_PROFILE_FIELDS = [
 		"description": "Cashiers sell on account to a named customer (never the default customer). "
 		"A customer's credit limit is the customer's own, else its customer group's, else the company's "
 		"(a System Manager or an Accounts Manager sets them); a customer with none has no limit.",
+	},
+]
+
+# Customer's House Account facility (0.14.0, restaurant spec D6/RC14), after ERPNext's credit limits:
+# off for every customer until a System Manager or an Accounts Manager enables one on app.crenya.com.
+# `crenya_credit_changed_at` is written by the Customer validate hook (sync.credit.stamp_credit_change)
+CREDIT_CUSTOMER_FIELDS = [
+	{
+		"fieldname": CREDIT_ENABLED_FIELD,
+		"fieldtype": "Check",
+		"label": "House Account (credit facility)",
+		"default": "0",
+		"insert_after": "credit_limits",
+		"description": "The customer may be put on a House Account at a restaurant till (an active "
+		"customer only), at every outlet of the site that serves the customer. Switched on or off by a "
+		"System Manager or an Accounts Manager, through a save only.",
+	},
+	{
+		"fieldname": CREDIT_CHANGED_AT_FIELD,
+		"fieldtype": "Datetime",
+		"label": "House Account changed at",
+		"insert_after": CREDIT_ENABLED_FIELD,
+		"read_only": 1,
+		"no_copy": 1,
+		"description": "When the House Account facility or Disabled last changed (server time).",
 	},
 ]
 
@@ -223,6 +248,7 @@ CUSTOM_FIELDS = {
 			"read_only": 1,
 			"no_copy": 1,
 		},
+		*CREDIT_CUSTOMER_FIELDS,
 	],
 	"Item": [
 		{

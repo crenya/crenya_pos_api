@@ -11,6 +11,7 @@ import frappe
 from frappe.utils import cint
 
 from crenya_pos_api.sync.customer import create_customer, customer_result_fields
+from crenya_pos_api.sync.events import customer_lock_key
 from crenya_pos_api.sync.invoice_builder import invoice_result_fields, submit_invoice
 from crenya_pos_api.sync.shift import create_shift, shift_result_fields
 from crenya_pos_api.sync.validation import (
@@ -147,7 +148,7 @@ class SalesInvoiceHandler(AggregateHandler):
 		else:
 			return None
 		customer = frappe.db.get_value(AGGREGATE_SALES_INVOICE, filters, "customer")
-		return f"customer:{customer}" if customer else None
+		return customer_lock_key(customer) if customer else None
 
 	def result_fields(self, doc):
 		return invoice_result_fields(doc)

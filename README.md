@@ -290,6 +290,15 @@ A hook entry that repeats one of these built-ins is ignored and logged once, so 
 deployed first: the restaurant tills keep working through the built-in handler (the restaurant's
 approver roles are read from the installed crenya_restaurant until it registers its product).
 
+#### Open bills (0.14.0)
+
+`api.credit.get_open_invoices(device_id, customer, limit)` lists a customer's open bills of the company (all
+outlets, each row names its outlet), oldest first, at most `limit` rows (default 200, never above 1000; `more` says
+there are others). `outstanding` is ERPNext's net account balance (the figure `get_status` gives), already net of
+the advance and not the sum of the rows: a screen must not subtract the advance again. `advance` is the
+unallocated Receive Payment Entries plus any credit notes left on the account. `get_invoice_outstanding` also
+returns `settlements` (how the bill was settled after the sale).
+
 #### Customer payments (credit sales, 0.13.0)
 
 A till takes a customer's payment on account as the push aggregate `Customer Payment` (`sync/customer_payment.py`),
@@ -301,6 +310,37 @@ idempotent by `event_id` and by the till's `local_id`, kept in the Payment Entry
 that cannot be booked (a mode of payment without an account for the company, a customer outside the outlet) is a
 refused sync event: it shows on app.crenya.com's Refused page with the account hint and Retry books it once.
 The outlet's credit switch only governs new credit sales; a receipt is taken whatever it says.
+
+From 0.14.0 (capability and till bootstrap feature `credit_settle_invoices`) a receipt may name the bills it
+settles: `invoices`, at most 200, in the order the cashier ticked them, each an ERPNext name or `local:` + the
+till's id of a sale it made. They are re-read at booking: a bill no longer outstanding, not the customer's or the
+company's, a return, or a `local:` id no Sales Invoice has yet is skipped with a Sync Event note, never refused,
+and its money stays an advance (never spread over bills that were not ticked). The result's `payment` then adds
+`skipped`. `advance_confirmed` only goes into the remarks. A payload without `invoices` is booked as before. The
+web books through the same `post_payment_entry` under `events.named_lock(customer_lock_key(customer))`, the
+database lock a till's receipt of that customer takes.
+
+#### House Account facility (0.14.0)
+
+Customer custom fields `crenya_credit_enabled` (Check, default 0, "House Account (credit facility)") and
+`crenya_credit_changed_at` (read-only Datetime). The Customer `validate` hook stamps `crenya_credit_changed_at`
+with the save's own `modified` whenever the flag or `disabled` changes, whoever saves it. A device type listed in
+the `crenya_pos_credit_customer_flag_device_types` hook (never a retail `till`) of an outlet that sells on account
+gets `credit_enabled` (flag and not disabled) on every customer pull record (cursor scope `credit_flag`, so a
+device whose cursor sat at `credit` is sent every customer once) and in `api.credit.get_status`; a retail till's
+answers are 0.13.2's. A sale may carry `credit_customer_as_of` (the pulled record's `modified`) and a return an
+`approval` {action, approved_by, approved_at}; the validated payload keeps both (None when absent) for the invoice
+extenders, which own the rule (crenya_restaurant). This app never refuses a sale over the facility: a malformed
+`credit_customer_as_of` is passed on as None (missing), never refused at intake.
+
+Only Administrator, a System Manager or an Accounts Manager may change `crenya_credit_enabled`: the Customer
+`validate` hook refuses anyone else (`frappe.PermissionError`) on every save path (desk form,
+`frappe.client.set_value`, an import); install, patch and migrate are exempt, and `disabled` stays open to every
+writer (it only turns the facility off). The flag changes **only through a document save**
+(`save_credit_facility` in this app's code): `frappe.db.set_value`, `db_set` or SQL skip both the check and the
+`crenya_credit_changed_at` stamp. The facility is **one per Customer for the whole site**, not per company or
+outlet: enabling a customer through one outlet enables it at every outlet, of any company, whose customer groups
+include it.
 
 #### Device ids
 
@@ -1060,8 +1100,13 @@ in as a System Manager.
 | `staff_get(user)`, `staff_save(user, privilege, pin, outlets)`, `staff_clear_pin(user)` | a user's shop till privilege (`cashier`: Crenya POS User; `manager`: also Crenya POS Manager), 6-digit PIN and shops; System Manager only, never Administrator or Guest, never System Manager given; the answer lists the `privileges` offered |
 | `day_closes(from_date, to_date, outlet)`, `day_close(shift)` | the shop's shifts (Z reports): sections `sales`, `payments` (per mode: expected, counted, difference), `returns`, `store_controls`, `paid_out`; every row has `kind` money or count, money as strings at the currency's decimals |
 | `refused_sales(outlet)`, `retry_sale(name)` | what the shop's tills pushed and ERPNext refused (newest 200), with a hint in English and Arabic; Retry asks the till to send it again (`retry_pending` until the till has, so Retry is offered again once a re-push is refused) |
-| `credit_customers(outlet)`, `save_credit_limit(outlet, customer, credit_limit, modified)` | the shop's customers with a credit limit or a balance (`credit_limit` / `available` null = "No limit"; `limit_source` says whether the limit is the customer's own, its group's or the company's; over the limit first; at most 200, `more` says it was cut); read by the shop's managers. The edit is a System Manager's or an Accounts Manager's only (a shop manager approves at the till, he does not set the limit): it writes the Customer's own *Credit Limit* row for the shop's company (0 or blank clears it, a bypass flag on the row is kept; clearing it is not "no limit" when the group or the company has one), comments old and new value and the web user |
-| `credit_shops()` | the shops the user may open the Credit page of: `{shops: [{name, outlet_name, company, currency, credit_view, credit_enabled, can_edit}]}`. A System Manager or an Accounts Manager gets every shop of the companies they may use (User Permission on Company honoured, none = all) without being a Crenya POS Manager of it, and may edit (`can_edit`); a shop manager the shops they manage, read only; a cashier none. `credit_customers` and `save_credit_limit` follow the same rule; every other Shops method still needs the user to manage the shop |
+| `credit_customers(outlet, from_date=None, to_date=None)`, `save_credit_limit(outlet, customer, credit_limit, modified)` | the outlet's customers: a shop's with a credit limit or a balance, a restaurant's with the House Account on or a balance; each row also `credit_enabled`, `mobile_no`, and (`credit_customers`) `credit_sales` / `payments` for the range (default all time; the House Account parts of the bills net of returns credited back, and Receive payments) beside `outstanding` (ERPNext's balance today, not range-bound), the answer `totals` over the rows; `credit_sales` leaves out standalone credit notes (not a return of a sale of the range) and later Journal Entry write-offs, which change `outstanding` only (`credit_limit` / `available` null = "No limit"; `limit_source` says whether the limit is the customer's own, its group's or the company's; over the limit first; at most 200, `more` says it was cut); read by the shop's managers. The edit is a System Manager's or an Accounts Manager's only (a shop manager approves at the till, he does not set the limit): it writes the Customer's own *Credit Limit* row for the shop's company (0 or blank clears it, a bypass flag on the row is kept; clearing it is not "no limit" when the group or the company has one), comments old and new value and the web user |
+| `save_credit_facility(outlet, customer, enabled)` | switch a customer's House Account facility on or off (`enabled` 1 / 0): a System Manager's or an Accounts Manager's only, from a browser session. The customer must be one the outlet's tills may sell to (inside its customer groups; ERPNext's Customer has no company), not the outlet's default customer, not an internal customer of another company; a disabled customer can be switched off, not on. Answers `{customer, credit_enabled, changed_at}` (UTC ISO, null when never changed); a Version of the Customer and a Comment naming the web user |
+| `credit_shops(product="shop")` | the outlets of the product (`shop`, or `restaurant` once crenya_restaurant registers it with `register_credit_product`) the user may open the credit page of: `{shops: [{name, outlet_name, company, currency, credit_view, credit_enabled, can_edit, credit_on, owing}]}` (`credit_on` = the sell-on-account switch, `owing` = a customer of the company owes; a restaurant outlet is listed only when either is true, a shop always). A System Manager or an Accounts Manager gets every outlet of the companies they may use (User Permission on Company honoured, none = all) without managing it, and may edit (`can_edit`); an outlet's manager (by the product's rule: Crenya POS Manager for a shop, crenya_restaurant's for a restaurant) the outlets they manage, read only; a cashier none. Every credit method below follows the same rule (`credit_view`); every other Shops method still needs the user to manage the shop |
+| `customer_open_invoices(outlet, customer)` | the till's `get_open_invoices` answer for the web (the company's open bills, oldest first, `outstanding` = ERPNext's net balance beside `advance`) plus `modes: [{mode_of_payment, type}]`, the outlet's non-cash modes. Works with the outlet's credit switched off |
+| `settle_customer(outlet, customer, mode_of_payment, amount, invoices, reference, posting_date, request_id)` | records a payment through the till's booking function (`post_payment_entry`; ticked `invoices` in order, else oldest first; more than they owe stays an advance), under the customer's lock (the till's; held elsewhere: "try again"). A non-cash mode of the outlet only (cash is taken at the till), a reference always, `amount` above 0 at the currency's decimals, `posting_date` not after today nor in frozen accounts, `request_id` a UUID kept in `crenya_local_id` (sent again: the same entry is answered; sent again with another amount, mode, customer or ticked bills: refused). For the outlet's managers and accountants, switch on or off. Answers `{payment_entry, allocated, unallocated, invoices, skipped, outstanding, advance}`; the entry is the web user's, its remarks and a Comment on the customer name them and app.crenya.com |
+| `customer_payments(outlet, customer, from_date, to_date)` | the customer's submitted Receive Payment Entries (newest first, at most 200, range optional): `[{payment_entry, payment_type, posting_date, amount, mode_of_payment, reference, invoices, recorded_by}]` |
+| `payment_receipt_pdf(outlet, payment_entry, lang="en")` | the PDF (download) of a submitted Receive entry of the outlet's company whose party is a customer of the outlet, print format "crenya Payment Receipt" (module Crenya Pos Api), English or Arabic: bills cleared and part paid, advance kept, balance at print time, recorded by. Anything else: "This receipt is not on this outlet's House Account" |
 | `ensure_cash_supplier(outlet)`, `expenses_not_booked(outlet?)`, `till_expense(name)`, `retry_expense_booking(name)` | the shop's till expenses: the Cash Supplier button, the Not booked list scoped to the shops the user manages, one expense with its lines and log, and Retry (the engine is told the product); a manager needs no POS Expense right |
 | `promotions(outlet)`, `save_promotion(outlet, promotion)`, `set_promotion_enabled(outlet, name, enabled, modified)` | the shop's promotions: Pricing Rules of its company for its price list (or for every price list, a System Manager's), only the shapes a till evaluates (item code / group / brand; % or amount off, a rate, or buy X get Y, optionally repeating; min / max qty, dates, priority); coupons refused |
 | `loyalty_programs(outlet)`, `save_loyalty_program(outlet, program)` | ERPNext Loyalty Programs of the shop's company with their tiers; created and changed here, never deleted or renamed (end one with its To Date) |

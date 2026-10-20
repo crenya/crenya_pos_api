@@ -61,22 +61,41 @@ def required_actions(profile):
 CREDIT_ACTIONS = ("credit_over_limit", "credit_sale")
 
 
-def approvals_bootstrap(profile) -> dict:
-	"""The bootstrap's `approvals` of a retail till of `profile`. It is always sent to a till. An
+def approvals_bootstrap(profile, roles=None, actions=None) -> dict:
+	"""The bootstrap's `approvals` of a till of `profile`. It is always sent to a retail till. An
 	outlet that sells on account (Credit sales switch) also lists its two credit actions in `labels`
 	(`credit_over_limit`, `credit_sale`; whether each is required is the owner's Check, in `required`),
-	so the till never has to guess the approver role or the wording."""
+	so the till never has to guess the approver role or the wording.
+
+	Another product's till (0.14.0) asks for its own block: `roles` replaces the approver roles, and
+	`actions` (action keys) limits `required` and `labels` to those keys, `labels` always listed, and
+	sends no discount limit (`max_discount_percent` null: that till does not apply the retail one)."""
 	from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
 
+	approver_roles = list(roles) if roles is not None else [APPROVER_ROLE]
+	if actions is not None:
+		# one action may be named alone: a bare string is that action, never its letters
+		keys = {actions} if isinstance(actions, str) else set(actions)
+		return {
+			"approver_roles": approver_roles,
+			"max_discount_percent": None,
+			"required": [key for key in required_actions(profile) if key in keys],
+			"labels": _labels(keys),
+		}
 	block = {
-		"approver_roles": [APPROVER_ROLE],
+		"approver_roles": approver_roles,
 		"max_discount_percent": max_discount_percent(profile),
 		"required": required_actions(profile),
 	}
 	if cint(profile.get(CREDIT_SALES_FIELD)):
-		block["labels"] = [
-			{"action": key, "label": label, "label_ar": label_ar}
-			for key, _field, label, label_ar in APPROVAL_ACTIONS
-			if key in CREDIT_ACTIONS
-		]
+		block["labels"] = _labels(CREDIT_ACTIONS)
 	return block
+
+
+def _labels(keys):
+	"""[{action, label, label_ar}] of the actions in `keys`, in APPROVAL_ACTIONS order."""
+	return [
+		{"action": key, "label": label, "label_ar": label_ar}
+		for key, _field, label, label_ar in APPROVAL_ACTIONS
+		if key in keys
+	]

@@ -27,7 +27,14 @@ from crenya_pos_api.sync.context import (
 	money_precision,
 	profile_users,
 )
-from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, customer_credit_limits
+from crenya_pos_api.sync.credit import (
+	CREDIT_ENABLED_FIELD,
+	CREDIT_SALES_FIELD,
+	credit_enabled_for,
+	customer_credit_limits,
+	is_credit_device,
+	sends_credit_flag,
+)
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.promotions import rule_is_active
@@ -115,6 +122,9 @@ class EntitySpec:
 SELLABLE_SCOPE = "sellable"
 # the cursor scope of the customer pull of an outlet that sells on account (0.13.0)
 CREDIT_SCOPE = "credit"
+# the same for a customer-flag device, whose records also carry `credit_enabled` (0.14.0): a cursor
+# issued under CREDIT_SCOPE restarts once, so the device gets every customer's flag
+CREDIT_FLAG_SCOPE = "credit_flag"
 
 
 class ItemSpec(EntitySpec):
@@ -336,6 +346,8 @@ class CustomerSpec(EntitySpec):
 			columns.append(table.crenya_local_id)
 		if meta.has_field(GSTIN_FIELD):
 			columns.append(getattr(table, GSTIN_FIELD))
+		if meta.has_field(CREDIT_ENABLED_FIELD):
+			columns.append(getattr(table, CREDIT_ENABLED_FIELD))
 		return columns
 
 	def build(self, rows, ctx):
@@ -355,21 +367,36 @@ class CustomerSpec(EntitySpec):
 			}
 			for row in rows
 		]
-		if cint(ctx.profile.get(CREDIT_SALES_FIELD)):
-			# an outlet that sells on account: the limit as ERPNext reads it (null: no limit); a limit
-			# edited on the Customer bumps its `modified`, one on the group or company does not (the
-			# online status corrects it at the next check)
+		if self._sends_limit(ctx):
+			# an outlet that sells on account, to a device that may take credit: the limit as ERPNext
+			# reads it (null: no limit); a limit edited on the Customer bumps its `modified`, one on
+			# the group or company does not (the online status corrects it at the next check)
 			precision = money_precision(ctx.currency)
 			limits = customer_credit_limits(rows, ctx.company)
 			for record in records:
 				limit = limits[record["name"]]
 				record["credit_limit"] = None if limit is None else format_money(limit, precision)
+		if sends_credit_flag(ctx):
+			# a customer-flag device (restaurant D6): may the customer be put on a House Account. A
+			# change of the flag or of `disabled` bumps the Customer's `modified`, so the record is
+			# sent again; that `modified` is what the till echoes as the sale's credit_customer_as_of
+			by_name = {row.name: row for row in rows}
+			for record in records:
+				record["credit_enabled"] = credit_enabled_for(by_name[record["name"]])
 		return records
 
 	def cursor_scope(self, ctx):
 		# the records carry `credit_limit` only while the outlet sells on account: switching it on (or
-		# off) sends every customer again once, so a till never keeps a customer without the limit
-		return CREDIT_SCOPE if cint(ctx.profile.get(CREDIT_SALES_FIELD)) else None
+		# off) sends every customer again once, so a till never keeps a customer without the limit;
+		# a customer-flag device has its own scope for the same reason with `credit_enabled`
+		if not self._sends_limit(ctx):
+			return None
+		return CREDIT_FLAG_SCOPE if sends_credit_flag(ctx) else CREDIT_SCOPE
+
+	@staticmethod
+	def _sends_limit(ctx):
+		# a device that never takes credit (waiter, kds) gets today's record and cursor
+		return bool(cint(ctx.profile.get(CREDIT_SALES_FIELD))) and is_credit_device(ctx.device_type)
 
 
 class StockSpec(EntitySpec):

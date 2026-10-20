@@ -1,6 +1,8 @@
 """Shops web admin: credit customers, the credit limit edit and the Credit sales / Expenses settings
 (crenya_pos_api/api/web_admin/credit.py, settings.py), retail P1 task 12, and the rule that every
-Shops web-admin method needs a browser session.
+Shops web-admin method needs a browser session. Restaurant credit 0.14.0 (Task 4): the credit pages
+are product-aware (a test "restaurant" product stands in for crenya_restaurant's), and a shop's
+answers are 0.13.2's plus the new keys only.
 
 Run with: bench --site <test-site> run-tests --app crenya_pos_api --module
 crenya_pos_api.tests.test_integration_web_admin_credit
@@ -11,12 +13,15 @@ from decimal import Decimal
 from unittest import mock
 
 import frappe
+from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 from crenya_pos_api.api import web_admin
+from crenya_pos_api.api.web_admin import credit as web_credit
+from crenya_pos_api.api.web_admin import scope
 from crenya_pos_api.expenses import booking
 from crenya_pos_api.sync.approvals import APPROVER_ROLE
-from crenya_pos_api.sync.context import POS_USER_ROLE
-from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
+from crenya_pos_api.sync.context import POS_USER_ROLE, profile_users
+from crenya_pos_api.sync.credit import CREDIT_ENABLED_FIELD, CREDIT_SALES_FIELD
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.sync_case import new_id
 from crenya_pos_api.tests.test_integration_credit import CreditCase, make_customer
@@ -32,6 +37,96 @@ from crenya_pos_api.tests.web_admin_case import (
 from crenya_pos_api.utils.dates import format_db_datetime
 
 ACCOUNTS = "_test_crenya_accounts_manager@example.com"
+
+# a restaurant product as crenya_restaurant registers it (Task 22): its outlets are the POS Profiles
+# in restaurant mode, managed by a Restaurant Manager the outlet lists (or every one when it lists
+# nobody)
+RESTAURANT_MANAGER_ROLE = "Restaurant Manager"
+RESTAURANT_A = "_Test Crenya Credit Restaurant A"
+RESTAURANT_B = "_Test Crenya Credit Restaurant B"
+REST_MANAGER = "crenya.rest.manager@example.com"
+REST_MANAGER_B = "crenya.rest.manager.b@example.com"
+# a Bank-type mode of payment both restaurants take (beside Cash)
+SETTLE_BANK = "_Test Crenya Settle Bank"
+
+
+def restaurant_outlets_of(outlet=None):
+	filters = {scope.RESTAURANT_MODE_FIELD: 1}
+	if outlet:
+		filters["name"] = outlet
+	return frappe.get_all("POS Profile", filters=filters, fields=["name", "company"], order_by="name asc")
+
+
+def manages_test_restaurant(roles, user, profile):
+	if "System Manager" in roles:
+		return True
+	users = set(profile_users(profile))
+	return RESTAURANT_MANAGER_ROLE in roles and (not users or user in users)
+
+
+TEST_RESTAURANT = web_credit.CreditProduct(
+	key="restaurant", outlets=restaurant_outlets_of, manages=manages_test_restaurant
+)
+
+
+def ensure_restaurant(name, users, walk_in):
+	"""A restaurant outlet of the test company (crenya_restaurant's field set) taking Cash and
+	SETTLE_BANK, whose Applicable for Users lists `users`."""
+	company = frappe.get_doc("Company", fixtures.COMPANY)
+	profile = fixtures.ensure_pos_profile(
+		company,
+		walk_in,
+		name=name,
+		payments=[{"mode_of_payment": fixtures.CASH, "default": 1}, {"mode_of_payment": SETTLE_BANK}],
+	)
+	if {row.user for row in profile.applicable_for_users} != set(users):
+		profile.set("applicable_for_users", [{"user": user} for user in users])
+		profile.save(ignore_permissions=True)
+	frappe.db.set_value("POS Profile", name, scope.RESTAURANT_MODE_FIELD, 1, update_modified=False)
+	frappe.clear_document_cache("POS Profile", name)
+	return name
+
+
+def setup_restaurant_credit(walk_in):
+	"""crenya_restaurant's POS Profile field, its manager role and users, the bank mode and the two
+	restaurants (A lists REST_MANAGER, B lists REST_MANAGER_B); the test restaurant product
+	registered. Answers the product it replaced (None), for `restore_restaurant_product`."""
+	create_custom_fields(
+		{
+			"POS Profile": [
+				{
+					"fieldname": scope.RESTAURANT_MODE_FIELD,
+					"fieldtype": "Check",
+					"label": "Restaurant mode",
+					"insert_after": "company",
+				}
+			]
+		},
+		ignore_validate=True,
+	)
+	if not frappe.db.exists("Role", RESTAURANT_MANAGER_ROLE):
+		frappe.get_doc({"doctype": "Role", "role_name": RESTAURANT_MANAGER_ROLE, "desk_access": 1}).insert(
+			ignore_permissions=True
+		)
+	ensure_user(MANAGER, [POS_USER_ROLE, APPROVER_ROLE])
+	ensure_user(CASHIER, [POS_USER_ROLE])
+	ensure_user(ACCOUNTS, [POS_USER_ROLE, "Accounts Manager"])
+	ensure_user(REST_MANAGER, [POS_USER_ROLE, RESTAURANT_MANAGER_ROLE])
+	ensure_user(REST_MANAGER_B, [POS_USER_ROLE, RESTAURANT_MANAGER_ROLE])
+	fixtures.ensure_mode_of_payment(SETTLE_BANK, "Bank", frappe.get_doc("Company", fixtures.COMPANY))
+	ensure_restaurant(RESTAURANT_A, [REST_MANAGER], walk_in)
+	ensure_restaurant(RESTAURANT_B, [REST_MANAGER_B], walk_in)
+	frappe.db.commit()  # nosemgrep
+	previous = web_credit.credit_product("restaurant")
+	web_credit.register_credit_product(TEST_RESTAURANT)
+	return previous
+
+
+def restore_restaurant_product(previous):
+	if previous is None:
+		web_credit._PRODUCTS.pop("restaurant", None)
+	else:
+		web_credit.register_credit_product(previous)
 
 
 def credit_limit_rows(customer):
@@ -599,3 +694,202 @@ class TestCreditAndExpenseSettings(WebCreditCase):
 			frappe.db.commit()  # nosemgrep
 
 		self.addCleanup(restore)
+
+
+# the keys a shop's answers had in 0.13.2, and the ones 0.14.0 adds
+ROW_KEYS_0132 = {
+	"customer",
+	"name",
+	"modified",
+	"credit_limit",
+	"limit_source",
+	"outstanding",
+	"available",
+	"over_limit",
+	"open_invoices",
+}
+ANSWER_KEYS_0132 = {"outlet", "currency", "rows", "more", "can_edit"}
+SHOP_KEYS_0132 = {"name", "outlet_name", "company", "currency", "credit_view", "credit_enabled", "can_edit"}
+
+
+class TestShopAnswersUnchanged(WebCreditCase):
+	def test_shop_credit_answers_unchanged(self):
+		"""A shop's credit_customers, credit_shops and save_credit_limit answer 0.13.2's values with the
+		new keys added only; the optional range arguments change no 0.13.2 key; the shop still lists by
+		limit or balance (a House Account flag alone lists nobody on a shop)."""
+		over = make_customer("unchanged", limit=100)
+		self.sell(over, "150.000")
+		flagged = make_customer("unchangedflag", limit=None)
+		frappe.db.set_value("Customer", flagged, CREDIT_ENABLED_FIELD, 1)
+		frappe.db.commit()  # nosemgrep
+		self.as_manager()
+		answer = web_admin.credit_customers(self.profile.name)
+		self.assertEqual(set(answer), ANSWER_KEYS_0132 | {"totals"})
+		rows = rows_by_customer(answer)
+		self.assertNotIn(flagged, rows)
+		row = rows[over]
+		self.assertEqual(
+			set(row), ROW_KEYS_0132 | {"credit_enabled", "mobile_no", "credit_sales", "payments"}
+		)
+		self.assertEqual(
+			(row["credit_limit"], row["limit_source"], row["outstanding"], row["available"]),
+			("100.000", "customer", "150.000", "0.000"),
+		)
+		self.assertEqual((row["over_limit"], row["open_invoices"], row["credit_enabled"]), (True, 1, False))
+		today = frappe.utils.nowdate()
+		ranged = web_admin.credit_customers(self.profile.name, from_date=today, to_date=today)
+		self.assertEqual(set(ranged), set(answer))
+		ranged_row = rows_by_customer(ranged)[over]
+		self.assertEqual({k: ranged_row[k] for k in ROW_KEYS_0132}, {k: row[k] for k in ROW_KEYS_0132})
+		with self.assertRaises(frappe.ValidationError):
+			web_admin.credit_customers(self.profile.name, from_date=today, to_date="2001-01-01")
+		with self.assertRaises(frappe.ValidationError):
+			web_admin.credit_customers(self.profile.name, from_date="19-10-2026")
+		shop = next(s for s in web_admin.credit_shops()["shops"] if s["name"] == self.profile.name)
+		self.assertEqual(set(shop), SHOP_KEYS_0132 | {"credit_on", "owing"})
+		self.assertEqual((shop["credit_enabled"], shop["credit_on"], shop["owing"]), (True, True, True))
+		self.assertEqual(web_admin.credit_shops(), web_admin.credit_shops("shop"))
+		frappe.set_user("Administrator")
+		saved = web_admin.save_credit_limit(self.profile.name, over, "200", row["modified"])
+		self.assertEqual(set(saved), ROW_KEYS_0132 | {"credit_enabled", "mobile_no"})
+		self.assertEqual((saved["credit_limit"], saved["available"]), ("200.000", "50.000"))
+
+
+class RestaurantCreditCase(WebCreditCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls.previous_product = setup_restaurant_credit(cls.profile.customer)
+
+	@classmethod
+	def tearDownClass(cls):
+		restore_restaurant_product(cls.previous_product)
+		super().tearDownClass()
+
+	def set_restaurant_switch(self, outlet, value):
+		saved = frappe.db.get_value("POS Profile", outlet, CREDIT_SALES_FIELD)
+
+		def restore():
+			frappe.db.set_value("POS Profile", outlet, CREDIT_SALES_FIELD, saved or 0, update_modified=False)
+			frappe.clear_document_cache("POS Profile", outlet)
+			frappe.db.commit()  # nosemgrep
+
+		self.addCleanup(restore)
+		frappe.db.set_value("POS Profile", outlet, CREDIT_SALES_FIELD, value, update_modified=False)
+		frappe.clear_document_cache("POS Profile", outlet)
+		frappe.db.commit()  # nosemgrep
+
+
+def shop_names(answer):
+	return [shop["name"] for shop in answer["shops"]]
+
+
+class TestRestaurantCreditPages(RestaurantCreditCase):
+	def test_restaurant_outlet_resolves_restaurant_product(self):
+		self.assertEqual(scope.outlet_product(RESTAURANT_A), "restaurant")
+		self.assertEqual(scope.outlet_product(self.profile.name), "shop")
+		self.assertIsNone(scope.outlet_product("No such outlet"))
+		self.assertIsNone(scope.outlet_product(None))
+		self.assertEqual(web_credit.outlet_credit_product(RESTAURANT_A).key, "restaurant")
+		self.assertEqual(web_credit.outlet_credit_product(self.profile.name).key, "shop")
+		answer = web_admin.credit_customers(RESTAURANT_A)
+		self.assertEqual(answer["outlet"], RESTAURANT_A)
+		# a restaurant outlet is no shop: the shop pages that are not credit still refuse it
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.outlet_settings(RESTAURANT_A)
+		# until crenya_restaurant registers its product, a restaurant outlet opens nothing (0.13.2)
+		web_credit._PRODUCTS.pop("restaurant")
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				web_admin.credit_customers(RESTAURANT_A)
+			self.assertEqual(web_admin.credit_shops("restaurant"), {"shops": []})
+		finally:
+			web_credit.register_credit_product(TEST_RESTAURANT)
+
+	def test_restaurant_manager_reads_own_outlet_only(self):
+		self.sell(make_customer("restown", limit=None), "5.000")
+		self.set_restaurant_switch(RESTAURANT_A, 1)
+		frappe.set_user(REST_MANAGER)
+		answer = web_admin.credit_customers(RESTAURANT_A)
+		self.assertIs(answer["can_edit"], False)
+		for outlet in (RESTAURANT_B, self.profile.name):
+			with self.assertRaises(frappe.PermissionError, msg=outlet):
+				web_admin.credit_customers(outlet)
+		listed = shop_names(web_admin.credit_shops("restaurant"))
+		self.assertIn(RESTAURANT_A, listed)
+		self.assertNotIn(RESTAURANT_B, listed)
+		self.assertEqual(web_admin.credit_shops(), {"shops": []})
+		# a shop's manager is no restaurant manager
+		self.as_manager()
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.credit_customers(RESTAURANT_A)
+		self.assertNotIn(RESTAURANT_A, shop_names(web_admin.credit_shops("restaurant")))
+		frappe.set_user(CASHIER)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.credit_customers(RESTAURANT_A)
+
+	def test_accountant_reads_every_outlet_of_permitted_company(self):
+		self.sell(make_customer("restacct", limit=None), "5.000")
+		frappe.set_user(ACCOUNTS)
+		for outlet in (RESTAURANT_A, RESTAURANT_B):
+			answer = web_admin.credit_customers(outlet)
+			self.assertEqual((answer["outlet"], answer["can_edit"]), (outlet, True))
+		shops = {shop["name"]: shop for shop in web_admin.credit_shops("restaurant")["shops"]}
+		self.assertLessEqual({RESTAURANT_A, RESTAURANT_B}, set(shops))
+		self.assertIs(shops[RESTAURANT_B]["owing"], True)
+		self.assertIs(shops[RESTAURANT_B]["can_edit"], True)
+		frappe.set_user("Administrator")
+		permission = frappe.get_doc(
+			{
+				"doctype": "User Permission",
+				"user": ACCOUNTS,
+				"allow": "Company",
+				"for_value": "_Test Crenya Other Company",
+			}
+		)
+		permission.flags.ignore_links = True
+		permission.insert(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep
+		try:
+			frappe.set_user(ACCOUNTS)
+			with self.assertRaises(frappe.PermissionError):
+				web_admin.credit_customers(RESTAURANT_A)
+			self.assertNotIn(RESTAURANT_A, shop_names(web_admin.credit_shops("restaurant")))
+		finally:
+			frappe.set_user("Administrator")
+			frappe.delete_doc("User Permission", permission.name, ignore_permissions=True, force=True)
+			frappe.db.commit()  # nosemgrep
+
+	def test_limits_editable_by_accountants_only(self):
+		"""P4: a restaurant's manager reads limits and facilities, an accountant changes them."""
+		customer = make_customer("restlimit", limit=50)
+		self.sell(customer, "10.000")
+		frappe.set_user(REST_MANAGER)
+		row = rows_by_customer(web_admin.credit_customers(RESTAURANT_A))[customer]
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.save_credit_limit(RESTAURANT_A, customer, "500", row["modified"])
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.save_credit_facility(RESTAURANT_A, customer, 1)
+		self.assertEqual(credit_limit_rows(customer)[0]["credit_limit"], 50)
+		frappe.set_user(ACCOUNTS)
+		saved = web_admin.save_credit_limit(RESTAURANT_A, customer, "500", row["modified"])
+		self.assertEqual(saved["credit_limit"], "500.000")
+		self.assertIs(web_admin.save_credit_facility(RESTAURANT_A, customer, 1)["credit_enabled"], True)
+
+	def test_restaurant_listed_when_on_or_owing(self):
+		"""RC16: a restaurant outlet is listed while its switch is on or a customer of its company
+		owes; switched off with nobody owing, it is not (a shop is listed either way)."""
+		frappe.set_user(ACCOUNTS)
+		self.set_restaurant_switch(RESTAURANT_A, 0)
+		with mock.patch.object(web_credit, "owing_companies", return_value=set()):
+			answer = web_admin.credit_shops("restaurant")
+			self.assertNotIn(RESTAURANT_A, shop_names(answer))
+			self.assertIn(self.profile.name, shop_names(web_admin.credit_shops("shop")))
+			self.set_restaurant_switch(RESTAURANT_A, 1)
+			shop = next(s for s in web_admin.credit_shops("restaurant")["shops"] if s["name"] == RESTAURANT_A)
+			self.assertEqual((shop["credit_on"], shop["owing"]), (True, False))
+			self.set_restaurant_switch(RESTAURANT_A, 0)
+		with mock.patch.object(web_credit, "owing_companies", return_value={fixtures.COMPANY}):
+			shop = next(s for s in web_admin.credit_shops("restaurant")["shops"] if s["name"] == RESTAURANT_A)
+			self.assertEqual((shop["credit_on"], shop["owing"]), (False, True))
+		self.assertEqual(web_admin.credit_shops("no such product"), {"shops": []})

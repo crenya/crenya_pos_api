@@ -276,7 +276,7 @@ class TestTickedReceipts(TicksCase):
 		customer = make_customer("manyticks", limit=None)
 		payload = self.payment(customer, "1.000", invoices=[f"SINV-NOPE-{n}" for n in range(201)])
 		result = self.assertOk(self.pay(payload))
-		self.assertEqual(len(result["skipped"]), 201)
+		self.assertEqual(len(result["payment"]["skipped"]), 201)
 		self.assertEqual(result["payment"]["unallocated"], "1.000")
 
 	def test_invoices_list_too_long_refused(self):

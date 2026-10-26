@@ -28,6 +28,9 @@ LOCATION_FIELD = "crenya_location"
 SALES_USER = "_test_crenya_sales_user@example.com"
 GRANT = {"approved_by": "manager@example.com", "approved_at": "2026-10-26T08:15:30.123Z"}
 EXTENDER_HOOKS = {"crenya_pos_customer_extenders": [dummy.CUSTOMER_EXTENDER]}
+# no customer extender, whatever the site's apps hook (crenya_restaurant registers one, Task 9)
+NO_EXTENDER = {"crenya_pos_customer_extenders": []}
+XSS = '<img src=x onerror="alert(1)">'
 
 
 def comments(customer):
@@ -80,7 +83,7 @@ class TestCustomerExtender(SyncCase):
 
 	def test_retail_payload_unchanged(self):
 		payload = self.customer_payload("Retail Shape Customer")
-		result, event_id = self.push_as_cashier(payload)
+		result, event_id = self.push_as_cashier(payload, NO_EXTENDER)
 		self.assertOk(result)
 		doc = frappe.get_doc("Customer", result["name"])
 		self.assertEqual(
@@ -114,7 +117,7 @@ class TestCustomerExtender(SyncCase):
 	def test_credit_facility_ignored_without_extender(self):
 		payload = self.customer_payload("No Extender Customer")
 		payload["credit_facility"] = dict(GRANT)
-		result, event_id = self.push_as_cashier(payload)
+		result, event_id = self.push_as_cashier(payload, NO_EXTENDER)
 		self.assertOk(result)
 		self.assertEqual(frappe.db.get_value("Customer", result["name"], CREDIT_ENABLED_FIELD), 0)
 		self.assertIn("credit_facility", event_note(event_id))
@@ -258,3 +261,55 @@ class TestCustomerExtender(SyncCase):
 		self.assertEqual(records[names[0]]["location"], "Ruwi, near the clock tower")
 		self.assertIn("location", records[names[1]])
 		self.assertIsNone(records[names[1]]["location"])
+
+	def test_location_must_be_one_line(self):
+		for bad in ("Ruwi\nnear the souq", "Ruwi\x00", "Ruwi\tsouq", "Ruwi\u2028souq"):
+			payload = self.customer_payload("Two Line Customer")
+			payload["location"] = bad
+			result, _event_id = self.push_as_cashier(payload, NO_EXTENDER)
+			self.assertError(result, "validation", False)
+			self.assertIn("one line", result["error"]["message"])
+			self.assertFalse(frappe.db.exists("Customer", {"crenya_local_id": payload["local_id"]}))
+		payload = self.customer_payload("Spaced Location Customer")
+		payload["location"] = "  Ruwi    near  the souq "
+		result, _event_id = self.push_as_cashier(payload, NO_EXTENDER)
+		self.assertOk(result)
+		self.assertEqual(
+			frappe.db.get_value("Customer", result["name"], LOCATION_FIELD), "Ruwi near the souq"
+		)
+
+	def test_comments_are_escaped(self):
+		device_id = new_id()
+		frappe.set_user(self.cashier)
+		try:
+			device_api.register_device(
+				device_id=device_id, device_name=f"Till {XSS}", pos_profile=self.profile.name
+			)
+		finally:
+			frappe.set_user("Administrator")
+		payload = self.customer_payload("Escaped Comment Customer")
+		payload["credit_facility"] = {**GRANT, "approved_by": XSS}
+		event = self.event(payload, "Customer")
+		frappe.set_user(self.cashier)
+		try:
+			with dummy.fake_hooks(EXTENDER_HOOKS):
+				[result] = sync_api.push_batch(device_id=device_id, events=[event])
+		finally:
+			frappe.set_user("Administrator")
+		self.assertOk(result)
+		texts = comments(result["name"])
+		self.assertEqual(len(texts), 2, texts)
+		for text in texts:
+			self.assertNotIn("<img", text)
+			self.assertIn("&lt;img", text)
+
+	def test_till_path_refuses_a_web_grant(self):
+		payload = self.customer_payload("Web Grant On Till Customer")
+		hooks = {
+			"crenya_pos_customer_extenders": [
+				"crenya_pos_api.tests.extension_dummy.extend_customer_web_grant"
+			]
+		}
+		result, _event_id = self.push_as_cashier(payload, hooks)
+		self.assertError(result, "internal", True)
+		self.assertFalse(frappe.db.exists("Customer", {"crenya_local_id": payload["local_id"]}))

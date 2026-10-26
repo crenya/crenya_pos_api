@@ -389,7 +389,11 @@ def extend_invoice(ctx, doc, data, notes):
 
 def extend_customer(ctx, customer, data, notes):
 	"""Run the customer extenders on a till's new Customer, before it is inserted; returns the
-	Comment texts they gave back (added after the insert), in hook order."""
+	Comment texts they gave back (added after the insert), in hook order, HTML-escaped: an
+	extender returns plain text (it may hold a device name or an approver from the payload) and a
+	Comment's content is shown as HTML. On this path the only grant an extender may set is "till"."""
+	from crenya_pos_api.sync.credit import GRANT_FLAG, TILL_GRANT
+
 	texts = []
 	for function in customer_extenders():
 		text = function(ctx, customer, data, notes)
@@ -401,7 +405,12 @@ def extend_customer(ctx, customer, data, notes):
 				f"comment text or None, not {type(text).__name__}"
 			)
 		if text.strip():
-			texts.append(text.strip())
+			texts.append(frappe.utils.escape_html(text.strip()))
+	grant = customer.flags.get(GRANT_FLAG)
+	if grant is not None and grant != TILL_GRANT:
+		_fail(
+			f"{CUSTOMER_EXTENDER_HOOK}: a till's customer may only carry the {TILL_GRANT!r} grant, not {grant!r}"
+		)
 	return texts
 
 

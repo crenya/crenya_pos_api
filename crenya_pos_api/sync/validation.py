@@ -6,6 +6,7 @@ field, and returns normalized values (Decimals, ints) for the builders.
 """
 
 import re
+import unicodedata
 from datetime import date, time
 from decimal import Decimal
 
@@ -160,11 +161,43 @@ def validate_customer_payload(payload):
 		"territory": _optional_str(payload, "territory"),
 		# optional (0.15.0, provider settlement NC2): one line the cashier typed, Customer
 		# `crenya_location`. Absent (a retail till, a till before 0.15.0): None
-		"location": _optional_str(payload, "location", max_length=MAX_LOCATION_LENGTH),
+		"location": clean_location(payload.get("location")),
 		# optional (0.15.0, NC3/NC4): the till manager's House Account grant for this new customer.
 		# Only the customer extenders read it; absent: None
 		"credit_facility": _validate_credit_facility(payload.get("credit_facility")),
 	}
+
+
+def _translated(message):
+	"""`frappe._` where a site is loaded (a push, a web method), the English text otherwise."""
+	try:
+		import frappe
+
+		return frappe._(message)
+	except Exception:
+		return message
+
+
+# what pos-core's one-line rule refuses besides `char::is_control`: line and paragraph separators
+_LINE_SEPARATORS = frozenset({"\u2028", "\u2029"})
+
+
+def clean_location(value, field="location"):
+	"""A customer's location (Customer `crenya_location`): one line of at most 140 characters, the
+	till's rule (pos-core LOCATION_MAX / LOCATION_ONE_LINE). Stripped, runs of spaces collapsed to
+	one; a control character (a new line, a tab, NUL, ...) or a line / paragraph separator is
+	refused. None or blank: None. Shared by the till's Customer payload and the web's New customer;
+	raises SyncError(validation)."""
+	if value is None or (isinstance(value, str) and not value.strip()):
+		return None
+	if not isinstance(value, str):
+		_fail(_translated("{0} must be a string").format(field))
+	if any(unicodedata.category(char) == "Cc" or char in _LINE_SEPARATORS for char in value):
+		_fail(_translated("{0} must be one line").format(field))
+	value = " ".join(value.split())
+	if len(value) > MAX_LOCATION_LENGTH:
+		_fail(_translated("{0} is longer than {1} characters").format(field, MAX_LOCATION_LENGTH))
+	return value
 
 
 def _validate_credit_facility(value):

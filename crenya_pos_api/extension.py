@@ -24,10 +24,11 @@ between releases. Register the extensions in your app's `hooks.py`:
         # fn(ctx, customer, data, notes) -> str | None: a till's new Customer, before insert;
         # `data` is the validated payload: `data["location"]` and `data["credit_facility"]` (the
         # till manager's grant {approved_by, approved_at}, or None) included. Return a Comment text
-        # (added after the insert) or None. To switch the House Account on for this new customer
-        # after your own check of the approver, set `customer.crenya_credit_enabled = 1` and
-        # `customer.flags[GRANT_FLAG] = "till"`: nothing else lets a device past the editor check,
-        # and the flag counts only on the insert of a new customer. Without an extender
+        # (added after the insert, HTML-escaped: return plain text) or None. To switch the House
+        # Account on for this new customer after your own check of the approver, set
+        # `customer.crenya_credit_enabled = 1` and `customer.flags[GRANT_FLAG] = "till"`: nothing
+        # else lets a device past the editor check, the flag counts only inside the insert of a
+        # new customer, and any other value on this path fails the event. Without an extender
         # `credit_facility` is dropped (a note on the Sync Event).
         crenya_pos_customer_extenders = ["my_app.sync.customer.extend"]
 
@@ -73,6 +74,9 @@ Names:
                 device rows until your commit: call it first, then set `enabled` and commit.
         mode_of_payment_account(mode, company): the company's account of a Mode of Payment, or
                 None when it has none (the lookup the Sales Invoice payments use).
+        clean_location(value, field="location"): a customer's location as the till's rule wants
+                it (one line, runs of spaces collapsed, at most 140; None when blank), or
+                SyncError(validation).
         GRANT_FLAG: the `customer.flags` key that lets server code switch on the House Account of
                 a new customer it creates ("till" from a customer extender, "web" from the web's
                 New customer); never filled from a request.
@@ -100,6 +104,7 @@ from crenya_pos_api.sync.errors import (
 )
 from crenya_pos_api.sync.invoice_builder import mode_of_payment_account
 from crenya_pos_api.sync.pull import EntitySpec
+from crenya_pos_api.sync.validation import clean_location
 
 __all__ = [
 	"DEFAULT_DEVICE_TYPE",
@@ -117,6 +122,7 @@ __all__ = [
 	"EntitySpec",
 	"ExtensionHookError",
 	"SyncError",
+	"clean_location",
 	"device_enable_refusal",
 	"mode_of_payment_account",
 	"registry",

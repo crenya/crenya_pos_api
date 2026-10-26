@@ -7,6 +7,7 @@ Other Frappe apps plug into the till protocol from their `hooks.py`:
         crenya_pos_bootstrap = ["<dotted path of fn(ctx, doc)>"]          # mutates the bootstrap dict
         crenya_pos_capabilities = ["<dotted path of fn() -> dict>"]       # merged into `features`
         crenya_pos_invoice_extenders = ["<dotted path of fn(ctx, doc, data, notes)>"]
+        crenya_pos_customer_extenders = ["<dotted path of fn(ctx, customer, data, notes) -> str | None>"]
         crenya_pos_device_roles = ["<role>", {"role": "<role>", "device_types": ["<device_type>", ...]}]
         crenya_pos_profile_flags = ["<dotted path of fn(names) -> {profile name: {flag: value}}>"]
         crenya_pos_entitlement = "<dotted path of fn() -> dict>"       # the plan's caps, last app wins
@@ -39,6 +40,7 @@ AGGREGATE_HOOK = "crenya_pos_aggregates"
 BOOTSTRAP_HOOK = "crenya_pos_bootstrap"
 CAPABILITY_HOOK = "crenya_pos_capabilities"
 INVOICE_EXTENDER_HOOK = "crenya_pos_invoice_extenders"
+CUSTOMER_EXTENDER_HOOK = "crenya_pos_customer_extenders"
 DEVICE_ROLE_HOOK = "crenya_pos_device_roles"
 PROFILE_FLAG_HOOK = "crenya_pos_profile_flags"
 ENTITLEMENT_HOOK = "crenya_pos_entitlement"
@@ -318,6 +320,11 @@ def invoice_extenders():
 	return _cached(INVOICE_EXTENDER_HOOK, lambda: _load_functions(INVOICE_EXTENDER_HOOK))
 
 
+def customer_extenders():
+	"""`crenya_pos_customer_extenders` functions: fn(ctx, customer, data, notes) -> str | None."""
+	return _cached(CUSTOMER_EXTENDER_HOOK, lambda: _load_functions(CUSTOMER_EXTENDER_HOOK))
+
+
 def profile_flag_hooks():
 	"""`crenya_pos_profile_flags` functions: fn(names) -> {profile name: {flag: value}}."""
 	return _cached(PROFILE_FLAG_HOOK, lambda: _load_functions(PROFILE_FLAG_HOOK))
@@ -378,6 +385,33 @@ def extend_invoice(ctx, doc, data, notes):
 	for function in invoice_extenders():
 		function(ctx, doc, data, notes)
 	return doc
+
+
+def extend_customer(ctx, customer, data, notes):
+	"""Run the customer extenders on a till's new Customer, before it is inserted; returns the
+	Comment texts they gave back (added after the insert), in hook order, HTML-escaped: an
+	extender returns plain text (it may hold a device name or an approver from the payload) and a
+	Comment's content is shown as HTML. On this path the only grant an extender may set is "till"."""
+	from crenya_pos_api.sync.credit import GRANT_FLAG, TILL_GRANT
+
+	texts = []
+	for function in customer_extenders():
+		text = function(ctx, customer, data, notes)
+		if text is None:
+			continue
+		if not isinstance(text, str):
+			_fail(
+				f"{CUSTOMER_EXTENDER_HOOK}: {function.__module__}.{function.__name__} must return a "
+				f"comment text or None, not {type(text).__name__}"
+			)
+		if text.strip():
+			texts.append(frappe.utils.escape_html(text.strip()))
+	grant = customer.flags.get(GRANT_FLAG)
+	if grant is not None and grant != TILL_GRANT:
+		_fail(
+			f"{CUSTOMER_EXTENDER_HOOK}: a till's customer may only carry the {TILL_GRANT!r} grant, not {grant!r}"
+		)
+	return texts
 
 
 # device roles

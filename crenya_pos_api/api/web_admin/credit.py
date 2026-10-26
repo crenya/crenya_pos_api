@@ -47,6 +47,8 @@ from crenya_pos_api.sync.credit import (
 	CREDIT_EDITOR_ROLES,
 	CREDIT_ENABLED_FIELD,
 	CREDIT_SALES_FIELD,
+	GRANT_FLAG,
+	WEB_GRANT,
 	credited_to_account,
 	customer_advance,
 	customer_credit_limit_sources,
@@ -55,6 +57,7 @@ from crenya_pos_api.sync.credit import (
 	open_invoices_answer,
 	payable_of,
 )
+from crenya_pos_api.sync.customer import LOCATION_FIELD, _default_customer_group, _default_territory
 from crenya_pos_api.sync.customer_payment import (
 	LOCAL_ID_FIELD,
 	PAYMENT_ENTRY,
@@ -63,8 +66,9 @@ from crenya_pos_api.sync.customer_payment import (
 	post_payment_entry,
 )
 from crenya_pos_api.sync.customer_payment import _invoices as ticked_invoice_names
-from crenya_pos_api.sync.errors import SyncError
+from crenya_pos_api.sync.errors import SyncError, error_dict
 from crenya_pos_api.sync.events import customer_lock_key, named_lock
+from crenya_pos_api.sync.validation import clean_location
 from crenya_pos_api.utils.dates import format_db_datetime, site_naive_to_utc_iso
 from crenya_pos_api.utils.decimal import (
 	DecimalParseError,
@@ -112,6 +116,18 @@ class CreditProduct(NamedTuple):
 	outlets: Callable[[str | None], list]
 	# (roles, user, POS Profile) -> whether the user manages the outlet (reads its credit page)
 	manages: Callable[[set, str, Any], bool]
+	# (outlet context) -> the customers this product's credit page leaves out: never listed, never
+	# making the company "owe", never settled here (PS8: a restaurant's service providers, settled on
+	# their own page). None: nobody is left out (the shop)
+	excluded_customers: Callable[[WebAdminContext], set[str]] | None = None
+	# the refusal of a Settle of an excluded customer, with "{name}" for the customer's name, in
+	# English (it goes through frappe._), e.g. "{name} is a service provider: record its payment on
+	# Service providers → Settle"
+	excluded_refusal: str | None = None
+	# (roles, user, POS Profile) -> whether the user may switch the House Account on for a customer
+	# they create on the page (NC5: a restaurant's outlet manager). None: P4 roles only
+	# (CREDIT_EDITOR_ROLES), who always may. An existing customer's switch stays P4 only
+	may_enable_new: Callable[[set, str, Any], bool] | None = None
 
 
 def _manages_shop(roles, user, profile) -> bool:
@@ -145,6 +161,37 @@ def outlet_credit_product(outlet) -> CreditProduct | None:
 
 def is_restaurant(ctx) -> bool:
 	return getattr(ctx, "credit_product", SHOP.key) == RESTAURANT
+
+
+def _ctx_product(ctx) -> CreditProduct:
+	return credit_product(getattr(ctx, "credit_product", None)) or SHOP
+
+
+def excluded_customers(ctx) -> set[str]:
+	"""The customers the outlet's credit product leaves out of its page (`CreditProduct.
+	excluded_customers`; PS8), read once per call: an empty set for a shop or a product without the
+	seam."""
+	seam = _ctx_product(ctx).excluded_customers
+	if seam is None:
+		return set()
+	return {name for name in (seam(ctx) or ()) if isinstance(name, str)}
+
+
+def excluded_refusal(ctx, customer) -> str | None:
+	"""Why `customer` cannot be settled on the outlet's page (the product's words, `{name}` its
+	customer name), or None when the product does not leave it out."""
+	if customer not in excluded_customers(ctx):
+		return None
+	text = _ctx_product(ctx).excluded_refusal or "{name} cannot be settled on this page"
+	name = frappe.db.get_value(CUSTOMER, customer, "customer_name") or customer
+	# a refusal is shown as HTML (msgprint): the name is the user's text
+	return _(text).format(name=frappe.utils.escape_html(name))
+
+
+def _refuse_excluded(ctx, customer):
+	refusal = excluded_refusal(ctx, customer)
+	if refusal:
+		refuse(refusal)
 
 
 def _outlet_customer_filter(ctx):
@@ -198,7 +245,8 @@ def _row(customer, limit, source, outstanding, open_invoices, precision) -> dict
 	`available` null for a customer with no limit, `limit_source` where the limit is read from
 	("customer", "group", "company", or null), `over_limit` the balance above the limit,
 	`credit_enabled` the customer's stored House Account flag (what the toggle shows) and
-	`mobile_no` its phone (the page's search reads it)."""
+	`mobile_no` its phone (the page's search reads it), `location` the one line typed with it (null
+	when none)."""
 	outstanding = quantize(outstanding, precision)
 	over_limit = limit is not None and outstanding > quantize(limit, precision)
 	available = None if limit is None else max(quantize(limit, precision) - outstanding, Decimal(0))
@@ -214,6 +262,7 @@ def _row(customer, limit, source, outstanding, open_invoices, precision) -> dict
 		"open_invoices": open_invoices,
 		"credit_enabled": bool(cint(customer.get(CREDIT_ENABLED_FIELD))),
 		"mobile_no": customer.get("mobile_no") or None,
+		"location": customer.get(LOCATION_FIELD) or None,
 	}
 
 
@@ -240,10 +289,15 @@ def _own_candidates(ctx) -> list:
 	)
 
 
+def _location_fields() -> list[str]:
+	return [LOCATION_FIELD] if frappe.get_meta(CUSTOMER).has_field(LOCATION_FIELD) else []
+
+
 def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 	"""(rows, more): the outlet's credit customers (`only`: that one customer alone), over the limit
 	first, then the biggest balance. A shop lists those with a limit of their own for its company or
-	a balance, a restaurant those with the House Account on or a balance (`_own_candidates`).
+	a balance, a restaurant those with the House Account on or a balance (`_own_candidates`), less
+	the customers the product leaves out (`excluded_customers`; `only` is answered whatever).
 	Candidates and the first ordering come from grouped queries; ERPNext's exact balance is read for
 	the MAX_CREDIT_ROWS listed only, and they are ordered again."""
 	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
@@ -271,7 +325,7 @@ def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 		counts, balances, more = _balances(ctx)
 		own = _own_candidates(ctx)
 		more = more or len(own) > MAX_CANDIDATES
-		names = sorted(set(own[:MAX_CANDIDATES]) | set(counts) | set(balances))
+		names = sorted((set(own[:MAX_CANDIDATES]) | set(counts) | set(balances)) - excluded_customers(ctx))
 	if not names:
 		return [], False
 	filters = {"name": ["in", names]}
@@ -287,6 +341,7 @@ def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 			"mobile_no",
 			"disabled",
 			CREDIT_ENABLED_FIELD,
+			*_location_fields(),
 		],
 	)
 	limits = customer_credit_limit_sources(customers, ctx.company)
@@ -488,7 +543,10 @@ def credit_customers(outlet: str, from_date: str | None = None, to_date: str | N
 	CC8: `credit_sales` and `payments` are the customer's for `from_date`..`to_date` (YYYY-MM-DD,
 	either open; default all time, `credit_sales_of`, `payments_of`); `outstanding` stays ERPNext's
 	balance today, whatever the range. `totals` {credit_sales, payments, outstanding} sums the rows
-	listed (the Grand total row)."""
+	listed (the Grand total row).
+
+	`new_customer` {available, may_enable, may_set_limit} (0.15.0, NC5): what the page's New customer
+	dialog offers the user (`new_customer_rights`); a server without the key has no such dialog."""
 	ctx = credit_view(outlet)
 	first, last = parse_range(from_date, to_date)
 	rows, more = credit_rows(ctx)
@@ -506,6 +564,7 @@ def credit_customers(outlet: str, from_date: str | None = None, to_date: str | N
 		"more": more,
 		"can_edit": _is_credit_editor(),
 		"totals": range_totals(rows, precision),
+		"new_customer": new_customer_rights(ctx),
 	}
 
 
@@ -545,31 +604,69 @@ def credit_editor(outlet, refusal=None) -> WebAdminContext:
 	return credit_view(outlet)
 
 
-def owing_companies(companies) -> set:
+def owing_companies(companies, excluded=None) -> set:
 	"""The companies of `companies` where a House Account is in use: a submitted sale made at a till
 	(it has a POS Profile) that is still outstanding, or any customer with the House Account facility
 	on. An ordinary unpaid desk invoice does not count, so an outlet that never switched credit on
-	does not grow a House Account tab because the company has a B2B receivable."""
+	does not grow a House Account tab because the company has a B2B receivable. `excluded`
+	({company: customers}, PS8) leaves those customers of a company out of both rules; a company
+	not in it (a shop's, always) is read as before."""
 	if not companies:
 		return set()
+	excluded = {
+		company: names for company, names in (excluded or {}).items() if names and company in companies
+	}
+	plain = set(companies) - set(excluded)
+	owing = set()
 	if frappe.db.exists(CUSTOMER, {CREDIT_ENABLED_FIELD: 1, "disabled": 0}):
-		return set(companies)
-	invoice = frappe.qb.DocType("Sales Invoice")
-	rows = (
-		frappe.qb.from_(invoice)
-		.select(invoice.company)
-		.where(
-			invoice.company.isin(list(companies))
-			& (invoice.docstatus == 1)
-			& (invoice.is_return == 0)
-			& (invoice.outstanding_amount > 0)
-			& invoice.pos_profile.isnotnull()
-			& (invoice.pos_profile != "")
+		owing |= plain
+	elif plain:
+		owing |= _till_sale_owing(plain)
+	for company, names in excluded.items():
+		enabled = frappe.get_all(
+			CUSTOMER,
+			filters=[[CREDIT_ENABLED_FIELD, "=", 1], ["disabled", "=", 0], ["name", "not in", list(names)]],
+			pluck="name",
+			limit=1,
 		)
-		.groupby(invoice.company)
-		.run()
+		if enabled:
+			owing.add(company)
+		elif _till_sale_owing({company}, names):
+			owing.add(company)
+	return owing
+
+
+def _till_sale_owing(companies, excluded=()) -> set:
+	"""The companies of `companies` with a submitted till sale still outstanding, of a customer not
+	in `excluded`."""
+	invoice = frappe.qb.DocType("Sales Invoice")
+	where = (
+		invoice.company.isin(list(companies))
+		& (invoice.docstatus == 1)
+		& (invoice.is_return == 0)
+		& (invoice.outstanding_amount > 0)
+		& invoice.pos_profile.isnotnull()
+		& (invoice.pos_profile != "")
 	)
+	if excluded:
+		where = where & invoice.customer.notin(list(excluded))
+	rows = frappe.qb.from_(invoice).select(invoice.company).where(where).groupby(invoice.company).run()
 	return {row[0] for row in rows}
+
+
+def _excluded_by_company(product, user, allowed) -> dict | None:
+	"""{company: customers the product leaves out} for `credit_shops`, asked once per company (of
+	its first outlet listed), or None for a product without the seam (a shop)."""
+	if product.excluded_customers is None:
+		return None
+	excluded = {}
+	for row, _profile in allowed:
+		if row.company in excluded:
+			continue
+		ctx = WebAdminContext(user, row.name)
+		ctx.credit_product = product.key
+		excluded[row.company] = excluded_customers(ctx)
+	return excluded
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -601,7 +698,9 @@ def credit_shops(product: str = "shop") -> dict:
 		if not user_may_use_company(row.company):
 			continue
 		allowed.append((row, profile))
-	owing = owing_companies({row.company for row, _profile in allowed})
+	owing = owing_companies(
+		{row.company for row, _profile in allowed}, _excluded_by_company(chosen, user, allowed)
+	)
 	shops = []
 	for row, profile in allowed:
 		credit_on = bool(cint(profile.get(CREDIT_SALES_FIELD)))
@@ -663,6 +762,7 @@ def save_credit_limit(outlet: str, customer: str, credit_limit: str | None, modi
 	ctx = credit_editor(outlet)
 	if not customer_in_outlet(ctx, customer):
 		refuse(_("Customer {0} is not a customer of shop {1}").format(customer, ctx.outlet))
+	_refuse_excluded(ctx, customer)
 	precision = money_precision(ctx.currency)
 	try:
 		limit = parse_limit(credit_limit, precision)
@@ -725,7 +825,8 @@ def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) 
 	changed_at}. `enabled` is 1 / 0 (true / false). The customer must be one of the outlet's
 	(`facility_customer_refusal`); a disabled customer can be switched off, not on. The save is a
 	Version of the Customer (it tracks changes) and leaves a Comment naming the web user; saving the
-	state it already has changes nothing. `changed_at` (UTC ISO-8601, null when never changed) is
+	state it already has changes nothing. A customer the product leaves out (PS8) can be switched off,
+	never on. `changed_at` (UTC ISO-8601, null when never changed) is
 	when the facility or `disabled` last changed, stamped by the Customer validate hook."""
 	ctx = credit_editor(outlet, facility_editor_refusal())
 	flag = checked(parse_flag, enabled, "enabled")
@@ -734,6 +835,11 @@ def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) 
 	refusal = facility_customer_refusal(ctx, customer)
 	if refusal:
 		refuse(refusal)
+	if flag:
+		# a customer the product leaves out (a restaurant's service provider, PS8) is never switched
+		# on here; switching it off is let through, so a provider switched on before 0.18 stops being
+		# offered on House Account at the till
+		_refuse_excluded(ctx, customer)
 	doc = frappe.get_doc(CUSTOMER, customer)
 	if flag and cint(doc.disabled):
 		invalid(_("Customer {0} is disabled: enable the customer first").format(customer))
@@ -748,6 +854,283 @@ def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) 
 		"credit_enabled": bool(cint(doc.get(CREDIT_ENABLED_FIELD))),
 		"changed_at": site_naive_to_utc_iso(changed_at, get_system_timezone()) if changed_at else None,
 	}
+
+
+# New customer (provider settlement NC5, 7.5)
+
+MAX_NAME_LENGTH = 140
+MAX_MOBILE_LENGTH = 20  # pos-core's
+MAX_EMAIL_LENGTH = 140
+MOBILE_MIN_DIGITS = 6
+MOBILE_CHARACTERS = frozenset("0123456789 +-()")
+
+
+def mobile_digits(value) -> str:
+	"""The digits of a phone number (pure): what two numbers are compared by."""
+	return "".join(char for char in value or "" if char.isascii() and char.isdigit())
+
+
+def clean_new_customer(value) -> dict:
+	"""The New customer form (pure but for translation; a dict, or its JSON from a form post):
+	{customer_name, mobile_no, email_id, location}, stripped. The till's rules (pos-core
+	`customers::validate`): the name required and at most 140; the mobile required, at most 20, at
+	least 6 digits and nothing but digits, spaces and + - ( ); the email optional, at most 140,
+	something@domain.tld; the location one line of at most 140 (`clean_location`). Any other key is
+	dropped. ValueError otherwise."""
+	if isinstance(value, str):
+		try:
+			value = json.loads(value)
+		except ValueError:
+			value = None
+	if not isinstance(value, dict):
+		raise ValueError(_("customer must be an object"))
+
+	def text(key):
+		field = value.get(key)
+		if field is None:
+			return ""
+		if not isinstance(field, str):
+			raise ValueError(_("{0} must be text").format(key))
+		return field.strip()
+
+	name = text("customer_name")
+	if not name:
+		raise ValueError(_("Enter the customer's name"))
+	if len(name) > MAX_NAME_LENGTH:
+		raise ValueError(_("The name is longer than {0} characters").format(MAX_NAME_LENGTH))
+	mobile = text("mobile_no")
+	if not mobile:
+		raise ValueError(_("Enter the mobile number"))
+	if (
+		len(mobile) > MAX_MOBILE_LENGTH
+		or len(mobile_digits(mobile)) < MOBILE_MIN_DIGITS
+		or not set(mobile) <= MOBILE_CHARACTERS
+	):
+		raise ValueError(_("Mobile number is not valid"))
+	email = text("email_id") or None
+	if email:
+		user, at, domain = email.partition("@")
+		if len(email) > MAX_EMAIL_LENGTH or not (user and at and "." in domain) or " " in email:
+			raise ValueError(_("Email is not valid"))
+	try:
+		location = clean_location(value.get("location"))
+	except SyncError as e:
+		raise ValueError(e.message)
+	return {"customer_name": name, "mobile_no": mobile, "email_id": email, "location": location}
+
+
+def _may_enable_new(ctx, roles, user) -> bool:
+	"""Whether the user may switch the House Account on for a customer they create here: P4 roles
+	always, else the product's `may_enable_new` (none: nobody else)."""
+	if roles & set(CREDIT_EDITOR_ROLES):
+		return True
+	seam = _ctx_product(ctx).may_enable_new
+	return bool(seam and seam(roles, user, ctx.profile))
+
+
+def _outlet_customer_with_mobile(ctx, mobile) -> dict | None:
+	"""A customer of the outlet (inside its customer groups, disabled ones too) whose mobile has the
+	same digits as `mobile`, or None."""
+	filters = {}
+	roots = [row.customer_group for row in ctx.profile.get("customer_groups") or []]
+	if roots:
+		from crenya_pos_api.sync.pull import _descendants
+
+		filters["customer_group"] = ["in", _descendants("Customer Group", roots) or [""]]
+	digits = mobile_digits(mobile)
+	# narrowed in SQL first: a number with the same digits holds its last MOBILE_MIN_DIGITS digits in
+	# order, whatever separators lie between them; the digits are then compared exactly
+	tail = digits[-MOBILE_MIN_DIGITS:]
+	filters["mobile_no"] = ["like", "%" + "%".join(tail) + "%"]
+	for row in frappe.get_all(
+		CUSTOMER, filters=filters, fields=["name", "customer_name", "mobile_no"], order_by="creation asc"
+	):
+		if mobile_digits(row.mobile_no) == digits:
+			return row
+	return None
+
+
+def new_customer_group(ctx) -> str:
+	"""The Customer Group of a customer created on the outlet's page: one inside the outlet's
+	customer groups, so it is listed and found again there. The till's default
+	(`sync.customer._default_customer_group`) when it lies inside them (or the outlet limits none),
+	else the first leaf under them by name. frappe.ValidationError when they hold no leaf."""
+	chosen = _default_customer_group(ctx, None)
+	roots = [row.customer_group for row in ctx.profile.get("customer_groups") or []]
+	if not roots:
+		return chosen
+	from crenya_pos_api.sync.pull import _descendants
+
+	inside = _descendants("Customer Group", roots)
+	if chosen in inside and not cint(frappe.db.get_value("Customer Group", chosen, "is_group")):
+		return chosen
+	leaves = frappe.get_all(
+		"Customer Group",
+		filters={"name": ["in", inside or [""]], "is_group": 0},
+		pluck="name",
+		order_by="name asc",
+		limit=1,
+	)
+	if not leaves:
+		invalid(
+			_("{0}'s customer groups have no group a customer can be in: add one on the outlet").format(
+				ctx.outlet
+			)
+		)
+	return leaves[0]
+
+
+def new_customer_rights(ctx) -> dict:
+	"""What `create_credit_customer` allows the session user on the outlet (`ctx` from
+	`credit_view`): {available: true, may_enable (P4 or the product's `may_enable_new`),
+	may_set_limit (P4)}. The same rules the method checks, so the dialog offers what it accepts."""
+	user = frappe.session.user
+	roles = set(frappe.get_roles(user))
+	return {
+		"available": True,
+		"may_enable": _may_enable_new(ctx, roles, user),
+		"may_set_limit": bool(roles & set(CREDIT_EDITOR_ROLES)),
+	}
+
+
+# the `error.code` of a New customer refused for a mobile another customer of the outlet has
+DUPLICATE_MOBILE = "duplicate_mobile"
+
+
+def refuse_duplicate_mobile(existing) -> None:
+	"""Refuse the New customer ("Use {name} instead", a frappe.ValidationError) and say which
+	customer has the mobile in the response body, the shape `sync.errors.raise_api_error` gives:
+	`error: {code: "duplicate_mobile", message, retryable: false, existing_customer,
+	existing_customer_name}`, so the web can offer that customer."""
+	name = existing.customer_name or existing.name
+	message = _("Use {0} instead")
+	try:
+		frappe.local.response["error"] = {
+			**error_dict(DUPLICATE_MOBILE, message.format(name), False),
+			"existing_customer": existing.name,
+			"existing_customer_name": name,
+		}
+	except (AttributeError, RuntimeError, TypeError):
+		# no request context (a console)
+		pass
+	# shown as HTML (msgprint): the name is the user's text
+	invalid(message.format(frappe.utils.escape_html(name)))
+
+
+def _created_before(ctx, request_id, user) -> str | None:
+	"""The customer this request already created, or None. One another user created (or no customer
+	of the outlet) is refused: a request id reads back only what the same user made with it."""
+	name = frappe.db.get_value(CUSTOMER, {LOCAL_ID_FIELD: request_id}, "name")
+	if not name:
+		return None
+	if frappe.db.get_value(CUSTOMER, name, "owner") != user or not customer_in_outlet(ctx, name):
+		refuse(_("This request was used for another customer: close the dialog and open it again"))
+	return name
+
+
+def new_customer_comment(source, user, enabled) -> str:
+	"""The comment a web New customer leaves on the Customer (pure; shown as HTML, so escaped)."""
+	from frappe.utils import escape_html
+
+	text = f"Created on {escape_html(source)} by {escape_html(user)}"
+	return f"{text}; House Account on" if enabled else text
+
+
+@frappe.whitelist(methods=["POST"])
+def create_credit_customer(
+	outlet: str,
+	customer: dict | str,
+	enable_credit: bool | int | str,
+	credit_limit: str | None = None,
+	request_id: str | None = None,
+) -> dict:
+	"""Create a customer from the House Account page (NC5): `customer` {customer_name, mobile_no,
+	email_id, location} (`clean_new_customer`), for whoever reads the outlet's credit page
+	(`credit_view`). Answers the new customer's `credit_rows` row.
+
+	- `enable_credit` (1 / 0, true / false) switches its House Account on, for a P4 role or whom the
+	  product's `may_enable_new` names (a restaurant's outlet manager), through the server-only
+	  grant (`sync.credit.GRANT_FLAG` = "web"); anyone else asking is refused and nothing is made.
+	- `credit_limit` (optional; blank or 0: none) is the Customer's own Credit Limit row for the
+	  outlet's company, set by a P4 role only (`parse_limit`).
+	- A mobile with the same digits as one of the outlet's customers' is refused: "Use {name}
+	  instead".
+	- `request_id` (a UUID, required) is kept in the Customer's `crenya_local_id`: the same request
+	  again answers the customer it created, whatever else it now says.
+
+	The customer is put in a Customer Group inside the outlet's (`new_customer_group`), so it is
+	listed there at once; an outlet whose groups hold no leaf group is refused.
+
+	Runs under one lock per company, so two requests at once cannot make the same customer twice.
+	The Customer is owned by the web user; a Comment names them ("Created on app.crenya.com by
+	{user}", "; House Account on" when switched on)."""
+	ctx = credit_view(outlet)
+	user = frappe.session.user
+	roles = set(frappe.get_roles(user))
+	data = checked(clean_new_customer, customer)
+	enabled = checked(parse_flag, enable_credit, "enable_credit")
+	if enabled is None:
+		invalid(_("enable_credit is required"))
+	request = checked(parse_request_id, request_id)
+	precision = money_precision(ctx.currency)
+	limit = checked(parse_limit, credit_limit, precision)
+	editor = bool(roles & set(CREDIT_EDITOR_ROLES))
+	if limit is not None and not editor:
+		refuse(_("Credit limits are changed by a System Manager or an Accounts Manager"))
+	if enabled and not _may_enable_new(ctx, roles, user):
+		refuse(facility_editor_refusal())
+	group = new_customer_group(ctx)
+	entered = False
+	try:
+		# the lock commits the open transaction first: nothing has been written before it
+		with named_lock(f"credit-new-customer:{ctx.company}"):
+			entered = True
+			name = _created_before(ctx, request, user)
+			if name is None:
+				name = _insert_credit_customer(ctx, data, enabled, limit, request, precision, group)
+	except frappe.ValidationError:
+		if not entered:
+			frappe.throw(
+				_("Another customer is being created right now: try again in a moment"),
+				frappe.ValidationError,
+				title=_("Try again"),
+			)
+		raise
+	rows, _more = credit_rows(ctx, only=name)
+	return rows[0]
+
+
+def _insert_credit_customer(ctx, data, enabled, limit, request, precision, group) -> str:
+	same = _outlet_customer_with_mobile(ctx, data["mobile_no"])
+	if same:
+		refuse_duplicate_mobile(same)
+	doc = frappe.new_doc(CUSTOMER)
+	doc.update(
+		{
+			"customer_name": data["customer_name"],
+			"customer_type": "Individual",
+			"customer_group": group,
+			"territory": _default_territory(ctx, None),
+			"mobile_no": data["mobile_no"],
+			"email_id": data["email_id"],
+			LOCAL_ID_FIELD: request,
+		}
+	)
+	if data["location"] and doc.meta.has_field(LOCATION_FIELD):
+		doc.set(LOCATION_FIELD, data["location"])
+	if enabled:
+		doc.set(CREDIT_ENABLED_FIELD, 1)
+		# counted only inside this insert of a new customer (sync.credit._granted_on_create)
+		doc.flags[GRANT_FLAG] = WEB_GRANT
+	if limit is not None:
+		doc.append("credit_limits", {"company": ctx.company, "credit_limit": float(limit)})
+	# who may create and enable was checked above, by the product's rule: a restaurant manager has
+	# no desk right on Customer
+	doc.insert(ignore_permissions=True)
+	doc.add_comment("Info", new_customer_comment(ctx.source, ctx.approver, enabled))
+	if limit is not None:
+		doc.add_comment("Info", audit_text(ctx.company, None, limit, ctx.source, ctx.approver, precision))
+	return doc.name
 
 
 # open bills and Settle (RC10, D5, D7, Q2)
@@ -962,7 +1345,9 @@ def settle_customer(
 	`mode_of_payment` must be one of the outlet's and not a cash one (D5, D7); `reference` (the slip,
 	transfer or cheque number) is required; `amount` above 0 at the currency's decimals;
 	`posting_date` (default today) not after today nor in frozen accounts; `request_id` a UUID, kept
-	in the entry's `crenya_local_id`: the same request again answers the entry it booked.
+	in the entry's `crenya_local_id`: the same request again answers the entry it booked. A customer
+	the outlet's product leaves out (`excluded_customers`, PS8: a service provider) is refused in
+	the product's words.
 
 	Runs under the customer's lock (`named_lock`), the one a till's receipt of the customer takes, so
 	the two never allocate at once; a lock not had in time answers "try again". The entry is owned by
@@ -974,6 +1359,7 @@ def settle_customer(
 
 	ctx = credit_view(outlet)
 	_require_outlet_customer(ctx, customer)
+	_refuse_excluded(ctx, customer)
 	precision = money_precision(ctx.currency)
 	modes = {mode["mode_of_payment"]: mode for mode in outlet_modes(ctx.profile)}
 	mode = modes.get(mode_of_payment) if isinstance(mode_of_payment, str) else None

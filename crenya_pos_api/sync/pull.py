@@ -36,6 +36,7 @@ from crenya_pos_api.sync.credit import (
 	sends_credit_flag,
 )
 from crenya_pos_api.sync.cursor import Cursor, InvalidCursor, decode_cursor, encode_cursor
+from crenya_pos_api.sync.customer import LOCATION_FIELD
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
 from crenya_pos_api.sync.promotions import rule_is_active
 from crenya_pos_api.sync.retry import ENTITY as RETRY_ENTITY
@@ -348,6 +349,8 @@ class CustomerSpec(EntitySpec):
 			columns.append(getattr(table, GSTIN_FIELD))
 		if meta.has_field(CREDIT_ENABLED_FIELD):
 			columns.append(getattr(table, CREDIT_ENABLED_FIELD))
+		if meta.has_field(LOCATION_FIELD):
+			columns.append(getattr(table, LOCATION_FIELD))
 		return columns
 
 	def build(self, rows, ctx):
@@ -363,6 +366,8 @@ class CustomerSpec(EntitySpec):
 				"tax_id": tax_id_value(row, has_gstin) or row.tax_id,
 				"disabled": cint(row.disabled),
 				"crenya_local_id": row.get("crenya_local_id") or None,
+				# 0.15.0 (provider settlement NC2), every device: the till replaces its own value
+				"location": row.get(LOCATION_FIELD) or None,
 				"modified": format_db_datetime(row.modified),
 			}
 			for row in rows

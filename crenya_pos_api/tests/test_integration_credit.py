@@ -838,7 +838,8 @@ class TestCreditSync(CreditCase):
 		self.assertEqual(listed[limited]["credit_limit"], "500.000")
 
 	def test_retail_till_pull_unchanged(self):
-		"""A till's record shape is 0.13.2's: the limit key on every customer, the credit scope."""
+		"""A till's record shape is 0.13.2's (plus 0.15.0's `location`, every device): the limit key on
+		every customer, the credit scope."""
 		limited = make_customer("pulltill", limit=500)
 		unlimited = make_customer("pulltillnone", limit=None)
 		with dummy.fake_hooks({"crenya_pos_credit_device_types": ["restaurant_pos"]}):
@@ -857,6 +858,7 @@ class TestCreditSync(CreditCase):
 					"tax_id",
 					"disabled",
 					"crenya_local_id",
+					"location",
 					"modified",
 					"credit_limit",
 				]

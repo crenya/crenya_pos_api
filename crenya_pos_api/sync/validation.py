@@ -6,6 +6,7 @@ field, and returns normalized values (Decimals, ints) for the builders.
 """
 
 import re
+import unicodedata
 from datetime import date, time
 from decimal import Decimal
 
@@ -37,6 +38,8 @@ MAX_PRICING_RULES_PER_LINE = 20
 MAX_LINE_NOTES_LENGTH = 500
 # Sales Invoice Payment reference_no (Data)
 MAX_REFERENCE_LENGTH = 140
+# Customer crenya_location (0.15.0): pos-core's LOCATION_MAX
+MAX_LOCATION_LENGTH = 140
 
 _EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,139}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -156,7 +159,65 @@ def validate_customer_payload(payload):
 		"tax_id": _optional_str(payload, "tax_id", max_length=40),
 		"customer_group": _optional_str(payload, "customer_group"),
 		"territory": _optional_str(payload, "territory"),
+		# optional (0.15.0, provider settlement NC2): one line the cashier typed, Customer
+		# `crenya_location`. Absent (a retail till, a till before 0.15.0): None
+		"location": clean_location(payload.get("location")),
+		# optional (0.15.0, NC3/NC4): the till manager's House Account grant for this new customer.
+		# Only the customer extenders read it; absent: None
+		"credit_facility": _validate_credit_facility(payload.get("credit_facility")),
 	}
+
+
+def _translated(message):
+	"""`frappe._` where a site is loaded (a push, a web method), the English text otherwise."""
+	try:
+		import frappe
+
+		return frappe._(message)
+	except Exception:
+		return message
+
+
+# what pos-core's one-line rule refuses besides `char::is_control`: line and paragraph separators
+_LINE_SEPARATORS = frozenset({"\u2028", "\u2029"})
+
+
+def clean_location(value, field="location"):
+	"""A customer's location (Customer `crenya_location`): one line of at most 140 characters, the
+	till's rule (pos-core LOCATION_MAX / LOCATION_ONE_LINE). Stripped, runs of spaces collapsed to
+	one; a control character (a new line, a tab, NUL, ...) or a line / paragraph separator is
+	refused. None or blank: None. Shared by the till's Customer payload and the web's New customer;
+	raises SyncError(validation)."""
+	if value is None or (isinstance(value, str) and not value.strip()):
+		return None
+	if not isinstance(value, str):
+		_fail(_translated("{0} must be a string").format(field))
+	if any(unicodedata.category(char) == "Cc" or char in _LINE_SEPARATORS for char in value):
+		_fail(_translated("{0} must be one line").format(field))
+	value = " ".join(value.split())
+	if len(value) > MAX_LOCATION_LENGTH:
+		_fail(_translated("{0} is longer than {1} characters").format(field, MAX_LOCATION_LENGTH))
+	return value
+
+
+def _validate_credit_facility(value):
+	"""Optional `credit_facility` of a till's new customer: {approved_by, approved_at (ISO-8601
+	with an offset)}, as pos-core sends it. Kept as that dict of stripped strings (any other key is
+	dropped) for the customer extenders, which decide whether it switches anything on; nothing
+	here grants it. Absent: None."""
+	if value is None:
+		return None
+	if not isinstance(value, dict):
+		_fail("credit_facility must be an object")
+	grant = {
+		"approved_by": _required_str(value, "approved_by", "credit_facility.approved_by"),
+		"approved_at": _required_str(value, "approved_at", "credit_facility.approved_at"),
+	}
+	try:
+		parse_iso_utc(grant["approved_at"])
+	except ValueError:
+		_fail("credit_facility.approved_at must be an ISO-8601 UTC timestamp, e.g. 2026-10-26T08:15:30Z")
+	return grant
 
 
 def _validate_date(value, field):

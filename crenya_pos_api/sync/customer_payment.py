@@ -33,6 +33,7 @@ from decimal import Decimal
 from typing import NamedTuple
 
 import frappe
+from frappe import _
 from frappe.utils import cint, flt
 
 from crenya_pos_api.sync.aggregates import AggregateHandler
@@ -52,7 +53,7 @@ from crenya_pos_api.sync.validation import (
 	_validate_utc_datetime,
 )
 from crenya_pos_api.utils.dates import format_db_datetime
-from crenya_pos_api.utils.decimal import as_decimal, format_money, quantize
+from crenya_pos_api.utils.decimal import DecimalParseError, as_decimal, format_money, parse_decimal, quantize
 
 AGGREGATE_CUSTOMER_PAYMENT = "Customer Payment"
 PAYMENT_ENTRY = "Payment Entry"
@@ -69,6 +70,9 @@ MAX_TICKED_INVOICES = OPEN_INVOICES_MAX_LIMIT
 LOCAL_INVOICE_PREFIX = "local:"
 # the last part of the remarks of a payment that skipped ticked bills (`payment_result` reads it back)
 SKIPPED_REMARK = "skipped ticked invoices: "
+# the Payment Entry fields a booking may set through `extra` (0.15.0): the service provider a
+# settlement is from (crenya_restaurant); any other field is refused
+EXTRA_FIELDS = frozenset({"crenya_service_provider"})
 
 
 def _invoices(payload):
@@ -156,6 +160,14 @@ def allocate(amount, invoices, precision):
 	return rows, left
 
 
+def deduction_total(deductions, precision):
+	"""The sum of the deductions' amounts (pure), each at `precision` decimals; 0 for None or none."""
+	total = quantize(as_decimal(0), precision)
+	for row in deductions or []:
+		total += quantize(as_decimal(row["amount"]), precision)
+	return total
+
+
 def open_invoices(customer, company, limit=None):
 	"""The customer's submitted Sales Invoices of the company with something outstanding, oldest
 	first (at most `limit` of them when given). Each row also names the bill's outlet, date and the
@@ -200,11 +212,9 @@ def open_invoices(customer, company, limit=None):
 	]
 
 
-def ticked_invoices(customer, company, names, notes):
-	"""(rows in `open_invoices`' shape in the order of `names`, skipped names) of the bills a receipt
-	ticked, read now: a bill that is not a submitted, outstanding Sales Invoice (not a return) of
-	`customer` and `company` is skipped, and so is a `local:` id no Sales Invoice has yet; each skip
-	is noted on the Sync Event."""
+def _erp_names(names, notes):
+	"""([(name as ticked, ERPNext name)], skipped) of ticked bills: a `local:` id is looked up by the
+	till's id, and one no Sales Invoice has yet is skipped with a note."""
 	local_ids = [name[len(LOCAL_INVOICE_PREFIX) :] for name in names if name.startswith(LOCAL_INVOICE_PREFIX)]
 	by_local_id = {}
 	if local_ids:
@@ -226,6 +236,68 @@ def ticked_invoices(customer, company, names, notes):
 		else:
 			erp_name = name
 		resolved.append((name, erp_name))
+	return resolved, skipped
+
+
+def ticked_credit_notes(customer, company, names, notes):
+	"""(rows in `ticked_invoices`' shape, `outstanding` negative, in the order of `names`, skipped
+	names) of the credit notes a booking ticked (0.15.0, a provider's refunds), read now: only a
+	submitted return (`is_return = 1`) of `customer` and `company` that still carries its own
+	negative outstanding (`update_outstanding_for_self`, the till's refunds); anything else is
+	skipped with a note, like a ticked bill."""
+	if not isinstance(names, list) or not all(isinstance(name, str) and name for name in names):
+		raise SyncError(VALIDATION, _("The credit notes must be a list of invoice names"))
+	if len(names) > MAX_TICKED_INVOICES:
+		raise SyncError(
+			VALIDATION, _("A payment may name at most {0} credit notes").format(MAX_TICKED_INVOICES)
+		)
+	resolved, skipped = _erp_names(names, notes)
+	found = {}
+	erp_names = sorted({erp_name for _name, erp_name in resolved})
+	if erp_names:
+		for row in frappe.get_all(
+			"Sales Invoice",
+			filters={
+				"name": ["in", erp_names],
+				"customer": customer,
+				"company": company,
+				"docstatus": 1,
+				"is_return": 1,
+				"outstanding_amount": ["<", 0],
+			},
+			fields=["name", "grand_total", "outstanding_amount", "due_date"],
+		):
+			found[row.name] = row
+	rows = []
+	for name, erp_name in resolved:
+		if any(row["name"] == erp_name for row in rows):
+			notes.append(f"Ticked credit note {name} is {erp_name}, ticked already")
+			continue
+		row = found.get(erp_name)
+		if row is None:
+			skipped.append(name)
+			notes.append(
+				f"Ticked credit note {name} skipped: not a return of {customer} in {company} with "
+				"something left to settle"
+			)
+			continue
+		rows.append(
+			{
+				"name": row.name,
+				"total": row.grand_total,
+				"outstanding": row.outstanding_amount,
+				"due_date": row.due_date,
+			}
+		)
+	return rows, skipped
+
+
+def ticked_invoices(customer, company, names, notes):
+	"""(rows in `open_invoices`' shape in the order of `names`, skipped names) of the bills a receipt
+	ticked, read now: a bill that is not a submitted, outstanding Sales Invoice (not a return) of
+	`customer` and `company` is skipped, and so is a `local:` id no Sales Invoice has yet; each skip
+	is noted on the Sync Event."""
+	resolved, skipped = _erp_names(names, notes)
 	found = {}
 	erp_names = sorted({erp_name for _name, erp_name in resolved})
 	if erp_names:
@@ -329,6 +401,18 @@ class PaymentBooking(NamedTuple):
 	remarks: str
 	# the ticked bills in order (names or `local:` ids); None or empty: oldest first
 	invoices: list[str] | None
+	# 0.15.0 (provider settlement, spec PS2). None everywhere: the 0.14.0 entry, field for field.
+	# What the payer kept (a provider's commission): [{account, cost_center, amount: Decimal,
+	# description}], one Payment Entry deduction row each; `amount` plus their sum is allocated
+	deductions: list[dict] | None = None
+	# Payment Entry fields to set, {fieldname: value}: only EXTRA_FIELDS
+	extra: dict | None = None
+	# ticked returns that carry their own negative outstanding (a provider's refunds): allocated in
+	# full first, each growing what the ticked bills get
+	credit_notes: list[str] | None = None
+	# the receivable account the payment is credited to (`paid_from`; a provider's orders booked to
+	# its receivable account before it changed); None: the customer's party account now
+	party_account: str | None = None
 
 
 def book_payment(ctx, data, notes):
@@ -381,8 +465,17 @@ def book_payment(ctx, data, notes):
 def post_payment_entry(booking, notes):
 	"""The submitted Payment Entry (Receive) of `booking`: the accounts checked, allocated to the
 	ticked bills in order (or oldest first when none are named), the rest an advance; posted as
-	Administrator and owned by the session user. Refusals are SyncError(VALIDATION) with a hint."""
+	Administrator and owned by the session user. Refusals are SyncError(VALIDATION) with a hint.
+
+	0.15.0: `party_account` (when given, checked) is `paid_from` instead of the customer's party
+	account now. The ticked credit notes are allocated first, each its whole (negative) outstanding; then
+	`amount` + the deductions + what the credit notes free is allocated over the bills.
+	`paid_amount = received_amount = amount`, one deduction row each (Dr its account), and the
+	`extra` fields set. ERPNext then books Dr `paid_to` amount, Dr each deduction, Cr the party
+	amount + deductions, with nothing left over when the bills take it all."""
+	extra = _checked_extra(booking.extra)
 	precision = money_precision(booking.currency)
+	deductions = _checked_deductions(booking.deductions, booking.company, precision)
 	account = mode_of_payment_account(booking.mode_of_payment, booking.company)
 	if not account:
 		raise SyncError(
@@ -393,7 +486,10 @@ def post_payment_entry(booking, notes):
 	from erpnext.accounts.party import get_party_account
 
 	customer = booking.customer
-	party_account = get_party_account("Customer", customer, booking.company)
+	if booking.party_account is not None:
+		party_account = _checked_party_account(booking.party_account, booking.company)
+	else:
+		party_account = get_party_account("Customer", customer, booking.company)
 	if not party_account:
 		raise SyncError(VALIDATION, f"Customer {customer} has no receivable account for {booking.company}")
 	account_currency = frappe.db.get_value("Account", party_account, "account_currency")
@@ -406,13 +502,32 @@ def post_payment_entry(booking, notes):
 
 	skipped = None
 	remarks = booking.remarks
+	credits = []
+	if booking.credit_notes:
+		credits, skipped = ticked_credit_notes(customer, booking.company, booking.credit_notes, notes)
 	if booking.invoices:
-		candidates, skipped = ticked_invoices(customer, booking.company, booking.invoices, notes)
-		if skipped:
-			remarks = f"{remarks}; {SKIPPED_REMARK}{', '.join(skipped)}"
+		candidates, skipped_bills = ticked_invoices(customer, booking.company, booking.invoices, notes)
+		skipped = (skipped or []) + skipped_bills
 	else:
 		candidates = open_invoices(customer, booking.company)
-	rows, _left = allocate(booking.amount, candidates, precision)
+	if skipped:
+		remarks = f"{remarks}; {SKIPPED_REMARK}{', '.join(skipped)}"
+	credits = [{**row, "allocated": quantize(as_decimal(row["outstanding"]), precision)} for row in credits]
+	freed = -sum((row["allocated"] for row in credits), as_decimal(0))
+	pot = quantize(as_decimal(booking.amount), precision) + deduction_total(deductions, precision) + freed
+	rows, _left = allocate(pot, candidates, precision)
+	if credits:
+		taken = sum((row["allocated"] for row in rows), as_decimal(0))
+		if taken < freed:
+			# ERPNext refuses a receipt whose allocations add up below zero
+			raise SyncError(
+				VALIDATION,
+				_(
+					"The ticked refunds ({0}) are more than the ticked orders take ({1}): tick the orders "
+					"they belong to"
+				).format(format_money(freed, precision), format_money(taken, precision)),
+			)
+		rows = credits + rows
 	doc = frappe.new_doc(PAYMENT_ENTRY)
 	doc.update(
 		{
@@ -440,6 +555,8 @@ def post_payment_entry(booking, notes):
 			"remarks": remarks,
 		}
 	)
+	if extra:
+		doc.update(extra)
 	for row in rows:
 		doc.append(
 			"references",
@@ -450,6 +567,16 @@ def post_payment_entry(booking, notes):
 				"outstanding_amount": row["outstanding"],
 				"allocated_amount": flt(row["allocated"], precision),
 				"due_date": row["due_date"],
+			},
+		)
+	for row in deductions:
+		doc.append(
+			"deductions",
+			{
+				"account": row["account"],
+				"cost_center": row["cost_center"],
+				"amount": flt(row["amount"], precision),
+				"description": row["description"],
 			},
 		)
 	# The device was authorised by get_device_context and a till posts only through this handler.
@@ -469,9 +596,140 @@ def post_payment_entry(booking, notes):
 		)
 		doc.owner = doc.modified_by = user
 	# the answer of this booking (`payment_result`): whether bills were named, and which were skipped
-	doc.flags.crenya_ticked = bool(booking.invoices)
+	doc.flags.crenya_ticked = bool(booking.invoices or booking.credit_notes)
 	doc.flags.crenya_skipped = list(skipped or [])
 	return doc
+
+
+def _checked_party_account(account, company):
+	"""`account` when it is an enabled Receivable ledger of `company` in the company's currency (0.15.0,
+	`PaymentBooking.party_account`); SyncError(VALIDATION) otherwise."""
+	if not isinstance(account, str) or not account:
+		raise SyncError(VALIDATION, _("The receivable account must be an account name"))
+	found = frappe.db.get_value(
+		"Account",
+		account,
+		("company", "is_group", "disabled", "account_type", "account_currency"),
+		as_dict=True,
+	)
+	if not found or found.company != company or cint(found.is_group):
+		raise SyncError(
+			VALIDATION, _("Receivable account {0} is not a ledger account of {1}").format(account, company)
+		)
+	if cint(found.disabled):
+		raise SyncError(VALIDATION, _("Receivable account {0} is disabled").format(account))
+	if found.account_type != "Receivable":
+		raise SyncError(
+			VALIDATION,
+			_("Account {0} is not a Receivable account: a payment is credited to a receivable").format(
+				account
+			),
+		)
+	company_currency = frappe.get_cached_value("Company", company, "default_currency")
+	if found.account_currency and company_currency and found.account_currency != company_currency:
+		raise SyncError(
+			VALIDATION,
+			_("Receivable account {0} is in {1}, not in the company's {2}").format(
+				account, found.account_currency, company_currency
+			),
+		)
+	return account
+
+
+def _checked_extra(extra):
+	"""The Payment Entry fields of `extra` ({} for None): only EXTRA_FIELDS, each a name or None."""
+	if extra is None:
+		return {}
+	if not isinstance(extra, dict):
+		raise SyncError(VALIDATION, _("The extra Payment Entry fields must be a mapping"))
+	for fieldname, value in extra.items():
+		if fieldname not in EXTRA_FIELDS:
+			raise SyncError(
+				VALIDATION, _("The Payment Entry field {0} cannot be set by a booking").format(fieldname)
+			)
+		if value is not None and not isinstance(value, str):
+			raise SyncError(VALIDATION, _("The Payment Entry field {0} must be a name").format(fieldname))
+	return dict(extra)
+
+
+def _checked_deductions(deductions, company, precision):
+	"""[{account, cost_center, amount: Decimal, description}] of `deductions` ([] for None): each an
+	enabled ledger account of `company` in the company's currency that needs no party (not
+	Receivable or Payable), a cost center of `company` (the company's default when none is given)
+	and a finite amount above 0 at `precision` decimals at most."""
+	if deductions is None:
+		return []
+	if not isinstance(deductions, list):
+		raise SyncError(VALIDATION, _("The deductions must be a list"))
+	checked = []
+	for row in deductions:
+		if not isinstance(row, dict) or not isinstance(row.get("account"), str) or not row["account"]:
+			raise SyncError(VALIDATION, _("Each deduction needs an account"))
+		account = row["account"]
+		found = frappe.db.get_value(
+			"Account",
+			account,
+			("company", "is_group", "disabled", "account_type", "account_currency"),
+			as_dict=True,
+		)
+		if not found or found.company != company or cint(found.is_group):
+			raise SyncError(
+				VALIDATION, _("Deduction account {0} is not a ledger account of {1}").format(account, company)
+			)
+		if cint(found.disabled):
+			raise SyncError(VALIDATION, _("Deduction account {0} is disabled").format(account))
+		if found.account_type in ("Receivable", "Payable"):
+			raise SyncError(
+				VALIDATION,
+				_("Deduction account {0} is a {1} account: choose an account that needs no party").format(
+					account, found.account_type
+				),
+			)
+		company_currency = frappe.get_cached_value("Company", company, "default_currency")
+		if found.account_currency and company_currency and found.account_currency != company_currency:
+			raise SyncError(
+				VALIDATION,
+				_("Deduction account {0} is in {1}, not in the company's {2}").format(
+					account, found.account_currency, company_currency
+				),
+			)
+		cost_center = row.get("cost_center") or frappe.get_cached_value("Company", company, "cost_center")
+		if not cost_center:
+			raise SyncError(
+				VALIDATION,
+				_("Set a default cost center on company {0}, or give the deduction one").format(company),
+			)
+		found = frappe.db.get_value("Cost Center", cost_center, ("company", "is_group"), as_dict=True)
+		if not found or found.company != company or cint(found.is_group):
+			raise SyncError(
+				VALIDATION,
+				_("Deduction cost center {0} is not a ledger cost center of {1}").format(
+					cost_center, company
+				),
+			)
+		try:
+			amount = parse_decimal(row.get("amount"), "amount")
+		except DecimalParseError:
+			raise SyncError(
+				VALIDATION, _("Deduction amount {0} is not a number").format(row.get("amount"))
+			) from None
+		if quantize(amount, precision) != amount:
+			raise SyncError(
+				VALIDATION,
+				_("Deduction amount {0} has more than {1} decimals").format(amount, precision),
+			)
+		if amount <= 0:
+			raise SyncError(VALIDATION, _("A deduction must be more than 0, not {0}").format(amount))
+		description = row.get("description")
+		checked.append(
+			{
+				"account": account,
+				"cost_center": cost_center,
+				"amount": amount,
+				"description": description if isinstance(description, str) and description else None,
+			}
+		)
+	return checked
 
 
 def skipped_invoices(doc):

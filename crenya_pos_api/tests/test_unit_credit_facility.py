@@ -202,6 +202,30 @@ class TestStampCreditChange(unittest.TestCase):
 		self.assertIsNone(self.stamped(doc))
 
 
+class TestGrantFlag(unittest.TestCase):
+	"""The server-only grant (0.15.0): a new customer, inside `insert()`, a known source."""
+
+	def granted(self, before=None, **flags):
+		doc = FakeCustomer(before, modified=MODIFIED, **{CREDIT_ENABLED_FIELD: 1, "disabled": 0})
+		doc["flags"] = frappe._dict(flags)
+		return credit._granted_on_create(doc)
+
+	def test_only_inside_insert_of_a_new_customer(self):
+		self.assertTrue(self.granted(in_insert=True, **{credit.GRANT_FLAG: "till"}))
+		self.assertTrue(self.granted(in_insert=True, **{credit.GRANT_FLAG: "web"}))
+		# not inside insert(): no grant, whatever the flag says
+		self.assertFalse(self.granted(**{credit.GRANT_FLAG: "till"}))
+		self.assertFalse(self.granted(in_insert=False, **{credit.GRANT_FLAG: "till"}))
+		# a saved version: an existing customer stays P4 only
+		self.assertFalse(
+			self.granted({CREDIT_ENABLED_FIELD: 0}, in_insert=True, **{credit.GRANT_FLAG: "till"})
+		)
+		# unknown sources and non-strings
+		for value in ("desk", "", None, 1, True, ["till"]):
+			self.assertFalse(self.granted(in_insert=True, **{credit.GRANT_FLAG: value}))
+		self.assertFalse(credit._granted_on_create(None))
+
+
 class TestInvoicePayloadKeys(unittest.TestCase):
 	def refused(self, payload, fragment):
 		with self.assertRaises(SyncError) as caught:

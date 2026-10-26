@@ -225,11 +225,36 @@ def credit_enabled_for(customer):
 	return bool(cint(customer.get(CREDIT_ENABLED_FIELD))) and not cint(customer.get("disabled"))
 
 
-def _may_switch_facility():
+# the grant flag (0.15.0, provider settlement NC4/NC5, R6): server code that creates a customer with
+# the House Account on, after its own check of who granted it, sets
+# `customer.flags[GRANT_FLAG] = "till"` (a customer extender, for the till's manager PIN) or "web"
+# (the web's New customer). `doc.flags` is never filled from a request: Frappe drops a "flags" key
+# of a document dict (BaseDocument reserved keywords) and the till's Customer payload is read field
+# by field. The flag counts only on the insert of a new customer; an existing one stays P4 only.
+GRANT_FLAG = "crenya_credit_grant"
+TILL_GRANT = "till"
+WEB_GRANT = "web"
+GRANT_SOURCES = frozenset({TILL_GRANT, WEB_GRANT})
+
+
+def _granted_on_create(doc):
+	"""Whether server code granted the facility to this new customer (`GRANT_FLAG`): only inside
+	`insert()` (Frappe's `flags.in_insert`, which a request cannot set) and with no saved version."""
+	flags = (getattr(doc, "flags", None) or {}) if doc is not None else {}
+	if doc is None or not flags.get("in_insert") or doc.get_doc_before_save() is not None:
+		return False
+	grant = flags.get(GRANT_FLAG)
+	return isinstance(grant, str) and grant in GRANT_SOURCES
+
+
+def _may_switch_facility(doc=None):
 	"""Whether this save may change `crenya_credit_enabled`: Administrator, a System Manager or an
-	Accounts Manager (P4), or the app's own install, patch or migrate."""
+	Accounts Manager (P4), the app's own install, patch or migrate, or a new customer the server
+	granted it to (`GRANT_FLAG`)."""
 	flags = frappe.flags
 	if flags.in_install or flags.in_patch or flags.in_migrate:
+		return True
+	if _granted_on_create(doc):
 		return True
 	user = frappe.session.user if getattr(frappe.local, "session", None) else None
 	if user == "Administrator":
@@ -239,10 +264,11 @@ def _may_switch_facility():
 
 def stamp_credit_change(doc, method=None):
 	"""Customer `validate`: refuse a change of `crenya_credit_enabled` (a new customer created
-	enabled counts) by anyone but Administrator, a System Manager or an Accounts Manager, whatever
-	the path (desk form, `frappe.client.set_value`, an import): Sales Users may write Customers, but
-	only accountants switch a House Account (P4). A change of `disabled` stays open to every writer:
-	it only ever turns the facility off. Then set `crenya_credit_changed_at` when `crenya_credit_enabled`
+	enabled counts) by anyone but Administrator, a System Manager or an Accounts Manager (or server
+	code that granted it to the new customer it creates, `GRANT_FLAG`), whatever the path (desk
+	form, `frappe.client.set_value`, an import): Sales Users may write Customers, but only
+	accountants switch a House Account (P4). A change of `disabled` stays open to every writer: it
+	only ever turns the facility off. Then set `crenya_credit_changed_at` when `crenya_credit_enabled`
 	or `disabled` changed (a new customer: when it is created enabled or disabled). The time is the
 	save's own `modified` (Frappe sets it before `validate`), so it is the `modified` a till pulls with
 	the changed record; any other edit leaves it as it was. A write that skips the save
@@ -257,7 +283,7 @@ def stamp_credit_change(doc, method=None):
 	else:
 		flag_changed = cint(doc.get(CREDIT_ENABLED_FIELD)) != cint(before.get(CREDIT_ENABLED_FIELD))
 		changed = any(cint(doc.get(field)) != cint(before.get(field)) for field in FACILITY_FIELDS)
-	if flag_changed and not _may_switch_facility():
+	if flag_changed and not _may_switch_facility(doc):
 		frappe.throw(facility_editor_refusal(), frappe.PermissionError)
 	if changed:
 		doc.set(CREDIT_CHANGED_AT_FIELD, doc.modified or now_datetime())

@@ -410,6 +410,9 @@ class PaymentBooking(NamedTuple):
 	# ticked returns that carry their own negative outstanding (a provider's refunds): allocated in
 	# full first, each growing what the ticked bills get
 	credit_notes: list[str] | None = None
+	# the receivable account the payment is credited to (`paid_from`; a provider's orders booked to
+	# its receivable account before it changed); None: the customer's party account now
+	party_account: str | None = None
 
 
 def book_payment(ctx, data, notes):
@@ -464,7 +467,8 @@ def post_payment_entry(booking, notes):
 	ticked bills in order (or oldest first when none are named), the rest an advance; posted as
 	Administrator and owned by the session user. Refusals are SyncError(VALIDATION) with a hint.
 
-	0.15.0: the ticked credit notes are allocated first, each its whole (negative) outstanding; then
+	0.15.0: `party_account` (when given, checked) is `paid_from` instead of the customer's party
+	account now. The ticked credit notes are allocated first, each its whole (negative) outstanding; then
 	`amount` + the deductions + what the credit notes free is allocated over the bills.
 	`paid_amount = received_amount = amount`, one deduction row each (Dr its account), and the
 	`extra` fields set. ERPNext then books Dr `paid_to` amount, Dr each deduction, Cr the party
@@ -482,7 +486,10 @@ def post_payment_entry(booking, notes):
 	from erpnext.accounts.party import get_party_account
 
 	customer = booking.customer
-	party_account = get_party_account("Customer", customer, booking.company)
+	if booking.party_account is not None:
+		party_account = _checked_party_account(booking.party_account, booking.company)
+	else:
+		party_account = get_party_account("Customer", customer, booking.company)
 	if not party_account:
 		raise SyncError(VALIDATION, f"Customer {customer} has no receivable account for {booking.company}")
 	account_currency = frappe.db.get_value("Account", party_account, "account_currency")
@@ -592,6 +599,41 @@ def post_payment_entry(booking, notes):
 	doc.flags.crenya_ticked = bool(booking.invoices or booking.credit_notes)
 	doc.flags.crenya_skipped = list(skipped or [])
 	return doc
+
+
+def _checked_party_account(account, company):
+	"""`account` when it is an enabled Receivable ledger of `company` in the company's currency (0.15.0,
+	`PaymentBooking.party_account`); SyncError(VALIDATION) otherwise."""
+	if not isinstance(account, str) or not account:
+		raise SyncError(VALIDATION, _("The receivable account must be an account name"))
+	found = frappe.db.get_value(
+		"Account",
+		account,
+		("company", "is_group", "disabled", "account_type", "account_currency"),
+		as_dict=True,
+	)
+	if not found or found.company != company or cint(found.is_group):
+		raise SyncError(
+			VALIDATION, _("Receivable account {0} is not a ledger account of {1}").format(account, company)
+		)
+	if cint(found.disabled):
+		raise SyncError(VALIDATION, _("Receivable account {0} is disabled").format(account))
+	if found.account_type != "Receivable":
+		raise SyncError(
+			VALIDATION,
+			_("Account {0} is not a Receivable account: a payment is credited to a receivable").format(
+				account
+			),
+		)
+	company_currency = frappe.get_cached_value("Company", company, "default_currency")
+	if found.account_currency and company_currency and found.account_currency != company_currency:
+		raise SyncError(
+			VALIDATION,
+			_("Receivable account {0} is in {1}, not in the company's {2}").format(
+				account, found.account_currency, company_currency
+			),
+		)
+	return account
 
 
 def _checked_extra(extra):

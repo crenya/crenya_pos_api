@@ -108,7 +108,7 @@ class CustomerHandler(AggregateHandler):
 		return validate_customer_payload(payload)
 
 	def apply(self, ctx, operation, data, notes):
-		return create_customer(ctx, data)
+		return create_customer(ctx, data, notes)
 
 	def find_by_local_id(self, local_id):
 		return frappe.db.get_value(AGGREGATE_CUSTOMER, {"crenya_local_id": local_id}, "name")

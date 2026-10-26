@@ -37,6 +37,8 @@ MAX_PRICING_RULES_PER_LINE = 20
 MAX_LINE_NOTES_LENGTH = 500
 # Sales Invoice Payment reference_no (Data)
 MAX_REFERENCE_LENGTH = 140
+# Customer crenya_location (0.15.0): pos-core's LOCATION_MAX
+MAX_LOCATION_LENGTH = 140
 
 _EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,139}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -156,7 +158,33 @@ def validate_customer_payload(payload):
 		"tax_id": _optional_str(payload, "tax_id", max_length=40),
 		"customer_group": _optional_str(payload, "customer_group"),
 		"territory": _optional_str(payload, "territory"),
+		# optional (0.15.0, provider settlement NC2): one line the cashier typed, Customer
+		# `crenya_location`. Absent (a retail till, a till before 0.15.0): None
+		"location": _optional_str(payload, "location", max_length=MAX_LOCATION_LENGTH),
+		# optional (0.15.0, NC3/NC4): the till manager's House Account grant for this new customer.
+		# Only the customer extenders read it; absent: None
+		"credit_facility": _validate_credit_facility(payload.get("credit_facility")),
 	}
+
+
+def _validate_credit_facility(value):
+	"""Optional `credit_facility` of a till's new customer: {approved_by, approved_at (ISO-8601
+	with an offset)}, as pos-core sends it. Kept as that dict of stripped strings (any other key is
+	dropped) for the customer extenders, which decide whether it switches anything on; nothing
+	here grants it. Absent: None."""
+	if value is None:
+		return None
+	if not isinstance(value, dict):
+		_fail("credit_facility must be an object")
+	grant = {
+		"approved_by": _required_str(value, "approved_by", "credit_facility.approved_by"),
+		"approved_at": _required_str(value, "approved_at", "credit_facility.approved_at"),
+	}
+	try:
+		parse_iso_utc(grant["approved_at"])
+	except ValueError:
+		_fail("credit_facility.approved_at must be an ISO-8601 UTC timestamp, e.g. 2026-10-26T08:15:30Z")
+	return grant
 
 
 def _validate_date(value, field):

@@ -203,6 +203,44 @@ def extend_invoice(ctx, doc, data, notes):
 	notes.append(f"{APP}: table {ext.get('table')}")
 
 
+# customer extenders (0.15.0): fn(ctx, customer, data, notes) -> Comment text or None
+
+CUSTOMER_EXTENDER = "crenya_pos_api.tests.extension_dummy.extend_customer"
+# every call: (device_id, customer_name, credit_facility); tests clear it
+CUSTOMER_CALLS = []
+
+
+def extend_customer(ctx, customer, data, notes):
+	"""What crenya_restaurant's extender does in shape (NC4): a till's `credit_facility` grant
+	switches the facility on through the server-only grant flag; anything else is a note."""
+	CUSTOMER_CALLS.append((ctx.device_id, customer.customer_name, data["credit_facility"]))
+	grant = data["credit_facility"]
+	if not grant:
+		return None
+	if grant["approved_by"] == "declined@example.com":
+		notes.append(f"{APP}: House Account not switched on")
+		return None
+	customer.set("crenya_credit_enabled", 1)
+	customer.flags[registry_grant_flag()] = "till"
+	notes.append(f"{APP}: House Account switched on")
+	return f"House Account switched on at the till {ctx.device_id}, approved by {grant['approved_by']}"
+
+
+def registry_grant_flag():
+	from crenya_pos_api.extension import GRANT_FLAG
+
+	return GRANT_FLAG
+
+
+def extend_customer_without_flag(ctx, customer, data, notes):
+	"""An extender that switches the facility on without the grant flag: the editor check refuses."""
+	customer.set("crenya_credit_enabled", 1)
+
+
+def extend_customer_bad_return(ctx, customer, data, notes):
+	return {"comment": "not a string"}
+
+
 # misconfigured extensions (registry error tests)
 
 

@@ -11,6 +11,7 @@ from crenya_pos_api.sync.approvals import (
 	MAX_DISCOUNT_FIELD,
 )
 from crenya_pos_api.sync.credit import CREDIT_CHANGED_AT_FIELD, CREDIT_ENABLED_FIELD, CREDIT_SALES_FIELD
+from crenya_pos_api.sync.customer import LOCATION_FIELD
 from crenya_pos_api.sync.tax_wording import (
 	DEFAULT_CREDIT_NOTE_TITLE,
 	DEFAULT_INVOICE_TITLE,
@@ -247,6 +248,15 @@ CUSTOM_FIELDS = {
 			"unique": 1,
 			"read_only": 1,
 			"no_copy": 1,
+		},
+		# 0.15.0 (provider settlement NC2): where the customer is, as the cashier typed it (not an
+		# ERPNext Address, which needs a city and a country); pulled to the till
+		{
+			"fieldname": LOCATION_FIELD,
+			"fieldtype": "Small Text",
+			"label": "Location",
+			"insert_after": "crenya_local_id",
+			"description": "Where the customer is, as typed at the till or on app.crenya.com (one line).",
 		},
 		*CREDIT_CUSTOMER_FIELDS,
 	],

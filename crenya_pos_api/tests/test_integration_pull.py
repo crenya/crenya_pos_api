@@ -29,7 +29,7 @@ from crenya_pos_api.tests.test_integration_credit_facility import (
 )
 from crenya_pos_api.utils.dates import format_db_datetime
 
-# a retail till's customer record in 0.13.2 (credit on)
+# a retail till's customer record in 0.13.2 (credit on), plus 0.15.0's `location` (every device)
 TILL_CUSTOMER_KEYS = [
 	"credit_limit",
 	"crenya_local_id",
@@ -37,6 +37,7 @@ TILL_CUSTOMER_KEYS = [
 	"customer_name",
 	"disabled",
 	"email_id",
+	"location",
 	"mobile_no",
 	"modified",
 	"name",

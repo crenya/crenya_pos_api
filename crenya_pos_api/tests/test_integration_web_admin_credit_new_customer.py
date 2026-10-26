@@ -312,6 +312,52 @@ class TestCreateCreditCustomer(NewCustomerCase):
 		frappe.db.set_value("Customer", first["customer"], "mobile_no", "", update_modified=False)
 		frappe.db.commit()  # nosemgrep
 
+	def test_duplicate_mobile_names_the_existing_customer(self):
+		"""Task 18 follow-up: the refusal keeps its words and puts the customer in the response body's
+		`error` (raise_api_error's shape plus existing_customer, existing_customer_name)."""
+		digits = f"9689{random.randint(1000000, 9999999)}"
+		owner = f"Known Guest {uuid.uuid4().hex[:6]}"
+		first = self.create(customer_name=owner, mobile_no=digits)
+		frappe.local.response.pop("error", None)
+		with self.assertRaises(frappe.ValidationError) as refused:
+			self.create(mobile_no=f"+{digits}")
+		self.assertIn(f"Use {owner} instead", str(refused.exception))
+		self.assertEqual(
+			frappe.local.response.get("error"),
+			{
+				"code": "duplicate_mobile",
+				"message": f"Use {owner} instead",
+				"retryable": False,
+				"existing_customer": first["customer"],
+				"existing_customer_name": owner,
+			},
+		)
+		frappe.local.response.pop("error", None)
+
+	def test_page_says_what_new_customer_allows(self):
+		"""Task 18 follow-up: credit_customers' `new_customer` follows the method's own rules."""
+		frappe.set_user(REST_MANAGER)
+		self.assertEqual(
+			web_admin.credit_customers(RESTAURANT_A)["new_customer"],
+			{"available": True, "may_enable": False, "may_set_limit": False},
+		)
+		self.use_product(may_enable_new=manages_test_restaurant)
+		frappe.set_user(REST_MANAGER)
+		self.assertEqual(
+			web_admin.credit_customers(RESTAURANT_A)["new_customer"],
+			{"available": True, "may_enable": True, "may_set_limit": False},
+		)
+		frappe.set_user(ACCOUNTS)
+		self.assertEqual(
+			web_admin.credit_customers(RESTAURANT_A)["new_customer"],
+			{"available": True, "may_enable": True, "may_set_limit": True},
+		)
+		frappe.set_user(MANAGER)
+		self.assertEqual(
+			web_admin.credit_customers(self.profile.name)["new_customer"],
+			{"available": True, "may_enable": False, "may_set_limit": False},
+		)
+
 	def test_request_id_idempotent(self):
 		request = new_request()
 		once = f"Once Only {uuid.uuid4().hex[:6]}"

@@ -193,6 +193,33 @@ class TestProductSeams(NewCustomerCase):
 		# the shop keeps settling everyone
 		self.assertEqual(web_credit.excluded_customers(WebAdminContext(ACCOUNTS, self.profile.name)), set())
 
+	def test_limit_and_facility_refuse_excluded_customer(self):
+		"""Controller ruling (review round 1): a provider's limit and House Account are not changed on
+		the House Account page either; the refusal is the product's words, the name escaped."""
+		provider = make_customer("seamtoggle", limit=50)
+		frappe.db.set_value("Customer", provider, "customer_name", "Talabat <b>Bold</b>")
+		frappe.db.commit()  # nosemgrep
+		self.use_product(excluded_customers=lambda ctx: {provider}, excluded_refusal=PROVIDER_TEXT)
+		frappe.set_user(ACCOUNTS)
+		for call in (
+			lambda: web_admin.save_credit_facility(RESTAURANT_A, provider, 1),
+			lambda: web_admin.save_credit_limit(RESTAURANT_A, provider, "500", "2000-01-01 00:00:00"),
+			lambda: web_admin.settle_customer(
+				RESTAURANT_A, provider, SETTLE_BANK, "5.000", reference="S1", request_id=new_request()
+			),
+		):
+			with self.assertRaises(frappe.PermissionError) as refused:
+				call()
+			text = str(refused.exception)
+			self.assertIn("Talabat &lt;b&gt;Bold&lt;/b&gt; is a service provider", text)
+			self.assertNotIn("<b>", text)
+		frappe.set_user("Administrator")
+		self.assertEqual(frappe.db.get_value("Customer", provider, CREDIT_ENABLED_FIELD), 0)
+		self.assertEqual(credit_limit_rows(provider)[0]["credit_limit"], 50)
+		# the shop still changes the same customer
+		frappe.set_user(ACCOUNTS)
+		self.assertIs(web_admin.save_credit_facility(self.profile.name, provider, 1)["credit_enabled"], True)
+
 
 class TestCreateCreditCustomer(NewCustomerCase):
 	def test_create_without_enable_by_manager(self):
@@ -360,6 +387,55 @@ class TestCreateCreditCustomer(NewCustomerCase):
 			web_admin.save_credit_facility(RESTAURANT_A, row["customer"], 1)["credit_enabled"], True
 		)
 
+	def use_outlet_groups(self, groups):
+		"""RESTAURANT_A limited to `groups` for this test only."""
+		profile = frappe.get_doc("POS Profile", RESTAURANT_A)
+		saved = [row.customer_group for row in profile.get("customer_groups") or []]
+
+		def put(names):
+			doc = frappe.get_doc("POS Profile", RESTAURANT_A)
+			doc.set("customer_groups", [{"customer_group": name} for name in names])
+			doc.save(ignore_permissions=True)
+			frappe.clear_document_cache("POS Profile", RESTAURANT_A)
+			frappe.db.commit()  # nosemgrep
+
+		self.addCleanup(put, saved)
+		put(groups)
+
+	def test_new_customer_group_inside_outlet(self):
+		"""Review round 1: the customer is put inside the outlet's groups (a leaf under them), so it
+		is listed and a resend finds it; groups with no leaf are refused before anything is made."""
+		root = frappe.db.get_value(
+			"Customer Group", {"is_group": 1, "parent_customer_group": ["in", ["", None]]}
+		)
+		parent = ensure_group("_Test Crenya NC Parent", root, is_group=1)
+		leaf = ensure_group("_Test Crenya NC Leaf", parent)
+		empty = ensure_group("_Test Crenya NC Empty", root, is_group=1)
+		frappe.db.commit()  # nosemgrep
+		self.use_outlet_groups([parent])
+		request = new_request()
+		row = self.create(request_id=request)
+		frappe.set_user("Administrator")
+		self.assertEqual(frappe.db.get_value("Customer", row["customer"], "customer_group"), leaf)
+		self.assertEqual(self.create(request_id=request)["customer"], row["customer"])
+		self.use_outlet_groups([empty])
+		number = mobile()
+		with self.assertRaises(frappe.ValidationError):
+			self.create(mobile_no=number)
+		self.assertEqual(customers_with_mobile(number), [])
+
+	def test_duplicate_mobile_found_whatever_the_separators(self):
+		"""Review round 1: the SQL narrowing keeps every number with the same digits."""
+		digits = f"9689{random.randint(1000000, 9999999)}"
+		owner = f"Sep Owner {uuid.uuid4().hex[:6]}"
+		self.create(customer_name=owner, mobile_no=f"{digits[:4]} {digits[4:6]}-{digits[6:8]} {digits[8:]}")
+		for typed in (digits, f"+{digits}", f"({digits[:3]}) {digits[3:]}"):
+			with self.assertRaises(frappe.ValidationError, msg=typed) as refused:
+				self.create(mobile_no=typed)
+			self.assertIn(f"Use {owner} instead", str(refused.exception))
+		# the same last six digits with another start is no duplicate
+		self.assertTrue(self.create(mobile_no="955" + digits[-8:])["customer"])
+
 	def test_rows_have_location(self):
 		self.full_list()
 		self.use_product(may_enable_new=manages_test_restaurant)
@@ -369,3 +445,16 @@ class TestCreateCreditCustomer(NewCustomerCase):
 		rows = rows_by_customer(web_admin.credit_customers(RESTAURANT_A))
 		self.assertEqual(rows[placed["customer"]]["location"], "Ruwi High Street")
 		self.assertIsNone(rows[plain["customer"]]["location"])
+
+
+def ensure_group(name, parent, is_group=0):
+	if not frappe.db.exists("Customer Group", name):
+		frappe.get_doc(
+			{
+				"doctype": "Customer Group",
+				"customer_group_name": name,
+				"parent_customer_group": parent,
+				"is_group": is_group,
+			}
+		).insert(ignore_permissions=True)
+	return name

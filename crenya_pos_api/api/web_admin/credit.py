@@ -184,7 +184,14 @@ def excluded_refusal(ctx, customer) -> str | None:
 		return None
 	text = _ctx_product(ctx).excluded_refusal or "{name} cannot be settled on this page"
 	name = frappe.db.get_value(CUSTOMER, customer, "customer_name") or customer
-	return _(text).format(name=name)
+	# a refusal is shown as HTML (msgprint): the name is the user's text
+	return _(text).format(name=frappe.utils.escape_html(name))
+
+
+def _refuse_excluded(ctx, customer):
+	refusal = excluded_refusal(ctx, customer)
+	if refusal:
+		refuse(refusal)
 
 
 def _outlet_customer_filter(ctx):
@@ -751,6 +758,7 @@ def save_credit_limit(outlet: str, customer: str, credit_limit: str | None, modi
 	ctx = credit_editor(outlet)
 	if not customer_in_outlet(ctx, customer):
 		refuse(_("Customer {0} is not a customer of shop {1}").format(customer, ctx.outlet))
+	_refuse_excluded(ctx, customer)
 	precision = money_precision(ctx.currency)
 	try:
 		limit = parse_limit(credit_limit, precision)
@@ -822,6 +830,7 @@ def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) 
 	refusal = facility_customer_refusal(ctx, customer)
 	if refusal:
 		refuse(refusal)
+	_refuse_excluded(ctx, customer)
 	doc = frappe.get_doc(CUSTOMER, customer)
 	if flag and cint(doc.disabled):
 		invalid(_("Customer {0} is disabled: enable the customer first").format(customer))
@@ -913,19 +922,53 @@ def _may_enable_new(ctx, roles, user) -> bool:
 def _outlet_customer_with_mobile(ctx, mobile) -> dict | None:
 	"""A customer of the outlet (inside its customer groups, disabled ones too) whose mobile has the
 	same digits as `mobile`, or None."""
-	filters = {"mobile_no": ["is", "set"]}
+	filters = {}
 	roots = [row.customer_group for row in ctx.profile.get("customer_groups") or []]
 	if roots:
 		from crenya_pos_api.sync.pull import _descendants
 
 		filters["customer_group"] = ["in", _descendants("Customer Group", roots) or [""]]
 	digits = mobile_digits(mobile)
+	# narrowed in SQL first: a number with the same digits holds its last MOBILE_MIN_DIGITS digits in
+	# order, whatever separators lie between them; the digits are then compared exactly
+	tail = digits[-MOBILE_MIN_DIGITS:]
+	filters["mobile_no"] = ["like", "%" + "%".join(tail) + "%"]
 	for row in frappe.get_all(
 		CUSTOMER, filters=filters, fields=["name", "customer_name", "mobile_no"], order_by="creation asc"
 	):
 		if mobile_digits(row.mobile_no) == digits:
 			return row
 	return None
+
+
+def new_customer_group(ctx) -> str:
+	"""The Customer Group of a customer created on the outlet's page: one inside the outlet's
+	customer groups, so it is listed and found again there. The till's default
+	(`sync.customer._default_customer_group`) when it lies inside them (or the outlet limits none),
+	else the first leaf under them by name. frappe.ValidationError when they hold no leaf."""
+	chosen = _default_customer_group(ctx, None)
+	roots = [row.customer_group for row in ctx.profile.get("customer_groups") or []]
+	if not roots:
+		return chosen
+	from crenya_pos_api.sync.pull import _descendants
+
+	inside = _descendants("Customer Group", roots)
+	if chosen in inside and not cint(frappe.db.get_value("Customer Group", chosen, "is_group")):
+		return chosen
+	leaves = frappe.get_all(
+		"Customer Group",
+		filters={"name": ["in", inside or [""]], "is_group": 0},
+		pluck="name",
+		order_by="name asc",
+		limit=1,
+	)
+	if not leaves:
+		invalid(
+			_("{0}'s customer groups have no group a customer can be in: add one on the outlet").format(
+				ctx.outlet
+			)
+		)
+	return leaves[0]
 
 
 def _created_before(ctx, request_id, user) -> str | None:
@@ -969,6 +1012,9 @@ def create_credit_customer(
 	- `request_id` (a UUID, required) is kept in the Customer's `crenya_local_id`: the same request
 	  again answers the customer it created, whatever else it now says.
 
+	The customer is put in a Customer Group inside the outlet's (`new_customer_group`), so it is
+	listed there at once; an outlet whose groups hold no leaf group is refused.
+
 	Runs under one lock per company, so two requests at once cannot make the same customer twice.
 	The Customer is owned by the web user; a Comment names them ("Created on app.crenya.com by
 	{user}", "; House Account on" when switched on)."""
@@ -987,6 +1033,7 @@ def create_credit_customer(
 		refuse(_("Credit limits are changed by a System Manager or an Accounts Manager"))
 	if enabled and not _may_enable_new(ctx, roles, user):
 		refuse(facility_editor_refusal())
+	group = new_customer_group(ctx)
 	entered = False
 	try:
 		# the lock commits the open transaction first: nothing has been written before it
@@ -994,7 +1041,7 @@ def create_credit_customer(
 			entered = True
 			name = _created_before(ctx, request, user)
 			if name is None:
-				name = _insert_credit_customer(ctx, data, enabled, limit, request, precision)
+				name = _insert_credit_customer(ctx, data, enabled, limit, request, precision, group)
 	except frappe.ValidationError:
 		if not entered:
 			frappe.throw(
@@ -1007,7 +1054,7 @@ def create_credit_customer(
 	return rows[0]
 
 
-def _insert_credit_customer(ctx, data, enabled, limit, request, precision) -> str:
+def _insert_credit_customer(ctx, data, enabled, limit, request, precision, group) -> str:
 	same = _outlet_customer_with_mobile(ctx, data["mobile_no"])
 	if same:
 		invalid(_("Use {0} instead").format(same.customer_name or same.name))
@@ -1016,7 +1063,7 @@ def _insert_credit_customer(ctx, data, enabled, limit, request, precision) -> st
 		{
 			"customer_name": data["customer_name"],
 			"customer_type": "Individual",
-			"customer_group": _default_customer_group(ctx, None),
+			"customer_group": group,
 			"territory": _default_territory(ctx, None),
 			"mobile_no": data["mobile_no"],
 			"email_id": data["email_id"],
@@ -1266,9 +1313,7 @@ def settle_customer(
 
 	ctx = credit_view(outlet)
 	_require_outlet_customer(ctx, customer)
-	refusal = excluded_refusal(ctx, customer)
-	if refusal:
-		refuse(refusal)
+	_refuse_excluded(ctx, customer)
 	precision = money_precision(ctx.currency)
 	modes = {mode["mode_of_payment"]: mode for mode in outlet_modes(ctx.profile)}
 	mode = modes.get(mode_of_payment) if isinstance(mode_of_payment, str) else None

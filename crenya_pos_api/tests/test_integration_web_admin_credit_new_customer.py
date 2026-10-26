@@ -220,6 +220,38 @@ class TestProductSeams(NewCustomerCase):
 		frappe.set_user(ACCOUNTS)
 		self.assertIs(web_admin.save_credit_facility(self.profile.name, provider, 1)["credit_enabled"], True)
 
+	def test_excluded_customer_may_be_switched_off_never_on(self):
+		"""Final review 6: a provider switched on for House Account before 0.18 is switched off on the
+		House Account page (a Comment, the till stops offering it); switching it on stays refused, and so
+		do its limit and Settle."""
+		provider = make_customer("seamoff")
+		frappe.db.set_value("Customer", provider, CREDIT_ENABLED_FIELD, 1)
+		frappe.db.commit()  # nosemgrep
+		self.use_product(excluded_customers=lambda ctx: {provider}, excluded_refusal=PROVIDER_TEXT)
+		frappe.set_user(ACCOUNTS)
+		answer = web_admin.save_credit_facility(RESTAURANT_A, provider, 0)
+		self.assertIs(answer["credit_enabled"], False)
+		frappe.set_user("Administrator")
+		self.assertEqual(frappe.db.get_value("Customer", provider, CREDIT_ENABLED_FIELD), 0)
+		comments = frappe.get_all(
+			"Comment",
+			filters={"reference_doctype": "Customer", "reference_name": provider, "comment_type": "Info"},
+			pluck="content",
+		)
+		self.assertTrue(comments)
+		frappe.set_user(ACCOUNTS)
+		# off again: nothing changes, no refusal
+		self.assertIs(web_admin.save_credit_facility(RESTAURANT_A, provider, 0)["credit_enabled"], False)
+		for call in (
+			lambda: web_admin.save_credit_facility(RESTAURANT_A, provider, 1),
+			lambda: web_admin.save_credit_limit(RESTAURANT_A, provider, "500", "2000-01-01 00:00:00"),
+		):
+			with self.assertRaises(frappe.PermissionError) as refused:
+				call()
+			self.assertIn("is a service provider", str(refused.exception))
+		frappe.set_user("Administrator")
+		self.assertEqual(frappe.db.get_value("Customer", provider, CREDIT_ENABLED_FIELD), 0)
+
 
 class TestCreateCreditCustomer(NewCustomerCase):
 	def test_create_without_enable_by_manager(self):

@@ -825,7 +825,8 @@ def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) 
 	changed_at}. `enabled` is 1 / 0 (true / false). The customer must be one of the outlet's
 	(`facility_customer_refusal`); a disabled customer can be switched off, not on. The save is a
 	Version of the Customer (it tracks changes) and leaves a Comment naming the web user; saving the
-	state it already has changes nothing. `changed_at` (UTC ISO-8601, null when never changed) is
+	state it already has changes nothing. A customer the product leaves out (PS8) can be switched off,
+	never on. `changed_at` (UTC ISO-8601, null when never changed) is
 	when the facility or `disabled` last changed, stamped by the Customer validate hook."""
 	ctx = credit_editor(outlet, facility_editor_refusal())
 	flag = checked(parse_flag, enabled, "enabled")
@@ -834,7 +835,11 @@ def save_credit_facility(outlet: str, customer: str, enabled: bool | int | str) 
 	refusal = facility_customer_refusal(ctx, customer)
 	if refusal:
 		refuse(refusal)
-	_refuse_excluded(ctx, customer)
+	if flag:
+		# a customer the product leaves out (a restaurant's service provider, PS8) is never switched
+		# on here; switching it off is let through, so a provider switched on before 0.18 stops being
+		# offered on House Account at the till
+		_refuse_excluded(ctx, customer)
 	doc = frappe.get_doc(CUSTOMER, customer)
 	if flag and cint(doc.disabled):
 		invalid(_("Customer {0} is disabled: enable the customer first").format(customer))

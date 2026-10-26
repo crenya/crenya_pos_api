@@ -90,6 +90,7 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		self.assertEqual(registry.bootstrap_hooks(), [])
 		self.assertEqual(registry.capability_hooks(), [])
 		self.assertEqual(registry.invoice_extenders(), [])
+		self.assertEqual(registry.customer_extenders(), [])
 		# core: Crenya POS User, the store controls' approver on a retail till, the device user's role
 		self.assertEqual(
 			registry.device_roles(), ("Crenya POS User", "Crenya POS Manager", "Crenya POS Device")
@@ -163,6 +164,10 @@ class TestRegistryMerge(unittest.TestCase):
 			self.assertEqual(registry.bootstrap_hooks(), [dummy.extend_bootstrap])
 			self.assertEqual(registry.capability_hooks(), [dummy.features])
 			self.assertEqual(registry.invoice_extenders(), [dummy.extend_invoice])
+			self.assertEqual(registry.customer_extenders(), [])
+		with dummy.fake_hooks({"crenya_pos_customer_extenders": [dummy.CUSTOMER_EXTENDER]}, site_ready=True):
+			self.assertEqual(registry.customer_extenders(), [dummy.extend_customer])
+		with dummy.fake_hooks(site_ready=True):
 			self.assertEqual(
 				registry.device_roles(),
 				("Crenya POS User", "Crenya POS Manager", "Crenya POS Device", dummy.DEVICE_ROLE),

@@ -3,7 +3,11 @@
 import frappe
 from frappe.utils import cint
 
+from crenya_pos_api.sync.registry import customer_extenders, extend_customer
 from crenya_pos_api.utils.dates import format_db_datetime
+
+# Customer Small Text (0.15.0, provider settlement NC2): the one line the cashier typed
+LOCATION_FIELD = "crenya_location"
 
 
 def _is_leaf(doctype, name):
@@ -39,7 +43,12 @@ def _default_territory(ctx, requested):
 	return get_root_of("Territory")
 
 
-def create_customer(ctx, data):
+def create_customer(ctx, data, notes=None):
+	"""Insert the till's new Customer. The `crenya_pos_customer_extenders` of other apps run on it
+	before the insert (they get the validated payload, its `credit_facility` included) and the
+	Comment texts they return are added after it. Without an extender `credit_facility` is dropped
+	with a note: the customer is created without a House Account."""
+	notes = [] if notes is None else notes
 	customer = frappe.new_doc("Customer")
 	customer.update(
 		{
@@ -53,10 +62,19 @@ def create_customer(ctx, data):
 			"crenya_local_id": data["local_id"],
 		}
 	)
+	if data.get("location") and customer.meta.has_field(LOCATION_FIELD):
+		customer.set(LOCATION_FIELD, data["location"])
+	if data.get("credit_facility") and not customer_extenders():
+		notes.append("credit_facility ignored: no app handles a House Account grant here")
+	# the House Account facility is switched on only by an extender, through the server-only grant
+	# flag (sync.credit.GRANT_FLAG); nothing of the payload reaches `customer.flags`
+	comments = extend_customer(ctx, customer, data, notes)
 	# created for the authorised device (get_device_context in the push): a cashier needs no
 	# desk role on Customer, as the invoice push posts its sale (0.9.3)
 	customer.insert(ignore_permissions=True)
 	customer.add_comment("Info", f"Created at the till {_device_label(ctx)}")
+	for text in comments:
+		customer.add_comment("Info", text)
 	return customer
 
 

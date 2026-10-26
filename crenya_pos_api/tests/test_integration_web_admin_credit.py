@@ -729,7 +729,8 @@ class TestShopAnswersUnchanged(WebCreditCase):
 		self.assertNotIn(flagged, rows)
 		row = rows[over]
 		self.assertEqual(
-			set(row), ROW_KEYS_0132 | {"credit_enabled", "mobile_no", "credit_sales", "payments"}
+			set(row),
+			ROW_KEYS_0132 | {"credit_enabled", "mobile_no", "credit_sales", "payments", "location"},
 		)
 		self.assertEqual(
 			(row["credit_limit"], row["limit_source"], row["outstanding"], row["available"]),
@@ -751,7 +752,7 @@ class TestShopAnswersUnchanged(WebCreditCase):
 		self.assertEqual(web_admin.credit_shops(), web_admin.credit_shops("shop"))
 		frappe.set_user("Administrator")
 		saved = web_admin.save_credit_limit(self.profile.name, over, "200", row["modified"])
-		self.assertEqual(set(saved), ROW_KEYS_0132 | {"credit_enabled", "mobile_no"})
+		self.assertEqual(set(saved), ROW_KEYS_0132 | {"credit_enabled", "mobile_no", "location"})
 		self.assertEqual((saved["credit_limit"], saved["available"]), ("200.000", "50.000"))
 
 

@@ -6,6 +6,7 @@ re-exported here so `crenya_pos_api.api.web_admin.<name>` resolves. Who manages 
 """
 
 from crenya_pos_api.api.web_admin.credit import (
+	create_credit_customer,
 	credit_customers,
 	credit_shops,
 	customer_open_invoices,
@@ -42,6 +43,7 @@ from crenya_pos_api.api.web_admin.staff import staff_clear_pin, staff_get, staff
 
 __all__ = [
 	"company_wording",
+	"create_credit_customer",
 	"credit_customers",
 	"credit_shops",
 	"customer_open_invoices",

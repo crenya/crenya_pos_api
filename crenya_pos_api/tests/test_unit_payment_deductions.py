@@ -223,11 +223,58 @@ class TestBookingWithoutDeductions(unittest.TestCase):
 			self.assertEqual(notes, [])
 			self.assertTrue(doc.inserted and doc.submitted)
 
-	def test_the_three_new_fields_trail_with_none_defaults(self):
-		self.assertEqual(PaymentBooking._fields[-3:], ("deductions", "extra", "credit_notes"))
+	def test_the_new_fields_trail_with_none_defaults(self):
 		self.assertEqual(
-			PaymentBooking._field_defaults, {"deductions": None, "extra": None, "credit_notes": None}
+			PaymentBooking._fields[-4:], ("deductions", "extra", "credit_notes", "party_account")
 		)
+		self.assertEqual(
+			PaymentBooking._field_defaults,
+			{"deductions": None, "extra": None, "credit_notes": None, "party_account": None},
+		)
+
+	def test_booking_with_party_account_none_unchanged(self):
+		candidates = [invoice("O1", "6.300"), invoice("O2", "6.300")]
+		doc, _notes = post(booking(amount=Decimal("51.000"), party_account=None), candidates)
+		self.assertEqual(doc.fields, FIELDS_0_14_0)
+		self.assertEqual(doc.rows, ROWS_0_14_0)
+
+
+OLD_RECEIVABLE = "Talabat Old Receivable - MT"
+ACCOUNTS.update(
+	{
+		("Account", OLD_RECEIVABLE, ACCOUNT_FIELDS): account(account_type="Receivable"),
+		("Account", OLD_RECEIVABLE, "account_currency"): "OMR",
+		("Account", "Group Receivable - MT", ACCOUNT_FIELDS): account(account_type="Receivable", is_group=1),
+		("Account", "Off Receivable - MT", ACCOUNT_FIELDS): account(account_type="Receivable", disabled=1),
+		("Account", "Other Co Receivable - XX", ACCOUNT_FIELDS): account(
+			account_type="Receivable", company="Other Co"
+		),
+		("Account", "USD Receivable - MT", ACCOUNT_FIELDS): account(
+			account_type="Receivable", account_currency="USD"
+		),
+	}
+)
+
+
+class TestPartyAccount(unittest.TestCase):
+	def test_party_account_is_paid_from(self):
+		candidates = [invoice("O1", "6.300"), invoice("O2", "6.300")]
+		doc, _notes = post(booking(amount=Decimal("51.000"), party_account=OLD_RECEIVABLE), candidates)
+		self.assertEqual(doc.fields, {**FIELDS_0_14_0, "paid_from": OLD_RECEIVABLE})
+		self.assertEqual(doc.rows, ROWS_0_14_0)
+
+	def test_party_account_must_be_an_enabled_receivable_ledger_of_the_company(self):
+		for name, words in (
+			(COMMISSION, "not a Receivable"),
+			("Group Receivable - MT", "not a ledger"),
+			("Off Receivable - MT", "disabled"),
+			("Other Co Receivable - XX", "not a ledger"),
+			("USD Receivable - MT", "USD"),
+			("No Such - MT", "not a ledger"),
+			("", "account name"),
+		):
+			message = refused(self, booking(party_account=name), candidates=[invoice("O1", "6.300")])
+			self.assertIn(words, message, name)
 
 
 class TestDeductions(unittest.TestCase):

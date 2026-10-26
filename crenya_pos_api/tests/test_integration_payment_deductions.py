@@ -279,3 +279,38 @@ class TestCreditNotes(DeductionCase):
 			self.book(customer, "0.500", [second], credit_notes=[refund])
 		self.assertEqual(caught.exception.code, VALIDATION)
 		self.assertEqual(outstanding(refund), D("-6.300"))
+
+
+class TestPartyAccount(DeductionCase):
+	def test_orders_on_an_old_receivable_settle_with_party_account(self):
+		"""The customer's party account changed after its orders were booked: the payment credits the
+		account they are on (`party_account`), and ERPNext takes the references."""
+		customer = self.provider_customer("old receivable")
+		(order,) = self.orders(customer, "6.300")
+		old = frappe.db.get_value("Sales Invoice", order, "debit_to")
+		new = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"_Test Provider Receivable {uuid.uuid4().hex[:6]}",
+				"parent_account": f"Accounts Receivable - {fixtures.ABBR}",
+				"company": fixtures.COMPANY,
+				"account_type": "Receivable",
+			}
+		).insert(ignore_permissions=True)
+		doc = frappe.get_doc("Customer", customer)
+		doc.append("accounts", {"company": fixtures.COMPANY, "account": new.name})
+		doc.save(ignore_permissions=True)
+		# without it, the party account now is the new one and ERPNext refuses the old order
+		with self.assertRaises(frappe.ValidationError):
+			self.book(customer, "5.040", [order], deductions=[self.commission("1.260")])
+		booked = self.book(
+			customer, "5.040", [order], deductions=[self.commission("1.260")], party_account=old
+		)
+		self.assertEqual(booked.paid_from, old)
+		self.assertEqual(self.references(booked), [(order, D("6.300"))])
+		self.assertEqual(self.gl(booked.name)[(old, customer)], D("-6.300"))
+		self.assertEqual(outstanding(order), D("0"))
+		# not a receivable of the company: refused, nothing booked
+		with self.assertRaises(SyncError) as caught:
+			self.book(customer, "1.000", None, party_account=COMMISSION_ACCOUNT)
+		self.assertEqual(caught.exception.code, VALIDATION)

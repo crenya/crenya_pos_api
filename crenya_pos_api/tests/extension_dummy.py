@@ -237,6 +237,12 @@ def extend_customer_without_flag(ctx, customer, data, notes):
 	customer.set("crenya_credit_enabled", 1)
 
 
+def extend_customer_web_grant(ctx, customer, data, notes):
+	"""Sets the web's grant on a till's customer: the till path refuses it."""
+	customer.set("crenya_credit_enabled", 1)
+	customer.flags[registry_grant_flag()] = "web"
+
+
 def extend_customer_bad_return(ctx, customer, data, notes):
 	return {"comment": "not a string"}
 

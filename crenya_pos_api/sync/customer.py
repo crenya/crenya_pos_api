@@ -72,7 +72,8 @@ def create_customer(ctx, data, notes=None):
 	# created for the authorised device (get_device_context in the push): a cashier needs no
 	# desk role on Customer, as the invoice push posts its sale (0.9.3)
 	customer.insert(ignore_permissions=True)
-	customer.add_comment("Info", f"Created at the till {_device_label(ctx)}")
+	# the device name is the cashier's text and a Comment is shown as HTML
+	customer.add_comment("Info", f"Created at the till {frappe.utils.escape_html(_device_label(ctx))}")
 	for text in comments:
 		customer.add_comment("Info", text)
 	return customer

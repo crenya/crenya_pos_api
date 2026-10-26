@@ -8,7 +8,7 @@ crenya_pos_api.tests.test_unit_customer_payload
 import unittest
 
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
-from crenya_pos_api.sync.validation import validate_customer_payload
+from crenya_pos_api.sync.validation import clean_location, validate_customer_payload
 
 # what pos-core sent before 0.15.0 (and a retail till still sends)
 RETAIL = {
@@ -102,6 +102,30 @@ class TestCustomerPayload(unittest.TestCase):
 			)
 		)
 		self.assertEqual(set(data), KEYS_0_14 | {"location", "credit_facility"})
+
+
+class TestCleanLocation(unittest.TestCase):
+	def test_one_line_collapsed(self):
+		self.assertEqual(clean_location("  Al   Khuwair,  behind Lulu "), "Al Khuwair, behind Lulu")
+		self.assertIsNone(clean_location(None))
+		self.assertIsNone(clean_location("   "))
+		# collapsed first, then counted
+		self.assertEqual(len(clean_location("a" * 70 + "     " + "b" * 69)), 140)
+
+	def test_control_characters_and_separators_refused(self):
+		for bad in ("a\nb", "a\x00b", "a\tb", "a\rb", "a\x7fb", "a\x85b", "a\u2028b", "a\u2029b"):
+			with self.assertRaises(SyncError) as caught:
+				clean_location(bad)
+			self.assertEqual(caught.exception.code, VALIDATION)
+			self.assertIn("location must be one line", caught.exception.message)
+
+	def test_field_name_and_type(self):
+		with self.assertRaises(SyncError) as caught:
+			clean_location(5, "Location")
+		self.assertIn("Location must be a string", caught.exception.message)
+		with self.assertRaises(SyncError) as caught:
+			clean_location("x" * 141)
+		self.assertIn("longer than 140", caught.exception.message)
 
 
 if __name__ == "__main__":

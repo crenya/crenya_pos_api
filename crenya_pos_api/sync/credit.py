@@ -232,14 +232,18 @@ def credit_enabled_for(customer):
 # of a document dict (BaseDocument reserved keywords) and the till's Customer payload is read field
 # by field. The flag counts only on the insert of a new customer; an existing one stays P4 only.
 GRANT_FLAG = "crenya_credit_grant"
-GRANT_SOURCES = frozenset({"till", "web"})
+TILL_GRANT = "till"
+WEB_GRANT = "web"
+GRANT_SOURCES = frozenset({TILL_GRANT, WEB_GRANT})
 
 
 def _granted_on_create(doc):
-	"""Whether server code granted the facility to this new customer (`GRANT_FLAG`)."""
-	if doc is None or doc.get_doc_before_save() is not None:
+	"""Whether server code granted the facility to this new customer (`GRANT_FLAG`): only inside
+	`insert()` (Frappe's `flags.in_insert`, which a request cannot set) and with no saved version."""
+	flags = (getattr(doc, "flags", None) or {}) if doc is not None else {}
+	if doc is None or not flags.get("in_insert") or doc.get_doc_before_save() is not None:
 		return False
-	grant = (getattr(doc, "flags", None) or {}).get(GRANT_FLAG)
+	grant = flags.get(GRANT_FLAG)
 	return isinstance(grant, str) and grant in GRANT_SOURCES
 
 

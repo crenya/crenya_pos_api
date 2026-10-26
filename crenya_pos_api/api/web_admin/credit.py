@@ -66,7 +66,7 @@ from crenya_pos_api.sync.customer_payment import (
 	post_payment_entry,
 )
 from crenya_pos_api.sync.customer_payment import _invoices as ticked_invoice_names
-from crenya_pos_api.sync.errors import SyncError
+from crenya_pos_api.sync.errors import SyncError, error_dict
 from crenya_pos_api.sync.events import customer_lock_key, named_lock
 from crenya_pos_api.sync.validation import clean_location
 from crenya_pos_api.utils.dates import format_db_datetime, site_naive_to_utc_iso
@@ -543,7 +543,10 @@ def credit_customers(outlet: str, from_date: str | None = None, to_date: str | N
 	CC8: `credit_sales` and `payments` are the customer's for `from_date`..`to_date` (YYYY-MM-DD,
 	either open; default all time, `credit_sales_of`, `payments_of`); `outstanding` stays ERPNext's
 	balance today, whatever the range. `totals` {credit_sales, payments, outstanding} sums the rows
-	listed (the Grand total row)."""
+	listed (the Grand total row).
+
+	`new_customer` {available, may_enable, may_set_limit} (0.15.0, NC5): what the page's New customer
+	dialog offers the user (`new_customer_rights`); a server without the key has no such dialog."""
 	ctx = credit_view(outlet)
 	first, last = parse_range(from_date, to_date)
 	rows, more = credit_rows(ctx)
@@ -561,6 +564,7 @@ def credit_customers(outlet: str, from_date: str | None = None, to_date: str | N
 		"more": more,
 		"can_edit": _is_credit_editor(),
 		"totals": range_totals(rows, precision),
+		"new_customer": new_customer_rights(ctx),
 	}
 
 
@@ -971,6 +975,43 @@ def new_customer_group(ctx) -> str:
 	return leaves[0]
 
 
+def new_customer_rights(ctx) -> dict:
+	"""What `create_credit_customer` allows the session user on the outlet (`ctx` from
+	`credit_view`): {available: true, may_enable (P4 or the product's `may_enable_new`),
+	may_set_limit (P4)}. The same rules the method checks, so the dialog offers what it accepts."""
+	user = frappe.session.user
+	roles = set(frappe.get_roles(user))
+	return {
+		"available": True,
+		"may_enable": _may_enable_new(ctx, roles, user),
+		"may_set_limit": bool(roles & set(CREDIT_EDITOR_ROLES)),
+	}
+
+
+# the `error.code` of a New customer refused for a mobile another customer of the outlet has
+DUPLICATE_MOBILE = "duplicate_mobile"
+
+
+def refuse_duplicate_mobile(existing) -> None:
+	"""Refuse the New customer ("Use {name} instead", a frappe.ValidationError) and say which
+	customer has the mobile in the response body, the shape `sync.errors.raise_api_error` gives:
+	`error: {code: "duplicate_mobile", message, retryable: false, existing_customer,
+	existing_customer_name}`, so the web can offer that customer."""
+	name = existing.customer_name or existing.name
+	message = _("Use {0} instead")
+	try:
+		frappe.local.response["error"] = {
+			**error_dict(DUPLICATE_MOBILE, message.format(name), False),
+			"existing_customer": existing.name,
+			"existing_customer_name": name,
+		}
+	except (AttributeError, RuntimeError, TypeError):
+		# no request context (a console)
+		pass
+	# shown as HTML (msgprint): the name is the user's text
+	invalid(message.format(frappe.utils.escape_html(name)))
+
+
 def _created_before(ctx, request_id, user) -> str | None:
 	"""The customer this request already created, or None. One another user created (or no customer
 	of the outlet) is refused: a request id reads back only what the same user made with it."""
@@ -1057,7 +1098,7 @@ def create_credit_customer(
 def _insert_credit_customer(ctx, data, enabled, limit, request, precision, group) -> str:
 	same = _outlet_customer_with_mobile(ctx, data["mobile_no"])
 	if same:
-		invalid(_("Use {0} instead").format(same.customer_name or same.name))
+		refuse_duplicate_mobile(same)
 	doc = frappe.new_doc(CUSTOMER)
 	doc.update(
 		{

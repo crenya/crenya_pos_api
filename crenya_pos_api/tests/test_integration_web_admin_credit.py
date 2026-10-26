@@ -724,7 +724,7 @@ class TestShopAnswersUnchanged(WebCreditCase):
 		frappe.db.commit()  # nosemgrep
 		self.as_manager()
 		answer = web_admin.credit_customers(self.profile.name)
-		self.assertEqual(set(answer), ANSWER_KEYS_0132 | {"totals"})
+		self.assertEqual(set(answer), ANSWER_KEYS_0132 | {"totals", "new_customer"})
 		rows = rows_by_customer(answer)
 		self.assertNotIn(flagged, rows)
 		row = rows[over]

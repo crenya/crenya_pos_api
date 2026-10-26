@@ -53,7 +53,7 @@ from crenya_pos_api.sync.validation import (
 	_validate_utc_datetime,
 )
 from crenya_pos_api.utils.dates import format_db_datetime
-from crenya_pos_api.utils.decimal import as_decimal, format_money, quantize
+from crenya_pos_api.utils.decimal import DecimalParseError, as_decimal, format_money, parse_decimal, quantize
 
 AGGREGATE_CUSTOMER_PAYMENT = "Customer Payment"
 PAYMENT_ENTRY = "Payment Entry"
@@ -245,6 +245,12 @@ def ticked_credit_notes(customer, company, names, notes):
 	submitted return (`is_return = 1`) of `customer` and `company` that still carries its own
 	negative outstanding (`update_outstanding_for_self`, the till's refunds); anything else is
 	skipped with a note, like a ticked bill."""
+	if not isinstance(names, list) or not all(isinstance(name, str) and name for name in names):
+		raise SyncError(VALIDATION, _("The credit notes must be a list of invoice names"))
+	if len(names) > MAX_TICKED_INVOICES:
+		raise SyncError(
+			VALIDATION, _("A payment may name at most {0} credit notes").format(MAX_TICKED_INVOICES)
+		)
 	resolved, skipped = _erp_names(names, notes)
 	found = {}
 	erp_names = sorted({erp_name for _name, erp_name in resolved})
@@ -606,8 +612,9 @@ def _checked_extra(extra):
 
 def _checked_deductions(deductions, company, precision):
 	"""[{account, cost_center, amount: Decimal, description}] of `deductions` ([] for None): each an
-	account of `company` that is not a group, a cost center of `company` (the company's default when
-	none is given) and an amount above 0 at `precision` decimals at most."""
+	enabled ledger account of `company` in the company's currency that needs no party (not
+	Receivable or Payable), a cost center of `company` (the company's default when none is given)
+	and a finite amount above 0 at `precision` decimals at most."""
 	if deductions is None:
 		return []
 	if not isinstance(deductions, list):
@@ -617,15 +624,40 @@ def _checked_deductions(deductions, company, precision):
 		if not isinstance(row, dict) or not isinstance(row.get("account"), str) or not row["account"]:
 			raise SyncError(VALIDATION, _("Each deduction needs an account"))
 		account = row["account"]
-		found = frappe.db.get_value("Account", account, ("company", "is_group"), as_dict=True)
+		found = frappe.db.get_value(
+			"Account",
+			account,
+			("company", "is_group", "disabled", "account_type", "account_currency"),
+			as_dict=True,
+		)
 		if not found or found.company != company or cint(found.is_group):
 			raise SyncError(
 				VALIDATION, _("Deduction account {0} is not a ledger account of {1}").format(account, company)
 			)
+		if cint(found.disabled):
+			raise SyncError(VALIDATION, _("Deduction account {0} is disabled").format(account))
+		if found.account_type in ("Receivable", "Payable"):
+			raise SyncError(
+				VALIDATION,
+				_("Deduction account {0} is a {1} account: choose an account that needs no party").format(
+					account, found.account_type
+				),
+			)
+		company_currency = frappe.get_cached_value("Company", company, "default_currency")
+		if found.account_currency and company_currency and found.account_currency != company_currency:
+			raise SyncError(
+				VALIDATION,
+				_("Deduction account {0} is in {1}, not in the company's {2}").format(
+					account, found.account_currency, company_currency
+				),
+			)
 		cost_center = row.get("cost_center") or frappe.get_cached_value("Company", company, "cost_center")
-		found = cost_center and frappe.db.get_value(
-			"Cost Center", cost_center, ("company", "is_group"), as_dict=True
-		)
+		if not cost_center:
+			raise SyncError(
+				VALIDATION,
+				_("Set a default cost center on company {0}, or give the deduction one").format(company),
+			)
+		found = frappe.db.get_value("Cost Center", cost_center, ("company", "is_group"), as_dict=True)
 		if not found or found.company != company or cint(found.is_group):
 			raise SyncError(
 				VALIDATION,
@@ -634,9 +666,11 @@ def _checked_deductions(deductions, company, precision):
 				),
 			)
 		try:
-			amount = as_decimal(row.get("amount"))
-		except Exception:
-			raise SyncError(VALIDATION, _("Deduction amount {0} is not a number").format(row.get("amount")))
+			amount = parse_decimal(row.get("amount"), "amount")
+		except DecimalParseError:
+			raise SyncError(
+				VALIDATION, _("Deduction amount {0} is not a number").format(row.get("amount"))
+			) from None
 		if quantize(amount, precision) != amount:
 			raise SyncError(
 				VALIDATION,

@@ -215,6 +215,21 @@ class TestDeductionBooking(DeductionCase):
 		self.assertEqual(frappe.db.get_value(PAYMENT_ENTRY, doc.name, "crenya_service_provider"), value)
 		self.assertEqual(outstanding(order), D("0"))
 
+	def test_a_receivable_deduction_account_refused(self):
+		from erpnext.accounts.party import get_party_account
+
+		customer = self.provider_customer("receivable")
+		(order,) = self.orders(customer, "6.300")
+		receivable = get_party_account("Customer", customer, fixtures.COMPANY)
+		with self.assertRaises(SyncError) as caught:
+			self.book(
+				customer, "5.040", [order], deductions=[{**self.commission("1.260"), "account": receivable}]
+			)
+		self.assertEqual(caught.exception.code, VALIDATION)
+		self.assertIn("Receivable", caught.exception.message)
+		self.assertEqual(frappe.db.count(PAYMENT_ENTRY, {"party": customer}), 0)
+		self.assertEqual(outstanding(order), D("6.300"))
+
 
 class TestCreditNotes(DeductionCase):
 	def refund(self, invoice):

@@ -77,9 +77,29 @@ def invoice(name, outstanding, total=None):
 	}
 
 
+ACCOUNT_FIELDS = ("company", "is_group", "disabled", "account_type", "account_currency")
+
+
+def account(**over):
+	row = {
+		"company": "Muscat Test LLC",
+		"is_group": 0,
+		"disabled": 0,
+		"account_type": "Expense Account",
+		"account_currency": "OMR",
+	}
+	row.update(over)
+	return frappe._dict(row)
+
+
 ACCOUNTS = {
 	("Account", PARTY_ACCOUNT, "account_currency"): "OMR",
-	("Account", COMMISSION, ("company", "is_group")): frappe._dict(company="Muscat Test LLC", is_group=0),
+	("Account", COMMISSION, ACCOUNT_FIELDS): account(),
+	("Account", "Disabled - MT", ACCOUNT_FIELDS): account(disabled=1),
+	("Account", "Debtors - MT", ACCOUNT_FIELDS): account(account_type="Receivable"),
+	("Account", "Creditors - MT", ACCOUNT_FIELDS): account(account_type="Payable"),
+	("Account", "USD Charges - MT", ACCOUNT_FIELDS): account(account_currency="USD"),
+	("Company", "Muscat Test LLC", "default_currency"): "OMR",
 	("Cost Center", COST_CENTER, ("company", "is_group")): frappe._dict(
 		company="Muscat Test LLC", is_group=0
 	),
@@ -109,7 +129,6 @@ def post(data, candidates=None, returns=None, skipped=(), returns_skipped=()):
 			payments,
 			"ticked_credit_notes",
 			return_value=(list(returns or []), list(returns_skipped)),
-			create=True,
 		),
 		mock.patch.object(payments, "open_invoices", return_value=list(candidates or [])),
 		mock.patch.object(payments, "_as_administrator", contextlib.nullcontext),
@@ -280,6 +299,28 @@ class TestDeductions(unittest.TestCase):
 		self.assertIn("CC - MT", refused(self, booking(deductions=[self.commission(cost_center="CC - MT")])))
 		self.assertIn("account", refused(self, booking(deductions=[{"amount": Decimal("1.000")}])))
 		self.assertIn("list", refused(self, booking(deductions={"account": COMMISSION})))
+		for bad in ("Infinity", "NaN", "-Infinity", "abc", Decimal("Infinity"), Decimal("NaN"), 1.5, None):
+			self.assertIn(
+				"not a number", refused(self, booking(deductions=[{**self.commission(), "amount": bad}]))
+			)
+
+	def test_a_deduction_account_must_need_no_party_be_enabled_and_in_the_company_currency(self):
+		self.assertIn(
+			"disabled", refused(self, booking(deductions=[self.commission(account="Disabled - MT")]))
+		)
+		for name, kind in (("Debtors - MT", "Receivable"), ("Creditors - MT", "Payable")):
+			message = refused(self, booking(deductions=[self.commission(account=name)]))
+			self.assertIn(name, message)
+			self.assertIn(kind, message)
+		message = refused(self, booking(deductions=[self.commission(account="USD Charges - MT")]))
+		self.assertIn("USD", message)
+		self.assertIn("OMR", message)
+
+	def test_no_cost_center_and_no_company_default_refused(self):
+		row = {"account": COMMISSION, "amount": Decimal("1.000")}
+		with mock.patch.dict(ACCOUNTS, {("Company", "Muscat Test LLC", "cost_center"): None}):
+			message = refused(self, booking(deductions=[row]))
+		self.assertIn("Set a default cost center on company Muscat Test LLC", message)
 
 
 class TestExtra(unittest.TestCase):
@@ -287,8 +328,13 @@ class TestExtra(unittest.TestCase):
 		self.assertEqual(EXTRA_FIELDS, frozenset({"crenya_service_provider"}))
 
 	def test_extra_unknown_field_refused(self):
-		for extra in ({"remarks": "x"}, {"crenya_service_provider": "Talabat", "paid_amount": 1}, ["x"]):
-			self.assertTrue(refused(self, booking(extra=extra)))
+		for extra, word in (
+			({"remarks": "x"}, "remarks"),
+			({"crenya_service_provider": "Talabat", "paid_amount": 1}, "paid_amount"),
+			(["x"], "mapping"),
+			({"crenya_service_provider": 7}, "crenya_service_provider"),
+		):
+			self.assertIn(word, refused(self, booking(extra=extra)))
 
 	def test_extra_sets_provider_field(self):
 		doc, _notes = post(booking(extra={"crenya_service_provider": "Talabat"}), [invoice("O1", "6.300")])
@@ -329,6 +375,28 @@ class TestCreditNotes(unittest.TestCase):
 		data = booking(amount=Decimal("1.000"), invoices=["O1"], credit_notes=["R1"])
 		message = refused(self, data, candidates=[invoice("O1", "2.000")], returns=[invoice("R1", "-6.300")])
 		self.assertIn("6.300", message)
+
+
+class TestCreditNoteCap(unittest.TestCase):
+	def test_credit_notes_capped_at_max_ticked_invoices(self):
+		too_many = [f"R{n}" for n in range(payments.MAX_TICKED_INVOICES + 1)]
+		with mock.patch.object(payments.frappe, "get_all") as get_all:
+			with self.assertRaises(SyncError) as caught:
+				payments.ticked_credit_notes("Talabat Customer", "Muscat Test LLC", too_many, [])
+			# nothing read (only `_` may read the translations)
+			self.assertNotIn("Sales Invoice", [c.args[0] for c in get_all.call_args_list if c.args])
+		self.assertEqual(caught.exception.code, VALIDATION)
+		self.assertIn(str(payments.MAX_TICKED_INVOICES), caught.exception.message)
+		for bad in ("R1", ["R1", ""], ["R1", 7]):
+			with self.assertRaises(SyncError):
+				payments.ticked_credit_notes("Talabat Customer", "Muscat Test LLC", bad, [])
+
+	def test_a_full_list_of_credit_notes_is_read(self):
+		names = [f"R{n}" for n in range(payments.MAX_TICKED_INVOICES)]
+		with mock.patch.object(payments.frappe, "get_all", return_value=[]) as get_all:
+			rows, skipped = payments.ticked_credit_notes("Talabat Customer", "Muscat Test LLC", names, [])
+		get_all.assert_called_once()
+		self.assertEqual((rows, skipped), ([], names))
 
 
 class TestProviderField(unittest.TestCase):

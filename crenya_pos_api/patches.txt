@@ -9,3 +9,4 @@ crenya_pos_api.patches.v0_11.store_controls
 crenya_pos_api.patches.v0_11.manager_desk_access
 crenya_pos_api.patches.v0_13.credit_fields
 crenya_pos_api.patches.v0_14.credit_customer_fields
+crenya_pos_api.patches.v0_15.payment_entry_provider_field

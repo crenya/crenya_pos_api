@@ -57,6 +57,7 @@ from crenya_pos_api.sync.credit import (
 	open_invoices_answer,
 	payable_of,
 )
+from crenya_pos_api.sync.credit_terms import apply_customer_terms
 from crenya_pos_api.sync.customer import LOCATION_FIELD, _default_customer_group, _default_territory
 from crenya_pos_api.sync.customer_payment import (
 	LOCAL_ID_FIELD,
@@ -770,22 +771,11 @@ def save_credit_limit(outlet: str, customer: str, credit_limit: str | None, modi
 		invalid(str(e))
 	check_modified(CUSTOMER, customer, modified)
 	doc = frappe.get_doc(CUSTOMER, customer)
-	rows = [row for row in doc.get("credit_limits") or [] if row.company == ctx.company]
-	old = as_decimal(rows[0].credit_limit) if rows and as_decimal(rows[0].credit_limit) > 0 else None
-	if limit is None:
-		for row in rows:
-			if row.get("bypass_credit_limit_check"):
-				row.credit_limit = 0
-			else:
-				doc.remove(row)
-	elif rows:
-		rows[0].credit_limit = float(limit)
-		for extra in rows[1:]:
-			doc.remove(extra)
-	else:
-		doc.append("credit_limits", {"company": ctx.company, "credit_limit": float(limit)})
+	change = apply_customer_terms(doc, ctx.company, limit=limit)
 	doc.save(ignore_permissions=True)
-	doc.add_comment("Info", audit_text(ctx.company, old, limit, ctx.source, ctx.approver, precision))
+	doc.add_comment(
+		"Info", audit_text(ctx.company, change["old_limit"], limit, ctx.source, ctx.approver, precision)
+	)
 	rows, _more = credit_rows(ctx, only=customer)
 	return rows[0]
 

@@ -73,17 +73,27 @@ def _whole_days(days) -> int:
 	return parsed
 
 
-def template_days(template: str | None) -> int | None:
+def template_days(template: str | None, *, latest: bool = False) -> int | None:
 	"""N when `template` has exactly one row, based on the invoice date in days, for 100 % of the
-	invoice; None for any other template (or none)."""
+	invoice; None for any other template (or none). `latest` reads the rows with a locking read,
+	which sees what another worker has committed since this transaction's snapshot (MariaDB
+	REPEATABLE READ), for the template that worker has just made."""
 	if not template:
 		return None
-	rows = frappe.get_all(
-		DETAIL,
-		filters={"parent": template, "parenttype": TEMPLATE},
-		fields=["due_date_based_on", "invoice_portion", "credit_days"],
-		limit_page_length=3,
-	)
+	if latest:
+		rows = frappe.db.sql(
+			f"select due_date_based_on, invoice_portion, credit_days from `tab{DETAIL}` "
+			"where parent = %s and parenttype = %s limit 3 for update",
+			(template, TEMPLATE),
+			as_dict=True,
+		)
+	else:
+		rows = frappe.get_all(
+			DETAIL,
+			filters={"parent": template, "parenttype": TEMPLATE},
+			fields=["due_date_based_on", "invoice_portion", "credit_days"],
+			limit_page_length=3,
+		)
 	if len(rows) != 1:
 		return None
 	row = rows[0]
@@ -92,8 +102,8 @@ def template_days(template: str | None) -> int | None:
 	return int(row.credit_days or 0)
 
 
-def _checked(name: str, days: int) -> str:
-	if template_days(name) != days:
+def _checked(name: str, days: int, latest: bool = False) -> str:
+	if template_days(name, latest=latest) != days:
 		frappe.throw(_("Payment Terms Template {0} is not {1} days").format(name, days))
 	return name
 
@@ -122,15 +132,17 @@ def days_template(days: int) -> str:
 	try:
 		doc.insert(ignore_permissions=True)
 	except frappe.DuplicateEntryError:
-		return _checked(name, days)
+		# the winner committed after our snapshot (the `exists` read): read it back locked
+		return _checked(name, days, latest=True)
 	return doc.name
 
 
 def customer_terms(customer: str, company: str) -> dict:
 	"""The payment terms ERPNext applies to `customer`'s invoices of `company`: the Customer's own
 	template, else its Customer Group's, else the Company's. {"payment_terms": template or None,
-	"credit_days": N or None (None when the template is not a plain N days one),
-	"credit_days_source": "customer" | "group" | "company" | None (None when no days)}."""
+	"credit_days": N or None, "credit_days_source": "customer" | "group" | "company" | None}.
+	`credit_days` and `credit_days_source` are both None when the effective template is not a plain
+	"N days" one (see `template_days`); `payment_terms` still names that template."""
 	template, source = None, None
 	own, group = frappe.db.get_value("Customer", customer, ["payment_terms", "customer_group"]) or (
 		None,

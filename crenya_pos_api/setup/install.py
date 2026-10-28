@@ -336,6 +336,39 @@ CUSTOM_FIELDS = {
 			"no_copy": 1,
 			"print_hide": 1,
 		},
+		# 0.16.0: the shift, cashier and device of a till's Customer Payment (a web settle sets none);
+		# the transactions report reads them
+		{
+			"fieldname": "crenya_shift_id",
+			"fieldtype": "Data",
+			"label": "Shift",
+			"insert_after": "crenya_service_provider",
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+			"search_index": 1,
+			"in_standard_filter": 1,
+		},
+		{
+			"fieldname": "crenya_cashier",
+			"fieldtype": "Link",
+			"options": "User",
+			"label": "Cashier",
+			"insert_after": "crenya_shift_id",
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+		},
+		{
+			"fieldname": "crenya_device",
+			"fieldtype": "Link",
+			"options": "Crenya POS Device",
+			"label": "Device",
+			"insert_after": "crenya_cashier",
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+		},
 	],
 	"Company": [
 		{

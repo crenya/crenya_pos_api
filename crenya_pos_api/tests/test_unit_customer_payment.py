@@ -160,3 +160,13 @@ class TestAllocate(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestExtraFields(unittest.TestCase):
+	def test_extra_fields_listed(self):
+		from crenya_pos_api.sync.customer_payment import EXTRA_FIELDS
+
+		self.assertEqual(
+			EXTRA_FIELDS,
+			{"crenya_service_provider", "crenya_shift_id", "crenya_cashier", "crenya_device"},
+		)

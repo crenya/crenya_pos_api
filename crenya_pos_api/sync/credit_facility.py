@@ -9,8 +9,9 @@ The event is security-sensitive (it grants credit), so every refusal is final (a
 2. the customer is the outlet's, not the walk-in, not an inter-company customer, not disabled
    (`facility_customer_refusal`), and not one the outlet's credit product leaves out (a service
    provider, `excluded_refusal`);
-3. a resend with the values the customer already has is answered as it is (no save, no refusal);
-4. the approval's subject is the one this server derives from the payload (`facility_subject`);
+3. the approval's subject is the one this server derives from the payload (`facility_subject`);
+4. a resend with the values the customer already has is answered as it is (no save, no refusal; it
+   comes after the subject check, so a forged subject is refused whatever the values);
 5. every function of the `crenya_pos_credit_facility_checkers` hook accepts (none registered: refused).
 
 Then the customer is switched on, its terms applied (`credit_terms.apply_customer_terms`), the grant
@@ -202,12 +203,14 @@ def apply_credit_facility(ctx, data, notes):
 		terms["limit"] = _wanted_limit(ctx, data)
 	if "credit_days" in data:
 		terms["days"] = data["credit_days"]
-	# a resend: answered as it is, before the approval and the checkers are asked again
+	if data["approval"]["subject"] != _subject_of(data):
+		_refuse(WRONG_SUBJECT, PERMISSION)
+
+	# a resend: answered as it is (after the subject check: a forged subject is refused even for the
+	# values the customer has), before the checkers are asked again
 	if _already_so(doc, ctx.company, terms):
 		notes.append("House Account already enabled with these values; nothing changed")
 		return doc
-	if data["approval"]["subject"] != _subject_of(data):
-		_refuse(WRONG_SUBJECT, PERMISSION)
 
 	checker_notes = []
 	checkers = registry.credit_facility_checkers()

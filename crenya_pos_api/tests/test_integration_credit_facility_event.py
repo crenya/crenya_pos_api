@@ -343,6 +343,13 @@ class TestCreditFacilityEvent(CreditCase):
 			)
 		self.assertEqual(dummy.FACILITY_CALLS, [])
 
+	def test_resend_with_wrong_subject_refused(self):
+		customer = make_customer("resend forged")
+		self.assertOk(self.enable(customer)[0])
+		wrong = facility_subject(customer, Decimal("80"), 30)
+		# the values match what the customer has, the approval is for other details: refused
+		self.refused(customer, "The approval was for other details", subject=wrong)
+
 	def test_changed_values_are_not_a_resend(self):
 		customer = make_customer("changed")
 		self.assertOk(self.enable(customer)[0])

@@ -60,9 +60,12 @@ from crenya_pos_api.sync.credit import (
 )
 from crenya_pos_api.sync.credit_terms import (
 	MAX_CREDIT_LIMIT,
+	UNSET,
 	apply_customer_terms,
 	customer_terms,
+	parse_days,
 	parse_limit,
+	terms_audit_text,
 )
 from crenya_pos_api.sync.customer import LOCATION_FIELD, _default_customer_group, _default_territory
 from crenya_pos_api.sync.customer_payment import (
@@ -754,14 +757,28 @@ def audit_text(company, old, new, source, user, precision) -> str:
 	return f"Credit limit for {company} changed from {shown(old)} to {shown(new)} from {source} by {user}"
 
 
+UNSET_ARG = "__unset__"  # a web form sends text: this `credit_days` means "leave the days alone"
+
+
 @frappe.whitelist(methods=["POST"])
-def save_credit_limit(outlet: str, customer: str, credit_limit: str | None, modified: str) -> dict:
+def save_credit_limit(
+	outlet: str,
+	customer: str,
+	credit_limit: str | None,
+	modified: str,
+	credit_days: str | int | None = UNSET_ARG,
+) -> dict:
 	"""Set the customer's own credit limit for the shop's company, a System Manager's or an Accounts
 	Manager's: the Customer's *Credit Limit* row, written, or removed for 0 or blank (a bypass flag
 	on the row is kept: the row then stays at 0). `modified` is the one `credit_customers` answered
 	for the customer (changed since is refused). The customer must be one of the shop's. Clearing
 	the customer's own limit is not "no limit" when its group or the company has one: the answer is
-	the row as ERPNext now reads it, with `limit_source`."""
+	the row as ERPNext now reads it, with `limit_source`.
+
+	`credit_days` is the customer's own credit days in the same save: left out (an older page) the
+	days stay; None or blank clears the customer's own (its group's or the company's apply, the
+	answer's `credit_days_source` says which); 0 to 365 sets "House Account N days". One save, one
+	Comment."""
 	ctx = credit_editor(outlet)
 	if not customer_in_outlet(ctx, customer):
 		refuse(_("Customer {0} is not a customer of shop {1}").format(customer, ctx.outlet))
@@ -771,13 +788,21 @@ def save_credit_limit(outlet: str, customer: str, credit_limit: str | None, modi
 		limit = parse_limit(credit_limit, precision)
 	except ValueError as e:
 		invalid(str(e))
+	days = UNSET
+	if credit_days != UNSET_ARG:
+		try:
+			days = parse_days(credit_days)
+		except ValueError as e:
+			invalid(str(e))
 	check_modified(CUSTOMER, customer, modified)
 	doc = frappe.get_doc(CUSTOMER, customer)
-	change = apply_customer_terms(doc, ctx.company, limit=limit)
+	change = apply_customer_terms(doc, ctx.company, limit=limit, days=days)
 	doc.save(ignore_permissions=True)
-	doc.add_comment(
-		"Info", audit_text(ctx.company, change["old_limit"], limit, ctx.source, ctx.approver, precision)
-	)
+	if days is UNSET:
+		text = audit_text(ctx.company, change["old_limit"], limit, ctx.source, ctx.approver, precision)
+	else:
+		text = terms_audit_text(ctx.company, change, ctx.source, ctx.approver, precision)
+	doc.add_comment("Info", text)
 	rows, _more = credit_rows(ctx, only=customer)
 	return rows[0]
 

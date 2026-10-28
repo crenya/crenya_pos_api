@@ -228,6 +228,15 @@ def on_account_sql(invoice, precision):
 	)
 
 
+def _left_out(ctx) -> set:
+	"""The customers no House Account report shows: the product's excluded ones (service providers)
+	and the outlet's walk-in; empty when none."""
+	left_out = set(excluded_customers(ctx)) | {ctx.profile.get("customer")}
+	left_out.discard(None)
+	left_out.discard("")
+	return left_out
+
+
 def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
 	"""(customer names, the enabled live ones, more): the enabled customers of the outlet and those with a
 	till sale on account posted in `first..last`, inside the outlet's customer groups, without the
@@ -246,8 +255,7 @@ def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
 	live = {row.name for row in enabled_rows if not cint(row.disabled)}
 	invoice = frappe.qb.DocType("Sales Invoice")
 	in_company = invoice.company == ctx.company
-	left_out = excluded_customers(ctx) | {ctx.profile.get("customer")}
-	left_out.discard(None)
+	left_out = _left_out(ctx)
 	if left_out:
 		in_company = in_company & invoice.customer.notin(sorted(left_out))
 	if base.get("customer_group"):
@@ -576,6 +584,10 @@ def _sale_rows(ctx, first, last, precision, shift, cashier, cap) -> list[dict]:
 		& (invoice.posting_date >= first)
 		& (invoice.posting_date <= last)
 	)
+	left_out = _left_out(ctx)
+	if left_out:
+		# not a House Account customer: a service provider's sale (or its return) and the walk-in's
+		own = own & invoice.customer.notin(sorted(left_out))
 	if shift:
 		own = own & (invoice.crenya_shift_id == shift)
 	if cashier:
@@ -709,7 +721,11 @@ def _collection_rows(ctx, first, last, precision, shift, cashier, cap) -> tuple[
 		base = base & (entry.crenya_cashier == cashier)
 	devices = frappe.get_all("Crenya POS Device", filters={"pos_profile": ctx.outlet}, pluck="name")
 	more = False
-	where = [("till", base & entry.crenya_device.isin(devices or [""]))]
+	till = base & entry.crenya_device.isin(devices or [""])
+	left_out = _left_out(ctx)
+	if left_out:
+		till = till & entry.party.notin(sorted(left_out))
+	where = [("till", till)]
 	if not shift and not cashier:
 		names, _enabled, more = _candidates(ctx, first, last, precision)
 		where.append(

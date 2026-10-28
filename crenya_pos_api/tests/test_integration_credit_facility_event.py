@@ -106,7 +106,7 @@ class TestCreditFacilityEvent(CreditCase):
 
 	def payload(self, customer, limit="50.000", days=30, subject=None, **approval):
 		"""`limit` / `days` ... leaves the key out; the subject is the one the till derives."""
-		body = {"local_id": new_id(), "customer": customer}
+		body = {"local_id": f"credit-facility:{customer}", "customer": customer}
 		if limit is not ...:
 			body["credit_limit"] = limit
 		if days is not ...:

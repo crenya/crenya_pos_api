@@ -26,7 +26,7 @@ APPROVAL = {
 
 def payload(**overrides):
 	data = {
-		"local_id": "L1",
+		"local_id": "credit-facility:CUST-1",
 		"customer": "CUST-1",
 		"credit_limit": "50.000",
 		"credit_days": 30,
@@ -88,6 +88,17 @@ class TestPayloadValidation(unittest.TestCase):
 		self.refused("credit_limit", credit_limit="12.5555")
 		self.refused("credit_days", credit_days=366)
 		self.refused("credit_days", credit_days="3.5")
+
+	def test_local_id_must_be_the_customers_facility_key(self):
+		"""M2: the key is `credit-facility:{customer}` (the restaurant's `facility_local_id`), so a
+		replayed or forged event cannot hide under another key."""
+		self.refused("local_id", local_id="L1")
+		self.refused("local_id", local_id="credit-facility:CUST-2")
+		self.refused("local_id", local_id="credit-facility:")
+		self.assertEqual(
+			validate_credit_facility_payload(payload(local_id="credit-facility:CUST-1"))["local_id"],
+			"credit-facility:CUST-1",
+		)
 
 	def test_valid_payload_normalised(self):
 		data = validate_credit_facility_payload(payload())

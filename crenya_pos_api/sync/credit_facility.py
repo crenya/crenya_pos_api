@@ -63,6 +63,8 @@ from crenya_pos_api.utils.decimal import DecimalParseError, format_money, parse_
 
 APPROVAL_ACTION = "credit_facility"
 SUBJECT_PREFIX = "credit_terms:"
+# the till's deterministic event key (crenya_restaurant `house_account.facility_local_id`): one per customer
+LOCAL_ID_PREFIX = "credit-facility:"
 NO_CHECKER = "No app accepts a House Account grant here"
 WRONG_SUBJECT = "The approval was for other details"
 
@@ -93,6 +95,8 @@ def validate_credit_facility_payload(payload) -> dict:
 		"local_id": _required_str(payload, "local_id"),
 		"customer": _required_str(payload, "customer"),
 	}
+	if data["local_id"] != LOCAL_ID_PREFIX + data["customer"]:
+		_fail(f"local_id must be {LOCAL_ID_PREFIX}{{customer}}")
 	if "credit_limit" in payload:
 		raw = payload["credit_limit"]
 		try:

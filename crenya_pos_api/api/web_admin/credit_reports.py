@@ -33,7 +33,7 @@ from decimal import Decimal
 import frappe
 from frappe import _
 from frappe.query_builder import Case
-from frappe.query_builder.functions import Sum
+from frappe.query_builder.functions import Min, Sum
 from frappe.utils import cint, getdate, nowdate
 
 from crenya_pos_api.api.web_admin.credit import (
@@ -51,7 +51,7 @@ from crenya_pos_api.sync.credit_terms import customer_terms
 from crenya_pos_api.utils.decimal import as_decimal, format_money
 from crenya_pos_api.utils.session import elevated_as_administrator
 from crenya_pos_api.web.context import refuse
-from crenya_pos_api.web.reports import money_view, parse_date
+from crenya_pos_api.web.reports import date_range, money_view, parse_date
 
 # the most customers one report lists
 MAX_REPORT_ROWS = 1000
@@ -60,6 +60,8 @@ AR_CHUNK = 200
 RANGE_KEYS = ("range_0_30", "range_31_60", "range_61_90", "range_90_plus")
 # ERPNext's Accounts Receivable columns of the ageing, in the order of RANGE_KEYS
 AR_RANGES = ("range1", "range2", "range3", "range4")
+# the most rows one statement lists
+MAX_STATEMENT_ROWS = 2000
 MONEY_KEYS = ("opening", "charged", "paid", "closing", *RANGE_KEYS, "overdue")
 TOTAL_KEYS = ("opening", "charged", "paid", "closing", *RANGE_KEYS, "overdue")
 
@@ -100,6 +102,43 @@ def sum_rows(rows, keys, precision) -> dict:
 	return {
 		key: format_money(sum((as_decimal(row[key]) for row in rows), Decimal(0)), precision) for key in keys
 	}
+
+
+def statement_description(voucher_type, is_return=False) -> str:
+	"""What a statement line is called: "sale", "credit_note" (a return Sales Invoice), "payment",
+	"journal"; any other voucher shows its raw voucher type (the web translates what it knows)."""
+	if voucher_type == "Sales Invoice":
+		return "credit_note" if is_return else "sale"
+	if voucher_type == "Payment Entry":
+		return "payment"
+	if voucher_type == "Journal Entry":
+		return "journal"
+	return voucher_type
+
+
+def statement_rows(opening, entries, precision) -> tuple[list[dict], str]:
+	"""(rows, closing) of a customer statement: `entries` are dicts {posting_date, voucher_type,
+	voucher_no, debit, credit, bill_no, is_return} in order, one per voucher; each row carries the
+	running `balance` (opening + debits - credits so far), the closing is the last balance, or the
+	opening with no entry. Money as decimal strings at `precision`."""
+	balance = as_decimal(opening)
+	rows = []
+	for entry in entries:
+		debit, credit = as_decimal(entry.get("debit")), as_decimal(entry.get("credit"))
+		balance += debit - credit
+		rows.append(
+			{
+				"posting_date": str(entry["posting_date"]),
+				"voucher_type": entry["voucher_type"],
+				"voucher_no": entry["voucher_no"],
+				"bill_no": entry.get("bill_no") or None,
+				"description": statement_description(entry["voucher_type"], entry.get("is_return")),
+				"debit": format_money(debit, precision),
+				"credit": format_money(credit, precision),
+				"balance": format_money(balance, precision),
+			}
+		)
+	return rows, format_money(balance, precision)
 
 
 def is_zero_row(row) -> bool:
@@ -195,37 +234,49 @@ def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
 	return sorted(pool), live, more
 
 
-def _gl_figures(names, company, first, last):
-	"""({customer: opening}, {customer: (charged, paid)}) from the General Ledger: two grouped
-	queries."""
-	entry = frappe.qb.DocType("GL Entry")
-	where = (
+def _gl_where(entry, names, company):
+	return (
 		(entry.party_type == CUSTOMER)
 		& entry.party.isin(names)
 		& (entry.company == company)
 		& (entry.is_cancelled == 0)
 	)
-	opening = {
+
+
+def _gl_opening(names, company, first) -> dict:
+	"""{customer: opening}: debit less credit of the party's General Ledger before `first`."""
+	entry = frappe.qb.DocType("GL Entry")
+	return {
 		row[0]: as_decimal(row[1]) - as_decimal(row[2])
 		for row in (
 			frappe.qb.from_(entry)
 			.select(entry.party, Sum(entry.debit), Sum(entry.credit))
-			.where(where & (entry.posting_date < first))
+			.where(_gl_where(entry, names, company) & (entry.posting_date < first))
 			.groupby(entry.party)
 			.run()
 		)
 	}
+
+
+def _gl_figures(names, company, first, last):
+	"""({customer: opening}, {customer: (charged, paid)}) from the General Ledger: two grouped
+	queries."""
+	entry = frappe.qb.DocType("GL Entry")
 	moved = {
 		row[0]: (as_decimal(row[1]), as_decimal(row[2]))
 		for row in (
 			frappe.qb.from_(entry)
 			.select(entry.party, Sum(entry.debit), Sum(entry.credit))
-			.where(where & (entry.posting_date >= first) & (entry.posting_date <= last))
+			.where(
+				_gl_where(entry, names, company)
+				& (entry.posting_date >= first)
+				& (entry.posting_date <= last)
+			)
 			.groupby(entry.party)
 			.run()
 		)
 	}
-	return opening, moved
+	return _gl_opening(names, company, first), moved
 
 
 def _receivable_rows(names, company, as_on) -> list[dict]:
@@ -331,3 +382,106 @@ def _rows(ctx, names, enabled, first, end, precision, keep_zero) -> list[dict]:
 		if keep_zero or name in enabled or not is_zero_row(row):
 			rows.append(row)
 	return rows
+
+
+def credit_statement_report(
+	outlet: str, customer: str, from_date: str | None, to_date: str | None
+) -> dict:
+	"""A customer's House Account statement, see the module docstring of `credit_outstanding`: the
+	General Ledger of the customer and the outlet's company, one line per voucher (a cash sale to a
+	named customer posts both a debit and a credit in one voucher, so both columns sit on its line),
+	with the running balance. Both dates are required (YYYY-MM-DD, `to_date` not before `from_date`,
+	at most a year). The customer must be one of the outlet (not its walk-in or an excluded one:
+	PermissionError). At most MAX_STATEMENT_ROWS lines (`more`)."""
+	ctx = credit_view(outlet)
+	if not from_date or not to_date:
+		raise frappe.ValidationError(_("From Date and To Date are required"))
+	first, last = date_range(from_date, to_date)
+	refusal = outlet_customer_refusal(ctx, customer)
+	if not refusal and customer in excluded_customers(ctx):
+		refusal = _("{0} is not on this page").format(customer)
+	if refusal:
+		refuse(refusal)
+	precision = money_precision(ctx.currency)
+	opening = _gl_opening([customer], ctx.company, first).get(customer, Decimal(0))
+	entry = frappe.qb.DocType("GL Entry")
+	found = (
+		frappe.qb.from_(entry)
+		.select(
+			entry.voucher_type,
+			entry.voucher_no,
+			entry.posting_date,
+			Sum(entry.debit),
+			Sum(entry.credit),
+			Min(entry.creation),
+		)
+		.where(
+			_gl_where(entry, [customer], ctx.company)
+			& (entry.posting_date >= first)
+			& (entry.posting_date <= last)
+		)
+		.groupby(entry.voucher_type, entry.voucher_no, entry.posting_date)
+		.orderby(entry.posting_date)
+		.orderby(Min(entry.creation))
+		.limit(MAX_STATEMENT_ROWS + 1)
+		.run()
+	)
+	more = len(found) > MAX_STATEMENT_ROWS
+	found = found[:MAX_STATEMENT_ROWS]
+	invoices = [row[1] for row in found if row[0] == "Sales Invoice"]
+	payments = [row[1] for row in found if row[0] == "Payment Entry"]
+	bills = {
+		row.name: row
+		for row in (
+			frappe.get_all(
+				"Sales Invoice",
+				filters={"name": ["in", invoices]},
+				fields=["name", "is_return", "crenya_offline_number"],
+			)
+			if invoices
+			else []
+		)
+	}
+	references = (
+		dict(
+			frappe.get_all(
+				"Payment Entry",
+				filters={"name": ["in", payments]},
+				fields=["name", "reference_no"],
+				as_list=True,
+			)
+		)
+		if payments
+		else {}
+	)
+	entries = []
+	for voucher_type, voucher_no, posted, debit, credit, _created in found:
+		bill = bills.get(voucher_no) if voucher_type == "Sales Invoice" else None
+		entries.append(
+			{
+				"posting_date": posted,
+				"voucher_type": voucher_type,
+				"voucher_no": voucher_no,
+				"debit": debit,
+				"credit": credit,
+				"is_return": bool(bill and cint(bill.is_return)),
+				"bill_no": (bill.crenya_offline_number if bill else references.get(voucher_no)) or None,
+			}
+		)
+	rows, closing = statement_rows(opening, entries, precision)
+	if more:
+		# the listed lines stop short of to_date: the closing is still the ledger's
+		moved = _gl_figures([customer], ctx.company, first, last)[1].get(customer, (Decimal(0), Decimal(0)))
+		closing = format_money(opening + moved[0] - moved[1], precision)
+	return {
+		"customer": customer,
+		"name": frappe.db.get_value(CUSTOMER, customer, "customer_name") or customer,
+		"company": ctx.company,
+		"currency": money_view(ctx.currency),
+		"from_date": first.isoformat(),
+		"to_date": last.isoformat(),
+		"opening": format_money(opening, precision),
+		"closing": closing,
+		"more": more,
+		"rows": rows,
+	}

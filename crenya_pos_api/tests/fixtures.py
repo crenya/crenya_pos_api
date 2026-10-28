@@ -178,20 +178,23 @@ def ensure_item_group(name, parent, is_group):
 
 
 def leaf_customer_group():
-	name = frappe.db.get_value("Customer Group", {"is_group": 0}, "name")
-	if name:
+	"""The test customers' group, always `_Test Crenya Customers` (a leaf under the root). Not "any
+	leaf": tests that limit an outlet to another leaf (`_Test Crenya Other Web Customers`) would
+	then make their "outside" customer inside it whenever that leaf came first (test order)."""
+	name = "_Test Crenya Customers"
+	if frappe.db.exists("Customer Group", name):
 		return name
 	from frappe.utils.nestedset import get_root_of
 
 	_insert(
 		{
 			"doctype": "Customer Group",
-			"customer_group_name": "_Test Crenya Customers",
+			"customer_group_name": name,
 			"parent_customer_group": get_root_of("Customer Group"),
 			"is_group": 0,
 		}
 	)
-	return "_Test Crenya Customers"
+	return name
 
 
 def ensure_brand(name):

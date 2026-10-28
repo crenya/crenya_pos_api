@@ -103,6 +103,52 @@ class TestCustomerPayload(unittest.TestCase):
 		)
 		self.assertEqual(set(data), KEYS_0_14 | {"location", "credit_facility"})
 
+	def test_facility_keeps_terms_when_present(self):
+		data = validate_customer_payload(
+			payload(credit_facility={**GRANT, "credit_limit": "50.000", "credit_days": 30})
+		)
+		self.assertEqual(data["credit_facility"], {**GRANT, "credit_limit": "50.000", "credit_days": 30})
+		data = validate_customer_payload(
+			payload(credit_facility={**GRANT, "credit_limit": None, "credit_days": None})
+		)
+		self.assertEqual(data["credit_facility"], {**GRANT, "credit_limit": None, "credit_days": None})
+		# one of the two; days 0 and 365 are the ends
+		data = validate_customer_payload(payload(credit_facility={**GRANT, "credit_days": 0}))
+		self.assertEqual(data["credit_facility"], {**GRANT, "credit_days": 0})
+		data = validate_customer_payload(payload(credit_facility={**GRANT, "credit_days": 365}))
+		self.assertEqual(data["credit_facility"], {**GRANT, "credit_days": 365})
+		data = validate_customer_payload(payload(credit_facility={**GRANT, "credit_limit": "12.5"}))
+		self.assertEqual(data["credit_facility"], {**GRANT, "credit_limit": "12.5"})
+
+	def test_facility_terms_absent_stay_absent(self):
+		data = validate_customer_payload(payload(credit_facility=dict(GRANT)))
+		self.assertNotIn("credit_limit", data["credit_facility"])
+		self.assertNotIn("credit_days", data["credit_facility"])
+		data = validate_customer_payload(payload(credit_facility={**GRANT, "credit_days": 7}))
+		self.assertNotIn("credit_limit", data["credit_facility"])
+
+	def test_facility_terms_invalid_refused(self):
+		for value in ("50.0001", "-1", "x", 5.5, True, "1e3"):
+			self.refused(
+				payload(credit_facility={**GRANT, "credit_limit": value}), "credit_facility.credit_limit"
+			)
+		for value in (-1, 366, "x", 30.5, True, "3.0"):
+			self.refused(
+				payload(credit_facility={**GRANT, "credit_days": value}), "credit_facility.credit_days"
+			)
+
+	def test_parse_limit_exported_for_extenders(self):
+		from decimal import Decimal
+
+		from crenya_pos_api import extension
+
+		self.assertEqual(extension.parse_limit("50.000", 3), Decimal("50.000"))
+		self.assertIsNone(extension.parse_limit(None, 3))
+		with self.assertRaises(ValueError):
+			extension.parse_limit("50.0001", 3)
+		for name in ("apply_customer_terms", "UNSET", "parse_days"):
+			self.assertTrue(hasattr(extension, name), name)
+
 
 class TestCleanLocation(unittest.TestCase):
 	def test_one_line_collapsed(self):

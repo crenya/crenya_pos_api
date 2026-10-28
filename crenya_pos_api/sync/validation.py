@@ -10,6 +10,7 @@ import unicodedata
 from datetime import date, time
 from decimal import Decimal
 
+from crenya_pos_api.sync.credit_terms import parse_days, parse_limit
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
 from crenya_pos_api.utils.dates import is_db_datetime, parse_iso_utc
 from crenya_pos_api.utils.decimal import DecimalParseError, parse_decimal
@@ -19,12 +20,14 @@ AGGREGATE_SALES_INVOICE = "Sales Invoice"
 AGGREGATE_SHIFT = "Crenya POS Shift"
 AGGREGATE_EXPENSE = "POS Expense"
 AGGREGATE_CUSTOMER_PAYMENT = "Customer Payment"
+AGGREGATE_CREDIT_FACILITY = "Customer Credit Facility"
 AGGREGATE_TYPES = (
 	AGGREGATE_CUSTOMER,
 	AGGREGATE_SALES_INVOICE,
 	AGGREGATE_SHIFT,
 	AGGREGATE_EXPENSE,
 	AGGREGATE_CUSTOMER_PAYMENT,
+	AGGREGATE_CREDIT_FACILITY,
 )
 OPERATIONS = ("submit",)
 
@@ -202,9 +205,14 @@ def clean_location(value, field="location"):
 
 def _validate_credit_facility(value):
 	"""Optional `credit_facility` of a till's new customer: {approved_by, approved_at (ISO-8601
-	with an offset)}, as pos-core sends it. Kept as that dict of stripped strings (any other key is
+	with an offset)}, as pos-core sends it, and (0.16.0) the optional terms `credit_limit` (a
+	decimal string or null) and `credit_days` (0..365 or null). Kept as that dict (any other key is
 	dropped) for the customer extenders, which decide whether it switches anything on; nothing
-	here grants it. Absent: None."""
+	here grants it. Absent: None. A terms key that is absent stays absent (untouched); present
+	null is cleared. `credit_limit` stays the validated decimal STRING (None allowed): the
+	outlet's currency is not known here, so the shape and at most 3 decimals (the most any
+	currency of the estate has) are checked; the extender re-checks at the outlet's precision
+	with `extension.parse_limit(value, money_precision(ctx.currency))`."""
 	if value is None:
 		return None
 	if not isinstance(value, dict):
@@ -217,6 +225,18 @@ def _validate_credit_facility(value):
 		parse_iso_utc(grant["approved_at"])
 	except ValueError:
 		_fail("credit_facility.approved_at must be an ISO-8601 UTC timestamp, e.g. 2026-10-26T08:15:30Z")
+	if "credit_limit" in value:
+		raw = value["credit_limit"]
+		try:
+			parse_limit(raw, 3)
+		except ValueError as e:
+			_fail(f"credit_facility.credit_limit: {e}")
+		grant["credit_limit"] = None if raw is None or not str(raw).strip() else str(raw).strip()
+	if "credit_days" in value:
+		try:
+			grant["credit_days"] = parse_days(value["credit_days"])
+		except ValueError as e:
+			_fail(f"credit_facility.credit_days: {e}")
 	return grant
 
 

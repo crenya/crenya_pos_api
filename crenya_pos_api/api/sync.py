@@ -71,6 +71,8 @@ def get_sync_capabilities(protocol_version: int | str | None = None):
 			"pin_seal": True,
 			# 0.14.0: a `Customer Payment` may name the bills it settles, in order (`invoices`)
 			FEATURE_SETTLE_INVOICES: 1,
+			# 0.16.0: the `Customer Credit Facility` aggregate enables an existing customer's House Account
+			"credit_facility_event": 1,
 		},
 	}
 	# other apps' crenya_pos_capabilities hooks add their own flags; core flags are kept

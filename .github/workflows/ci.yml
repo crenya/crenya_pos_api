@@ -23,7 +23,7 @@ jobs:
   # Seconds, no bench: every doctype's controller defines the class Frappe imports
   # (a wrong class name is a desk 500 for every user who can see the doctype).
   doctype-guards:
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: [self-hosted, crenya-ci]
     name: Doctype guards (no site)
     steps:
       - uses: actions/checkout@v6
@@ -34,7 +34,7 @@ jobs:
         run: python -I -m unittest discover -s crenya_pos_api/tests -p 'test_doctype_*.py' -v
 
   tests:
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: [self-hosted, crenya-ci]
     strategy:
       fail-fast: false
       matrix:
@@ -144,7 +144,7 @@ jobs:
   # (every other test, and `TestExpensesOff`); this one installs it and runs the booking tests
   expenses:
     name: Expenses with erptrue_app (${{ matrix.frappe }})
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: [self-hosted, crenya-ci]
     strategy:
       fail-fast: false
       # erptrue_app needs Python 3.14 (its pyproject), which Frappe version-15 runs too

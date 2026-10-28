@@ -205,9 +205,18 @@ class TestFacilityStatus(WebCreditCase):
 			[answers[name]["credit_enabled"] for name in (enabled, plain, gone)], [True, False, False]
 		)
 		# a retail till's answer is 0.13.2's
+		# (a superset since 0.16.0: the overdue figures and credit days are new keys)
+		for key in ("as_of", "available", "credit_limit", "customer", "outstanding", "over_limit"):
+			self.assertIn(key, till)
+		self.assertEqual(till["customer"], enabled)
+		self.assertEqual(till["credit_limit"], "150.000")
+		self.assertIs(till["over_limit"], False)
 		self.assertEqual(
-			sorted(till), ["as_of", "available", "credit_limit", "customer", "outstanding", "over_limit"]
+			set(till) - {"as_of"},
+			{"available", "credit_limit", "customer", "outstanding", "over_limit"}
+			| {"overdue", "oldest_unpaid", "credit_days"},
 		)
+		self.assertNotIn("credit_enabled", till)
 		# a credit type that is not a flag type: no key either
 		with dummy.fake_hooks({"crenya_pos_credit_device_types": [FLAG_DEVICE]}):
 			self.assertNotIn("credit_enabled", credit_api.get_status(device_id=restaurant, customer=enabled))
@@ -310,6 +319,18 @@ class TestSaveCreditFacility(WebCreditCase):
 	def test_save_refuses_customer_of_other_company(self):
 		"""ERPNext's Customer has no company: the outlet's customers are those its tills may sell to
 		(inside its customer groups), less its walk-in and another company's internal customer."""
+		# `represents_company` is unique on the site: free it of any customer a test left holding it,
+		# and again when this test is done
+		def free():
+			frappe.db.sql(
+				"update `tabCustomer` set is_internal_customer = 0, represents_company = null "
+				"where represents_company = %s",
+				OTHER_COMPANY,
+			)
+			frappe.db.commit()  # nosemgrep
+
+		free()
+		self.addCleanup(free)
 		# an internal customer that stands for another company
 		internal = make_customer("facility internal")
 		frappe.db.set_value(
@@ -330,6 +351,9 @@ class TestSaveCreditFacility(WebCreditCase):
 		# a customer outside the outlet's customer groups
 		outside = make_customer("facility outside")
 		other_group = "_Test Crenya Other Web Customers"
+		# `leaf_customer_group()` may itself be that group on a site that kept it: put the customer
+		# in a group the outlet will not list
+		frappe.db.set_value("Customer", outside, "customer_group", "Individual")
 		if not frappe.db.exists("Customer Group", other_group):
 			from frappe.utils.nestedset import get_root_of
 

@@ -186,6 +186,15 @@ def customer_terms(customer: str, company: str) -> dict:
 	}
 
 
+def current_terms(doc, company):
+	"""(own credit limit of `company` as a Decimal or None, own credit days as an int or None) of the
+	Customer document `doc` as it stands in memory: the first *Credit Limit* row of the company (0 is
+	no limit) and the customer's own `payment_terms` when it is a plain "N days" template."""
+	rows = [row for row in doc.get("credit_limits") or [] if row.company == company]
+	limit = as_decimal(rows[0].credit_limit) if rows and as_decimal(rows[0].credit_limit) > 0 else None
+	return limit, template_days(doc.get("payment_terms"))
+
+
 def apply_customer_terms(doc, company, *, limit=UNSET, days=UNSET) -> dict:
 	"""Change the Customer document `doc` (new or saved) in memory; the caller saves it.
 
@@ -195,8 +204,7 @@ def apply_customer_terms(doc, company, *, limit=UNSET, days=UNSET) -> dict:
 	`payment_terms`, an int sets it to that days' template. UNSET leaves the part alone. Returns
 	{"old_limit", "new_limit", "old_days", "new_days"} (limits Decimal or None, days int or None)."""
 	rows = [row for row in doc.get("credit_limits") or [] if row.company == company]
-	old_limit = as_decimal(rows[0].credit_limit) if rows and as_decimal(rows[0].credit_limit) > 0 else None
-	old_days = template_days(doc.get("payment_terms"))
+	old_limit, old_days = current_terms(doc, company)
 	new_limit, new_days = old_limit, old_days
 	if limit is not UNSET:
 		new_limit = limit
@@ -246,6 +254,7 @@ __all__ = [
 	"TEMPLATE_SUFFIX",
 	"UNSET",
 	"apply_customer_terms",
+	"current_terms",
 	"customer_terms",
 	"days_template",
 	"parse_days",

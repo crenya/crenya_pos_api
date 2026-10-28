@@ -320,6 +320,22 @@ and its money stays an advance (never spread over bills that were not ticked). T
 web books through the same `post_payment_entry` under `events.named_lock(customer_lock_key(customer))`, the
 database lock a till's receipt of that customer takes.
 
+#### Customer Credit Facility (0.16.0)
+
+A restaurant till enables an EXISTING customer's House Account with the push aggregate `Customer Credit Facility`
+(`sync/credit_facility.py`, capability `credit_facility_event`): `{local_id, customer, credit_limit?, credit_days?,
+approval {action "credit_facility", subject, approved_by, approved_at}}` (`credit_limit` / `credit_days` as the new
+customer's `credit_facility`: an absent key is untouched, null clears). The approval's `subject` must equal
+`credit_terms:{customer}|{limit or -}|{days or -}` (`facility_subject`; limits and days written plain, 50.000 is
+"50", 0 is "0", only null is "-"). Refusals are final: a device that is not a customer-flag device or an outlet that
+does not sell on account; the walk-in, a customer outside the outlet, an inter-company or disabled customer; a
+customer the outlet's credit product leaves out (a restaurant's service provider); a subject for other details;
+no `crenya_pos_credit_facility_checkers` hook function, or one that returns a reason (None accepts). A resend with
+the values the customer already has is answered without a change. Then the Customer is switched on, its terms
+applied and saved with `flags[GRANT_FLAG] = TILL_ENABLE_GRANT` (honoured only on the save of an existing customer)
+and a Comment (the checkers' notes, else the terms change). ERPNext's own refusals (a limit below the customer's
+outstanding amount) reach the till as `validation` and nothing is saved. The result adds `facility`.
+
 #### House Account facility (0.14.0)
 
 Customer custom fields `crenya_credit_enabled` (Check, default 0, "House Account (credit facility)") and

@@ -38,6 +38,19 @@ between releases. Register the extensions in your app's `hooks.py`:
         # `credit_facility` is dropped (a note on the Sync Event).
         crenya_pos_customer_extenders = ["my_app.sync.customer.extend"]
 
+        # fn(ctx, customer, data, notes) -> str | None: the till's `Customer Credit Facility` event
+        # (0.16.0: a manager enables an EXISTING customer's House Account). Runs after core's checks and
+        # the approval's subject; `customer` is the saved Customer document (the same object that is then
+        # saved, so a checker may set its own fields), `data` the validated payload (`customer`,
+        # `credit_limit` / `credit_days` when sent, `approval` {action, subject, approved_by,
+        # approved_at}). Return None to accept, or the refusal reason (a string: final, the event fails).
+        # To leave an audit line, append plain text to `notes`: it becomes the Customer's Comment (else
+        # core writes the credit terms change). Every checker must accept; with NO checker registered
+        # every grant is refused ("No app accepts a House Account grant here"). Core then sets
+        # `customer.flags[GRANT_FLAG] = TILL_ENABLE_GRANT` and saves; that flag counts only on the
+        # save of an existing customer, and your own `validate` hook may read it too.
+        crenya_pos_credit_facility_checkers = ["my_app.sync.credit.accept_facility"]
+
         # roles that may register and use a device besides Crenya POS User: a role name opens
         # every device type, {"role", "device_types"} only those types (never a retail "till"
         # unless listed). Holders are pulled as cashiers on those devices, with `roles`.
@@ -85,7 +98,9 @@ Names:
                 SyncError(validation).
         GRANT_FLAG: the `customer.flags` key that lets server code switch on the House Account of
                 a new customer it creates ("till" from a customer extender, "web" from the web's
-                New customer); never filled from a request.
+                New customer) or of an existing one (TILL_ENABLE_GRANT, set only by core's
+                `Customer Credit Facility` event after the checkers' yes); never filled from a request.
+        TILL_ENABLE_GRANT: the value of GRANT_FLAG on that existing customer's save.
         registry: the merged view (`entities()`, `aggregates()`, `handler(aggregate_type)`,
                 `device_roles()`, ...).
         PROTOCOL_VERSION: protocol spoken by this server (2 = extension hooks).
@@ -95,7 +110,7 @@ from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.aggregates import AggregateHandler
 from crenya_pos_api.sync.cashier import staff_roles
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, PROTOCOL_VERSION, DeviceContext
-from crenya_pos_api.sync.credit import GRANT_FLAG
+from crenya_pos_api.sync.credit import GRANT_FLAG, TILL_ENABLE_GRANT
 from crenya_pos_api.sync.credit_terms import UNSET, apply_customer_terms, parse_days, parse_limit
 from crenya_pos_api.sync.entitlement import device_enable_refusal
 from crenya_pos_api.sync.errors import (
@@ -122,6 +137,7 @@ __all__ = [
 	"PERMISSION",
 	"PROTOCOL_VERSION",
 	"RETRYABLE_CODES",
+	"TILL_ENABLE_GRANT",
 	"TOTAL_MISMATCH",
 	"UNSET",
 	"VALIDATION",

@@ -18,8 +18,9 @@ def elevated_as_administrator():
 	user, sid, data = session.user, session.sid, session.data
 	contents = dict(data) if data is not None else None
 	form_dict = frappe.local.form_dict
-	frappe.set_user("Administrator")  # nosemgrep  # the block only: restored in `finally`
 	try:
+		# inside the try: a set_user that fails part-way still gets the caller's session back
+		frappe.set_user("Administrator")  # nosemgrep  # the block only: restored in `finally`
 		yield
 	finally:
 		frappe.set_user(user)  # nosemgrep  # back to the caller

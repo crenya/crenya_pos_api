@@ -53,22 +53,31 @@ jobs:
       redis-cache:
         image: redis:alpine
         ports:
-          - 13000:6379
+          - 6379
       redis-queue:
         image: redis:alpine
         ports:
-          - 11000:6379
+          - 6379
       mariadb:
         image: mariadb:${{ matrix.mariadb }}
         env:
           MYSQL_ROOT_PASSWORD: root
         ports:
-          - 3306:3306
+          - 3306
         options: --health-cmd="mariadb-admin ping" --health-interval=5s --health-timeout=2s --health-retries=3
 
     steps:
       - name: Clone
         uses: actions/checkout@v5
+
+      # crenya-ci runs several Frappe jobs at once on one box: each job gets the free host ports
+      # Docker picked for its services and its own bench in the job's temp dir (cleared at job end)
+      - name: Ports and bench of this job
+        run: |
+          echo "DB_PORT=${{ job.services.mariadb.ports['3306'] }}" >> "$GITHUB_ENV"
+          echo "REDIS_CACHE_PORT=${{ job.services.redis-cache.ports['6379'] }}" >> "$GITHUB_ENV"
+          echo "REDIS_QUEUE_PORT=${{ job.services.redis-queue.ports['6379'] }}" >> "$GITHUB_ENV"
+          echo "BENCH=$RUNNER_TEMP/frappe-bench" >> "$GITHUB_ENV"
 
       - name: Find tests
         run: |
@@ -115,17 +124,23 @@ jobs:
       - name: Setup
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --frappe-branch ${{ matrix.frappe }} --python "$(which python)" ~/frappe-bench
-          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
-          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
+          bench init --skip-redis-config-generation --skip-assets --frappe-branch ${{ matrix.frappe }} --python "$(which python)" "$BENCH"
+          mariadb --host 127.0.0.1 --port "$DB_PORT" -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
+          mariadb --host 127.0.0.1 --port "$DB_PORT" -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
+          cd "$BENCH"
+          bench set-config -g db_host 127.0.0.1
+          bench set-config -g db_port "$DB_PORT"
+          bench set-config -g redis_cache "redis://127.0.0.1:$REDIS_CACHE_PORT"
+          bench set-config -g redis_queue "redis://127.0.0.1:$REDIS_QUEUE_PORT"
+          bench set-config -g redis_socketio "redis://127.0.0.1:$REDIS_QUEUE_PORT"
 
       - name: Install
-        working-directory: /home/runner/frappe-bench
+        working-directory: ${{ env.BENCH }}
         run: |
           bench get-app --branch ${{ matrix.frappe }} erpnext
           bench get-app crenya_pos_api $GITHUB_WORKSPACE
           bench setup requirements --dev
-          bench new-site --db-root-password root --admin-password admin test_site
+          bench new-site --db-host 127.0.0.1 --db-port "$DB_PORT" --db-root-password root --admin-password admin test_site
           bench --site test_site install-app erpnext
           bench --site test_site install-app crenya_pos_api
           bench build
@@ -133,7 +148,7 @@ jobs:
           CI: 'Yes'
 
       - name: Run Tests
-        working-directory: /home/runner/frappe-bench
+        working-directory: ${{ env.BENCH }}
         run: |
           bench --site test_site set-config allow_tests true
           bench --site test_site run-tests --app crenya_pos_api
@@ -155,22 +170,31 @@ jobs:
       redis-cache:
         image: redis:alpine
         ports:
-          - 13000:6379
+          - 6379
       redis-queue:
         image: redis:alpine
         ports:
-          - 11000:6379
+          - 6379
       mariadb:
         image: mariadb:${{ matrix.mariadb }}
         env:
           MYSQL_ROOT_PASSWORD: root
         ports:
-          - 3306:3306
+          - 3306
         options: --health-cmd="mariadb-admin ping" --health-interval=5s --health-timeout=2s --health-retries=3
 
     steps:
       - name: Clone
         uses: actions/checkout@v5
+
+      # crenya-ci runs several Frappe jobs at once on one box: each job gets the free host ports
+      # Docker picked for its services and its own bench in the job's temp dir (cleared at job end)
+      - name: Ports and bench of this job
+        run: |
+          echo "DB_PORT=${{ job.services.mariadb.ports['3306'] }}" >> "$GITHUB_ENV"
+          echo "REDIS_CACHE_PORT=${{ job.services.redis-cache.ports['6379'] }}" >> "$GITHUB_ENV"
+          echo "REDIS_QUEUE_PORT=${{ job.services.redis-queue.ports['6379'] }}" >> "$GITHUB_ENV"
+          echo "BENCH=$RUNNER_TEMP/frappe-bench" >> "$GITHUB_ENV"
 
       # erptrue_app is a private repository: it is fetched over SSH with a read-only deploy key of
       # crenya/erptrue_app kept in this repository's secret ERPTRUE_APP_DEPLOY_KEY. Without it the
@@ -192,12 +216,10 @@ jobs:
             echo "::error::The secret ERPTRUE_APP_DEPLOY_KEY is not set: erptrue_app cannot be fetched, so the expenses booking tests cannot run (README.md, Tests)"
             exit 1
           fi
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$ERPTRUE_APP_DEPLOY_KEY" > ~/.ssh/erptrue_app_deploy
-          chmod 600 ~/.ssh/erptrue_app_deploy
+          # the job's temp dir, not the shared HOME: jobs run side by side on crenya-ci
+          ( umask 077; printf '%s\n' "$ERPTRUE_APP_DEPLOY_KEY" > "$RUNNER_TEMP/erptrue_app_deploy" )
           # GitHub's published host key (api.github.com/meta), not a scan
-          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
           echo "have=true" >> "$GITHUB_OUTPUT"
 
       - name: Setup Python
@@ -223,20 +245,26 @@ jobs:
         if: steps.key.outputs.have == 'true'
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --frappe-branch ${{ matrix.frappe }} --python "$(which python)" ~/frappe-bench
-          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
-          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
+          bench init --skip-redis-config-generation --skip-assets --frappe-branch ${{ matrix.frappe }} --python "$(which python)" "$BENCH"
+          mariadb --host 127.0.0.1 --port "$DB_PORT" -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
+          mariadb --host 127.0.0.1 --port "$DB_PORT" -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
+          cd "$BENCH"
+          bench set-config -g db_host 127.0.0.1
+          bench set-config -g db_port "$DB_PORT"
+          bench set-config -g redis_cache "redis://127.0.0.1:$REDIS_CACHE_PORT"
+          bench set-config -g redis_queue "redis://127.0.0.1:$REDIS_QUEUE_PORT"
+          bench set-config -g redis_socketio "redis://127.0.0.1:$REDIS_QUEUE_PORT"
 
       - name: Install
         if: steps.key.outputs.have == 'true'
-        working-directory: /home/runner/frappe-bench
+        working-directory: ${{ env.BENCH }}
         run: |
           bench get-app --branch ${{ matrix.frappe }} erpnext
           bench get-app crenya_pos_api $GITHUB_WORKSPACE
-          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/erptrue_app_deploy -o IdentitiesOnly=yes" \
+          GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/erptrue_app_deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" \
             bench get-app --branch "$ERPTRUE_APP_REF" erptrue_app git@github.com:crenya/erptrue_app.git
           bench setup requirements --dev
-          bench new-site --db-root-password root --admin-password admin test_site
+          bench new-site --db-host 127.0.0.1 --db-port "$DB_PORT" --db-root-password root --admin-password admin test_site
           bench --site test_site install-app erpnext
           bench --site test_site install-app crenya_pos_api
           bench --site test_site install-app erptrue_app
@@ -246,7 +274,7 @@ jobs:
 
       - name: POS Expense has the till fields
         if: steps.key.outputs.have == 'true'
-        working-directory: /home/runner/frappe-bench
+        working-directory: ${{ env.BENCH }}
         run: |
           # an erptrue_app without them would only skip the tests below: fail instead
           bench --site test_site execute crenya_pos_api.expenses.booking.expenses_supported | tee supported.txt
@@ -254,7 +282,7 @@ jobs:
 
       - name: Run Tests
         if: steps.key.outputs.have == 'true'
-        working-directory: /home/runner/frappe-bench
+        working-directory: ${{ env.BENCH }}
         run: |
           bench --site test_site set-config allow_tests true
           bench --site test_site run-tests --app crenya_pos_api --module crenya_pos_api.tests.test_integration_expenses_booking

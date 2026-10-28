@@ -23,7 +23,13 @@ between releases. Register the extensions in your app's `hooks.py`:
 
         # fn(ctx, customer, data, notes) -> str | None: a till's new Customer, before insert;
         # `data` is the validated payload: `data["location"]` and `data["credit_facility"]` (the
-        # till manager's grant {approved_by, approved_at}, or None) included. Return a Comment text
+        # till manager's grant, or None) included. The grant is {approved_by, approved_at} plus,
+        # only when the till sent them, `credit_limit` (a validated decimal string, or None: no
+        # limit row) and `credit_days` (0..365, or None: no own terms); an absent key means
+        # untouched (`"credit_limit" in grant`). The outlet's precision is not known to the
+        # validation: re-check with parse_limit(value, money_precision(ctx.currency)) and apply
+        # with apply_customer_terms(customer, ctx.company, limit=..., days=...) (UNSET leaves a
+        # part alone); parse_days is exported too. Return a Comment text
         # (added after the insert, HTML-escaped: return plain text) or None. To switch the House
         # Account on for this new customer after your own check of the approver, set
         # `customer.crenya_credit_enabled = 1` and `customer.flags[GRANT_FLAG] = "till"`: nothing
@@ -90,6 +96,7 @@ from crenya_pos_api.sync.aggregates import AggregateHandler
 from crenya_pos_api.sync.cashier import staff_roles
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, PROTOCOL_VERSION, DeviceContext
 from crenya_pos_api.sync.credit import GRANT_FLAG
+from crenya_pos_api.sync.credit_terms import UNSET, apply_customer_terms, parse_days, parse_limit
 from crenya_pos_api.sync.entitlement import device_enable_refusal
 from crenya_pos_api.sync.errors import (
 	DEPENDENCY_MISSING,
@@ -116,15 +123,19 @@ __all__ = [
 	"PROTOCOL_VERSION",
 	"RETRYABLE_CODES",
 	"TOTAL_MISMATCH",
+	"UNSET",
 	"VALIDATION",
 	"AggregateHandler",
 	"DeviceContext",
 	"EntitySpec",
 	"ExtensionHookError",
 	"SyncError",
+	"apply_customer_terms",
 	"clean_location",
 	"device_enable_refusal",
 	"mode_of_payment_account",
+	"parse_days",
+	"parse_limit",
 	"registry",
 	"staff_roles",
 ]

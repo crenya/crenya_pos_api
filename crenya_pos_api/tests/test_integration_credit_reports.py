@@ -7,6 +7,7 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module
 crenya_pos_api.tests.test_integration_credit_reports
 """
 
+import uuid
 from unittest import mock
 
 import frappe
@@ -80,10 +81,12 @@ class OutstandingCase(SettleCase):
 		frappe.db.commit()  # nosemgrep
 		super().tearDownClass()
 
+	group = REPORT_GROUP
+
 	def customer(self, label, limit=None):
 		"""A customer of the outlet's report group."""
 		name = make_customer(label, limit=limit)
-		frappe.db.set_value("Customer", name, "customer_group", REPORT_GROUP)
+		frappe.db.set_value("Customer", name, "customer_group", self.group)
 		frappe.db.commit()  # nosemgrep
 		return name
 
@@ -387,3 +390,106 @@ class TestOutstandingScope(OutstandingCase):
 		frappe.set_user(REST_MANAGER)
 		with self.assertRaises(frappe.PermissionError):
 			report(RESTAURANT_B)
+
+
+class TestOutstandingFixRound1(OutstandingCase):
+	def use_group(self, group):
+		self.group = group
+		profile = frappe.get_doc("POS Profile", RESTAURANT_A)
+		profile.set("customer_groups", [{"customer_group": group}])
+		profile.save(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep
+
+	def test_session_survives_the_elevated_report(self):
+		"""The report runs AR as Administrator; sid, session data and form dict come back identical, also
+		when AR raises (a cookie request would otherwise write wiped data to the real sid)."""
+		customer = self.customer("sess")
+		self.enable(customer)
+		frappe.set_user(REST_MANAGER)
+		data = frappe._dict(user=REST_MANAGER, csrf_token="csrf-token-1")
+		form = frappe._dict(cmd="x")
+		frappe.local.session.sid = "fake-sid-1"
+		frappe.local.session.data = data
+		frappe.local.form_dict = form
+
+		def check():
+			self.assertEqual(frappe.session.user, REST_MANAGER)
+			self.assertEqual(frappe.session.sid, "fake-sid-1")
+			self.assertIs(frappe.local.session.data, data)
+			self.assertEqual(dict(data), {"user": REST_MANAGER, "csrf_token": "csrf-token-1"})
+			self.assertIs(frappe.local.form_dict, form)
+			self.assertEqual(dict(form), {"cmd": "x"})
+
+		self.assertIn(customer, rows_by_customer(report()))
+		check()
+		with mock.patch(
+			"erpnext.accounts.report.accounts_receivable.accounts_receivable.execute",
+			side_effect=RuntimeError("boom"),
+		):
+			with self.assertRaises(RuntimeError):
+				report()
+		check()
+
+	def test_enabled_disabled_customer_who_owes_is_listed(self):
+		"""The page keeps a disabled customer who still owes; so does the report (no sale in range)."""
+		owing = self.customer("dis_owes")
+		quiet = self.customer("dis_quiet")
+		for name in (owing, quiet):
+			self.enable(name)
+		self.ledger(owing, [("invoice", 40, "20.000")])
+		frappe.db.set_value("Customer", owing, "disabled", 1)
+		frappe.db.set_value("Customer", quiet, "disabled", 1)
+		frappe.db.commit()  # nosemgrep
+		rows = rows_by_customer(self.as_manager_report(from_date=add_days(nowdate(), -3)))
+		self.assertEqual(rows[owing]["closing"], "20.000")
+		self.assertEqual(rows[owing]["opening"], "20.000")
+		self.assertNotIn(quiet, rows)
+
+	def test_on_account_customer_found_among_more_than_cap_cash_customers(self):
+		"""Fully paid named cash sales do not use the cap; the one customer on account is listed."""
+		# a group of its own: the shared one holds the on-account customers of the other tests
+		group = f"_Test Crenya Report Group Cap {uuid.uuid4().hex[:6]}"
+		if not frappe.db.exists("Customer Group", group):
+			frappe.get_doc(
+				{
+					"doctype": "Customer Group",
+					"customer_group_name": group,
+					"parent_customer_group": "All Customer Groups",
+					"is_group": 0,
+				}
+			).insert(ignore_permissions=True)
+		profile = frappe.get_doc("POS Profile", RESTAURANT_A)
+		profile.set("customer_groups", [{"customer_group": group}])
+		profile.save(ignore_permissions=True)
+		self.addCleanup(self.use_group, REPORT_GROUP)
+		self.group = group
+		cash = [self.customer(f"cash{n}") for n in range(4)]
+		for name in cash:
+			self.post(self.on_account_sale(name, "5.000", cash="5.000"))
+		owing = self.customer("zzowing")
+		self.bills(owing, "3.000")
+		with mock.patch.object(credit_reports, "MAX_REPORT_ROWS", 3):
+			frappe.set_user(REST_MANAGER)
+			answer = report()
+		rows = rows_by_customer(answer)
+		self.assertIn(owing, rows)
+		self.assertEqual(rows[owing]["closing"], "3.000")
+		self.assertFalse(set(cash) & set(rows))
+		self.assertIs(answer["more"], False)
+
+	def test_more_only_when_the_on_account_set_exceeds_the_cap(self):
+		names = [self.customer(f"acct{n}") for n in range(3)]
+		for name in names:
+			self.bills(name, "1.000")
+		with mock.patch.object(credit_reports, "MAX_REPORT_ROWS", 2):
+			frappe.set_user(REST_MANAGER)
+			answer = report()
+		self.assertIs(answer["more"], True)
+		self.assertEqual(len(answer["rows"]), 2)
+
+	def test_oldest_unpaid_is_from_sales_invoices_only(self):
+		customer = self.customer("oldest")
+		self.enable(customer)
+		self.ledger(customer, [("journal", 90, "4.000"), ("invoice", 20, "2.000")])
+		row = self.row(customer)
+		self.assertEqual(row["oldest_unpaid"], add_days(nowdate(), -20))

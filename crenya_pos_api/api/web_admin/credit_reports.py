@@ -23,7 +23,7 @@ ERPNext's Accounts Receivable report as on `as_on`, by due date, 30/60/90. `over
 **Permission.** Reading is `credit_view` (the outlet's manager, or an Accounts role, for a company
 the user may use). ERPNext's Accounts Receivable report raises PermissionError for a user without
 Accounts roles and `frappe.flags.ignore_permissions` does not help, so, only AFTER `credit_view`
-passed, the report runs as Administrator (`frappe.set_user`) and the session user is restored in a
+passed, the report runs as Administrator (`elevated_as_administrator`) and the session (user, sid, session data, form dict) is restored in a
 `finally`, always. The report is asked for exactly the listed customers.
 """
 
@@ -32,8 +32,9 @@ from decimal import Decimal
 
 import frappe
 from frappe import _
+from frappe.query_builder import Case
 from frappe.query_builder.functions import Sum
-from frappe.utils import getdate, nowdate
+from frappe.utils import cint, getdate, nowdate
 
 from crenya_pos_api.api.web_admin.credit import (
 	CREDIT_ENABLED_FIELD,
@@ -48,6 +49,7 @@ from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.credit import overdue_figures
 from crenya_pos_api.sync.credit_terms import customer_terms
 from crenya_pos_api.utils.decimal import as_decimal, format_money
+from crenya_pos_api.utils.session import elevated_as_administrator
 from crenya_pos_api.web.context import refuse
 from crenya_pos_api.web.reports import money_view, parse_date
 
@@ -111,20 +113,44 @@ def _month_start(day: date) -> date:
 	return day.replace(day=1)
 
 
+def on_account_sql(invoice, precision):
+	"""The SQL form of `credit_sale_part` before its floor at 0: the payable total (the rounded total
+	unless rounding is off) less the paid amount net of change, the write-off and redeemed points."""
+	payable = (
+		Case()
+		.when(invoice.disable_rounded_total == 1, invoice.grand_total)
+		.else_(Case().when(invoice.rounded_total != 0, invoice.rounded_total).else_(invoice.grand_total))
+	)
+	return (
+		payable
+		- (invoice.paid_amount - invoice.change_amount)
+		- invoice.write_off_amount
+		- invoice.loyalty_amount
+	)
+
+
 def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
-	"""(customer names, the enabled ones, more): the enabled customers of the outlet and those with a
+	"""(customer names, the enabled live ones, more): the enabled customers of the outlet and those with a
 	till sale on account posted in `first..last`, inside the outlet's customer groups, without the
 	walk-in and the excluded."""
 	base = _outlet_customer_filter(ctx)
-	enabled = frappe.get_all(
+	# a restaurant keeps a disabled customer who still owes (`_outlet_customer_filter`'s rule): listed
+	# here, dropped below when all its figures are zero; a shop's filter already says disabled = 0
+	enabled_rows = frappe.get_all(
 		CUSTOMER,
-		filters={**base, CREDIT_ENABLED_FIELD: 1, "disabled": 0},
-		pluck="name",
+		filters={**base, CREDIT_ENABLED_FIELD: 1},
+		fields=["name", "disabled"],
 		order_by="name asc",
 		limit=MAX_REPORT_ROWS + 1,
 	)
+	enabled = [row.name for row in enabled_rows]
+	live = {row.name for row in enabled_rows if not cint(row.disabled)}
 	invoice = frappe.qb.DocType("Sales Invoice")
 	in_company = invoice.company == ctx.company
+	left_out = excluded_customers(ctx) | {ctx.profile.get("customer")}
+	left_out.discard(None)
+	if left_out:
+		in_company = in_company & invoice.customer.notin(sorted(left_out))
 	if base.get("customer_group"):
 		# cut the pool in SQL by the customers' groups now, not the group an invoice carried
 		customer = frappe.qb.DocType(CUSTOMER)
@@ -144,15 +170,14 @@ def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
 				& (invoice.is_return == 0)
 				& invoice.pos_profile.isnotnull()
 				& (invoice.pos_profile != "")
-				# not the sales paid in full at the sale (the wide cut of `credit_sales_of`)
-				& (
-					invoice.paid_amount + invoice.write_off_amount + invoice.loyalty_amount
-					< invoice.grand_total + 1
-				)
+				# an actual on-account part (`credit_sale_part`): payable less paid net of change,
+				# write-off and redeemed points, above half the smallest unit
+				& (on_account_sql(invoice, precision) > Decimal(1).scaleb(-precision) / 2)
 				& (invoice.posting_date >= first)
 				& (invoice.posting_date <= last)
 			)
 			.groupby(invoice.customer)
+			.orderby(invoice.customer)
 			.limit(MAX_REPORT_ROWS + 1)
 			.run()
 		)
@@ -160,14 +185,14 @@ def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
 	on_account = {
 		name for name, part in credit_sales_of(sold, ctx.company, first, last, precision).items() if part > 0
 	}
-	pool = (set(enabled) | on_account) - excluded_customers(ctx) - {ctx.profile.get("customer")}
+	pool = (set(enabled) | on_account) - left_out
 	if on_account - set(enabled):
 		# the sold-on-account ones must also lie inside the outlet's groups and exist
 		pool = set(
 			frappe.get_all(CUSTOMER, filters={**base, "name": ["in", sorted(pool) or [""]]}, pluck="name")
 		)
 	more = len(enabled) > MAX_REPORT_ROWS or len(sold) > MAX_REPORT_ROWS
-	return sorted(pool), set(enabled), more
+	return sorted(pool), live, more
 
 
 def _gl_figures(names, company, first, last):
@@ -206,13 +231,11 @@ def _gl_figures(names, company, first, last):
 def _receivable_rows(names, company, as_on) -> list[dict]:
 	"""The rows of ERPNext's Accounts Receivable report for exactly `names` (chunks of AR_CHUNK) as on
 	`as_on`, by due date, 30/60/90. Runs as Administrator (see the module docstring: call it only
-	after `credit_view` passed) and puts the session user back whatever happens."""
+	after `credit_view` passed) and puts the session back whatever happens (`elevated_as_administrator`: user, sid, session data, form dict)."""
 	from erpnext.accounts.report.accounts_receivable.accounts_receivable import execute
 
-	user = frappe.session.user
 	rows = []
-	try:
-		frappe.set_user("Administrator")
+	with elevated_as_administrator():
 		for start in range(0, len(names), AR_CHUNK):
 			filters = frappe._dict(
 				company=company,
@@ -224,8 +247,6 @@ def _receivable_rows(names, company, as_on) -> list[dict]:
 			)
 			result = execute(filters)
 			rows.extend(row for row in (result[1] or []) if isinstance(row, dict))
-	finally:
-		frappe.set_user(user)
 	return rows
 
 
@@ -294,7 +315,7 @@ def _rows(ctx, names, enabled, first, end, precision, keep_zero) -> list[dict]:
 		start = opening.get(name, Decimal(0))
 		closing = start + charged - paid
 		buckets = ageing.get(name) or {key: format_money(0, precision) for key in RANGE_KEYS}
-		overdue = overdue_figures(bills.get(name), closing, precision, today=end)[0]
+		overdue, oldest = overdue_figures(bills.get(name), closing, precision, today=end)
 		row = {
 			"customer": name,
 			"name": labels.get(name, name),
@@ -305,7 +326,7 @@ def _rows(ctx, names, enabled, first, end, precision, keep_zero) -> list[dict]:
 			"closing": format_money(closing, precision),
 			**{key: buckets[key] for key in RANGE_KEYS},
 			"overdue": format_money(overdue, precision),
-			"oldest_unpaid": buckets.get("oldest_unpaid"),
+			"oldest_unpaid": None if oldest is None else oldest.isoformat(),
 		}
 		if keep_zero or name in enabled or not is_zero_row(row):
 			rows.append(row)

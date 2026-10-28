@@ -133,6 +133,19 @@ class TestDaysTemplate(TermsCase):
 			self.assertEqual(days_template(33), "House Account 33 days")
 		self.assertEqual(frappe.db.count(TEMPLATE, {"name": "House Account 33 days"}), 1)
 
+	def test_days_template_race_leaves_no_already_exists_message(self):
+		"""M6: the duplicate Frappe's insert reports is handled here; it must not reach the caller's
+		message log (it would show on the screen of a request that succeeded)."""
+		from unittest import mock
+
+		delete_template("House Account 35 days")
+		days_template(35)
+		frappe.local.message_log = []
+		with mock.patch.object(frappe.db, "exists", return_value=False):
+			self.assertEqual(days_template(35), "House Account 35 days")
+		self.assertEqual(frappe.local.message_log, [])
+		delete_template("House Account 35 days")
+
 	def test_days_template_read_back_when_exists_missed_it(self):
 		# `exists` answers False (the snapshot predates the winner's commit): the insert hits the
 		# duplicate and the template is read back, locked

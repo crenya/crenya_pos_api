@@ -776,8 +776,8 @@ class TestSaveCreditDays(WebCreditCase):
 		row = web_admin.save_credit_limit(self.profile.name, customer, "200", self.modified(customer), 30)
 		comments = self.comments(customer)
 		self.assertEqual(len(comments), 1)
-		self.assertIn("limit 100.000 \u2192 200.000", comments[0])
-		self.assertIn("days none \u2192 30", comments[0])
+		self.assertIn("limit for _Test Crenya POS Co 100.000 \u2192 200.000", comments[0])
+		self.assertIn("days (all companies) none \u2192 30", comments[0])
 		web_admin.save_credit_limit(self.profile.name, customer, "200", row["modified"])
 		self.assertEqual(len(self.comments(customer)), 2)
 

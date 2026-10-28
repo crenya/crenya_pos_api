@@ -36,11 +36,11 @@ class TestTermsAuditText(unittest.TestCase):
 		change = {"old_limit": None, "new_limit": Decimal("50.000"), "old_days": None, "new_days": 30}
 		self.assertEqual(
 			terms_audit_text("Shop Co", change, "app.crenya.com", "boss@example.com", 3),
-			"Credit terms for Shop Co changed: limit no limit of its own → 50.000, days none → 30"
+			"Credit terms changed: limit for Shop Co no limit of its own → 50.000, days (all companies) none → 30"
 			" from app.crenya.com by boss@example.com",
 		)
 
 	def test_terms_audit_text_omr_removed_and_zero_days(self):
 		change = {"old_limit": Decimal("12.5"), "new_limit": None, "old_days": 30, "new_days": 0}
 		text = terms_audit_text("Shop Co", change, "app.crenya.com", "boss@example.com", 3)
-		self.assertIn("limit 12.500 → no limit of its own, days 30 → 0 from", text)
+		self.assertIn("limit for Shop Co 12.500 → no limit of its own, days (all companies) 30 → 0 from", text)

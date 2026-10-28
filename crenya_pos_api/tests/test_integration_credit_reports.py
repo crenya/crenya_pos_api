@@ -714,6 +714,39 @@ class TestTransactions(OutstandingCase):
 		)
 		self.assertEqual(answer["totals"], {"sales": "10.000", "collections": "0.000"})
 
+	def test_transactions_leave_out_provider_and_walk_in(self):
+		"""I1: a provider's and the walk-in's sales, returns and till payments are not House Account
+		transactions, like the Outstanding report and the Statement; the totals leave them out too."""
+		kept, provider = self.listed(), self.customer("txprov", limit=None)
+		shift = f"S-{uuid.uuid4().hex[:6]}"
+		self.till_sale(kept, "7.000", shift=shift)
+		sale, sold = self.till_sale(kept, "100.000", cash="40.000", shift=shift)
+		ret = self.return_payload(sale, [(fixtures.MILK, "-1", "50.000", 1)], credit_offset="50.000")
+		ret["payments"] = []
+		ret["shift_local_id"] = shift
+		returned = self.assertOk(self.push_one(self.event(ret)))["name"]
+		self.remember(returned)
+		walk_in_sale, walk_in_sold = self.till_sale(kept, "9.000", shift=shift)
+		self.till_payment(kept, "2.000", shift=shift)
+		self.till_payment(kept, "3.000", shift=shift)
+		# the provider's sale and its return, the walk-in's sale and a payment of each
+		frappe.db.set_value("Sales Invoice", sold["name"], "customer", provider)
+		frappe.db.set_value("Sales Invoice", returned, "customer", provider)
+		frappe.db.set_value("Sales Invoice", walk_in_sold["name"], "customer", self.profile.customer)
+		pays = frappe.get_all("Payment Entry", filters={"party": kept, "crenya_shift_id": shift}, pluck="name")
+		self.assertEqual(len(pays), 2)
+		frappe.db.set_value("Payment Entry", pays[0], "party", provider)
+		frappe.db.set_value("Payment Entry", pays[1], "party", self.profile.customer)
+		with mock.patch.object(credit_reports, "excluded_customers", return_value={provider}):
+			answer = self.txn(shift=shift)
+		self.assertEqual({r["customer"] for r in answer["rows"]}, {kept})
+		self.assertEqual([(r["kind"], r["amount"]) for r in answer["rows"]], [("sale", "7.000")])
+		self.assertEqual(answer["totals"], {"sales": "7.000", "collections": "0.000"})
+		self.assertEqual(
+			answer["days"], [{"posting_date": nowdate(), "sales": "7.000", "collections": "0.000"}]
+		)
+		self.assertEqual([s["sales"] for s in answer["shifts"]], ["7.000"])
+
 	def test_web_settlement_listed_as_web_desk(self):
 		customer = self.listed()
 		self.sell(customer, "10.000")

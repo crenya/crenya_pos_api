@@ -14,6 +14,11 @@ def _fake_set_user(user):
 
 class TestElevatedAsAdministrator(unittest.TestCase):
 	def setUp(self):
+		# put back the request state the run had: later unit tests read frappe.session.user
+		# (TestStampCreditChange counts on Administrator)
+		for name in ("session", "form_dict"):
+			saved = getattr(frappe.local, name, None)
+			self.addCleanup(setattr, frappe.local, name, saved)
 		self.data = frappe._dict(user="manager@x", csrf_token="t")
 		self.form = frappe._dict(cmd="x")
 		frappe.local.session = frappe._dict(sid="real-sid", user="manager@x", data=self.data)

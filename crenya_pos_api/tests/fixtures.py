@@ -490,3 +490,107 @@ def signed_with_key(authorization="token device-key:device-secret"):
 		yield
 	finally:
 		frappe.local.request = saved
+
+
+def house_account_ledger(company, customer, rows):
+	"""Post ledger entries for `customer` in `company`, each `(kind, days_ago, amount)` with kind
+	"invoice" (a desk Sales Invoice on account, due the day it is posted), "payment" (a Receive Payment
+	Entry in cash, unallocated), "credit_note" (a standalone return Sales Invoice) or "journal" (a
+	Journal Entry debiting the customer). Answers the voucher names in order. Amounts are strings with
+	the currency's decimals; the document is `rate` = amount, so a 5 % inclusive VAT is inside it."""
+	company_doc = frappe.get_doc("Company", company)
+	names = []
+	for kind, days_ago, amount in rows:
+		day = add_days(nowdate(), -int(days_ago))
+		if kind in ("invoice", "credit_note"):
+			doc = frappe.new_doc("Sales Invoice")
+			doc.update(
+				{
+					"customer": customer,
+					"company": company,
+					"currency": CURRENCY,
+					"posting_date": day,
+					"set_posting_time": 1,
+					"posting_time": "12:00:00",
+					"due_date": day,
+					"selling_price_list": PRICE_LIST,
+					"ignore_pricing_rule": 1,
+					"update_stock": 0,
+					"cost_center": f"Main - {ABBR}",
+					"taxes_and_charges": TAX_TEMPLATE,
+					"is_return": 1 if kind == "credit_note" else 0,
+				}
+			)
+			doc.append(
+				"items",
+				{
+					"item_code": MILK,
+					"qty": -1 if kind == "credit_note" else 1,
+					"rate": amount,
+					"warehouse": WAREHOUSE,
+				},
+			)
+			for row in frappe.get_doc("Sales Taxes and Charges Template", TAX_TEMPLATE).taxes:
+				doc.append(
+					"taxes",
+					{
+						key: row.get(key)
+						for key in (
+							"charge_type",
+							"account_head",
+							"description",
+							"rate",
+							"included_in_print_rate",
+							"cost_center",
+						)
+					},
+				)
+			doc.insert(ignore_permissions=True)
+			doc.submit()
+		elif kind == "payment":
+			doc = frappe.get_doc(
+				{
+					"doctype": "Payment Entry",
+					"payment_type": "Receive",
+					"company": company,
+					"posting_date": day,
+					"party_type": "Customer",
+					"party": customer,
+					"paid_from": company_doc.default_receivable_account,
+					"paid_to": company_doc.default_cash_account or f"Cash - {ABBR}",
+					"paid_amount": float(amount),
+					"received_amount": float(amount),
+					"mode_of_payment": CASH,
+				}
+			)
+			doc.insert(ignore_permissions=True)
+			doc.submit()
+		elif kind == "journal":
+			doc = frappe.get_doc(
+				{
+					"doctype": "Journal Entry",
+					"voucher_type": "Journal Entry",
+					"company": company,
+					"posting_date": day,
+					"accounts": [
+						{
+							"account": company_doc.default_receivable_account,
+							"party_type": "Customer",
+							"party": customer,
+							"debit_in_account_currency": float(amount),
+							"cost_center": f"Main - {ABBR}",
+						},
+						{
+							"account": company_doc.default_income_account,
+							"credit_in_account_currency": float(amount),
+							"cost_center": f"Main - {ABBR}",
+						},
+					],
+				}
+			)
+			doc.insert(ignore_permissions=True)
+			doc.submit()
+		else:
+			raise ValueError(kind)
+		names.append(doc.name)
+	return names

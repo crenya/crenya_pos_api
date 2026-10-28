@@ -26,7 +26,9 @@ from contextlib import contextmanager
 from decimal import Decimal
 
 import frappe
-from frappe.utils import cint, now_datetime
+from frappe.query_builder import Case
+from frappe.query_builder.functions import Min, Sum
+from frappe.utils import cint, getdate, now_datetime, nowdate
 
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, money_precision
 from crenya_pos_api.sync.errors import InvalidRequestError, raise_api_error
@@ -139,11 +141,119 @@ def credited_to_account(returns, payments_by_return, precision):
 	return quantize(total, precision)
 
 
-def credit_status(customer, company):
-	"""{customer, credit_limit, outstanding, available, over_limit, as_of} (money as decimal strings
-	at the currency's precision). `credit_limit` and `available` are null for a customer with no
-	limit; `available` is never negative; `over_limit` is the balance above the limit."""
+def _capped_overdue(total, outstanding, precision):
+	"""The overdue figure, capped (Decimal): never above the balance, never below 0, so an advance
+	or a credit note on the account lowers it."""
+	return max(min(quantize(total, precision), quantize(outstanding, precision)), Decimal(0))
+
+
+def overdue_figures(rows, outstanding, precision, today=None):
+	"""(overdue, oldest_unpaid) of a customer's bills, the one rule of the overdue figure (pure,
+	except `today` defaulting to the site's date).
+
+	`rows` are the customer's submitted non-return bills of one company, `[{outstanding_amount,
+	due_date, posting_date}]` (a row with nothing outstanding is ignored). `overdue` is the sum of
+	what is outstanding on the bills due before `today` (a bill due today is not overdue; a bill with
+	no due date is not), capped at `max(outstanding, 0)` where `outstanding` is the account's balance.
+	`oldest_unpaid` is the earliest posting date among the bills with something outstanding, whatever
+	their due date, or None."""
+	today = getdate(today) if today else getdate(nowdate())
+	total, oldest = Decimal(0), None
+	for row in rows or []:
+		amount = as_decimal(row.get("outstanding_amount"))
+		if amount <= 0:
+			continue
+		due, posted = row.get("due_date"), row.get("posting_date")
+		if due and getdate(due) < today:
+			total += amount
+		if posted and (oldest is None or getdate(posted) < oldest):
+			oldest = getdate(posted)
+	return _capped_overdue(total, outstanding, precision), oldest
+
+
+def _figures_answer(overdue, oldest, precision):
+	return {
+		"overdue": format_money(overdue, precision),
+		"oldest_unpaid": None if oldest is None else oldest.isoformat(),
+	}
+
+
+def overdue_of(customer, company, today=None, outstanding=None):
+	"""{"overdue": decimal string, "oldest_unpaid": "YYYY-MM-DD" | None} of `customer`'s bills in
+	`company` (`overdue_figures` over one query: submitted, not a return, something outstanding).
+	`today` defaults to the site's date; `outstanding` to ERPNext's balance of the customer."""
 	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
+
+	precision = money_precision()
+	if outstanding is None:
+		outstanding = as_decimal(get_customer_outstanding(customer, company))
+	invoice = frappe.qb.DocType("Sales Invoice")
+	rows = (
+		frappe.qb.from_(invoice)
+		.select(invoice.outstanding_amount, invoice.due_date, invoice.posting_date)
+		.where(
+			(invoice.customer == customer)
+			& (invoice.company == company)
+			& (invoice.docstatus == 1)
+			& (invoice.is_return == 0)
+			& (invoice.outstanding_amount > 0)
+		)
+		.run(as_dict=True)
+	)
+	return _figures_answer(*overdue_figures(rows, outstanding, precision, today), precision)
+
+
+def overdue_by_customer(names, company, precision, outstanding=None, today=None):
+	"""{customer: {"overdue", "oldest_unpaid"}} for every name in `names`, from one grouped query
+	(`Sum` of what is outstanding on the bills due before `today`, `Min` posting date); the same
+	answers as `overdue_of` for each. `outstanding` is {customer: balance}; a customer missing from
+	it is read from ERPNext."""
+	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
+
+	names = list(names)
+	if not names:
+		return {}
+	today = getdate(today) if today else getdate(nowdate())
+	invoice = frappe.qb.DocType("Sales Invoice")
+	overdue_sum = Sum(Case().when(invoice.due_date < str(today), invoice.outstanding_amount).else_(0))
+	found = {
+		row["customer"]: row
+		for row in (
+			frappe.qb.from_(invoice)
+			.select(invoice.customer, overdue_sum.as_("overdue"), Min(invoice.posting_date).as_("oldest"))
+			.where(
+				(invoice.customer.isin(names))
+				& (invoice.company == company)
+				& (invoice.docstatus == 1)
+				& (invoice.is_return == 0)
+				& (invoice.outstanding_amount > 0)
+			)
+			.groupby(invoice.customer)
+			.run(as_dict=True)
+		)
+	}
+	outstanding = outstanding or {}
+	answers = {}
+	for name in names:
+		row = found.get(name)
+		balance = outstanding.get(name)
+		if balance is None:
+			balance = as_decimal(get_customer_outstanding(name, company))
+		total = as_decimal(row["overdue"]) if row else Decimal(0)
+		oldest = getdate(row["oldest"]) if row and row["oldest"] else None
+		answers[name] = _figures_answer(_capped_overdue(total, balance, precision), oldest, precision)
+	return answers
+
+
+def credit_status(customer, company):
+	"""{customer, credit_limit, outstanding, available, over_limit, overdue, oldest_unpaid,
+	credit_days, as_of} (money as decimal strings at the currency's precision). `credit_limit` and
+	`available` are null for a customer with no limit; `available` is never negative; `over_limit`
+	is the balance above the limit; `overdue`, `oldest_unpaid` (a date) and `credit_days` are the
+	House Account phase 2 figures (`overdue_of`, `credit_terms.customer_terms`)."""
+	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
+
+	from crenya_pos_api.sync.credit_terms import customer_terms
 
 	precision = money_precision()
 	limit = customer_credit_limit(customer, company)
@@ -156,6 +266,8 @@ def credit_status(customer, company):
 		"outstanding": format_money(outstanding, precision),
 		"available": None if available is None else format_money(available, precision),
 		"over_limit": over_limit,
+		**overdue_of(customer, company, outstanding=outstanding),
+		"credit_days": customer_terms(customer, company)["credit_days"],
 		"as_of": utc_now_iso(),
 	}
 
@@ -234,7 +346,13 @@ def credit_enabled_for(customer):
 GRANT_FLAG = "crenya_credit_grant"
 TILL_GRANT = "till"
 WEB_GRANT = "web"
-GRANT_SOURCES = frozenset({TILL_GRANT, WEB_GRANT})
+# 0.16.0: the till's Customer Credit Facility event (sync.credit_facility) switches the House Account
+# on for an EXISTING customer after a manager's approval and its checker's yes; the flag counts only
+# on the save of an existing customer (`_granted_on_update`), never on an insert
+TILL_ENABLE_GRANT = "till_enable"
+CREATE_GRANT_SOURCES = frozenset({TILL_GRANT, WEB_GRANT})
+UPDATE_GRANT_SOURCES = frozenset({TILL_ENABLE_GRANT})
+GRANT_SOURCES = CREATE_GRANT_SOURCES | UPDATE_GRANT_SOURCES
 
 
 def _granted_on_create(doc):
@@ -244,17 +362,29 @@ def _granted_on_create(doc):
 	if doc is None or not flags.get("in_insert") or doc.get_doc_before_save() is not None:
 		return False
 	grant = flags.get(GRANT_FLAG)
-	return isinstance(grant, str) and grant in GRANT_SOURCES
+	return isinstance(grant, str) and grant in CREATE_GRANT_SOURCES
+
+
+def _granted_on_update(doc):
+	"""Whether server code granted the facility on the save of an EXISTING customer
+	(`GRANT_FLAG` = `TILL_ENABLE_GRANT`, set by the Customer Credit Facility event after its
+	checks): not inside an insert, and a saved version must exist."""
+	flags = (getattr(doc, "flags", None) or {}) if doc is not None else {}
+	if doc is None or flags.get("in_insert") or doc.get_doc_before_save() is None:
+		return False
+	grant = flags.get(GRANT_FLAG)
+	return isinstance(grant, str) and grant in UPDATE_GRANT_SOURCES
 
 
 def _may_switch_facility(doc=None):
 	"""Whether this save may change `crenya_credit_enabled`: Administrator, a System Manager or an
 	Accounts Manager (P4), the app's own install, patch or migrate, or a new customer the server
-	granted it to (`GRANT_FLAG`)."""
+	granted it to (`GRANT_FLAG`), or an existing customer the till's facility event granted it to
+	(`GRANT_FLAG` = `TILL_ENABLE_GRANT`)."""
 	flags = frappe.flags
 	if flags.in_install or flags.in_patch or flags.in_migrate:
 		return True
-	if _granted_on_create(doc):
+	if _granted_on_create(doc) or _granted_on_update(doc):
 		return True
 	user = frappe.session.user if getattr(frappe.local, "session", None) else None
 	if user == "Administrator":

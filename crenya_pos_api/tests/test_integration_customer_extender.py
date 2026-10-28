@@ -139,6 +139,26 @@ class TestCustomerExtender(SyncCase):
 		self.assertIn("not switched on", event_note(event_id))
 		self.assertEqual(len(comments(result["name"])), 1)
 
+	def test_extender_receives_terms(self):
+		terms = {"credit_limit": "50.000", "credit_days": 30}
+		payload = self.customer_payload("Terms Customer")
+		payload["credit_facility"] = {**GRANT, **terms}
+		result, _event_id = self.push_as_cashier(payload, EXTENDER_HOOKS)
+		self.assertOk(result)
+		self.assertEqual(dummy.CUSTOMER_CALLS[-1][2], {**GRANT, **terms})
+
+		bare = self.customer_payload("Terms Absent Customer")
+		bare["credit_facility"] = dict(GRANT)
+		result, _event_id = self.push_as_cashier(bare, EXTENDER_HOOKS)
+		self.assertOk(result)
+		self.assertEqual(dummy.CUSTOMER_CALLS[-1][2], GRANT)
+
+		cleared = self.customer_payload("Terms Cleared Customer")
+		cleared["credit_facility"] = {**GRANT, "credit_limit": None}
+		result, _event_id = self.push_as_cashier(cleared, EXTENDER_HOOKS)
+		self.assertOk(result)
+		self.assertEqual(dummy.CUSTOMER_CALLS[-1][2], {**GRANT, "credit_limit": None})
+
 	def test_grant_flag_lets_extender_enable(self):
 		self.assertNotIn("Accounts Manager", frappe.get_roles(self.cashier))
 		payload = self.customer_payload("Granted Customer")

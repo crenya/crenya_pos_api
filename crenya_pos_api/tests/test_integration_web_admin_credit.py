@@ -14,6 +14,7 @@ from unittest import mock
 
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+from frappe.utils import add_days, getdate, nowdate
 
 from crenya_pos_api.api import web_admin
 from crenya_pos_api.api.web_admin import credit as web_credit
@@ -22,9 +23,11 @@ from crenya_pos_api.expenses import booking
 from crenya_pos_api.sync.approvals import APPROVER_ROLE
 from crenya_pos_api.sync.context import POS_USER_ROLE, profile_users
 from crenya_pos_api.sync.credit import CREDIT_ENABLED_FIELD, CREDIT_SALES_FIELD
+from crenya_pos_api.sync.credit_terms import apply_customer_terms, days_template
 from crenya_pos_api.tests import fixtures
 from crenya_pos_api.tests.sync_case import new_id
 from crenya_pos_api.tests.test_integration_credit import CreditCase, make_customer
+from crenya_pos_api.tests.test_integration_credit_terms import TermsCase
 from crenya_pos_api.tests.web_admin_case import (
 	CASHIER,
 	MANAGER,
@@ -127,6 +130,10 @@ def restore_restaurant_product(previous):
 		web_credit._PRODUCTS.pop("restaurant", None)
 	else:
 		web_credit.register_credit_product(previous)
+
+
+DAYS_GROUP = "_Test Crenya Days Group"
+DAYS_GROUP_45 = "_Test Crenya Days Group 45"
 
 
 def credit_limit_rows(customer):
@@ -285,6 +292,47 @@ class TestCreditCustomers(WebCreditCase):
 			):
 				frappe.delete_doc("User Permission", name, ignore_permissions=True, force=True)
 			frappe.db.commit()  # nosemgrep
+
+
+class TestCreditRowsOverdue(WebCreditCase):
+	set_group_terms = TermsCase.set_group_terms
+	drop_group = TermsCase.drop_group
+
+	def test_web_rows_carry_overdue_and_days(self):
+		today = getdate(nowdate())
+		own = make_customer("webovd", limit=500)
+		doc = frappe.get_doc("Customer", own)
+		apply_customer_terms(doc, fixtures.COMPANY, days=30)
+		doc.save(ignore_permissions=True)
+		# made first: `make_customer` puts a customer in the first leaf group, the terms group included
+		plain = make_customer("webovdnone", limit=500)
+		grouped = make_customer("webovdgrp", limit=500)
+		self.set_group_terms(grouped, days_template(45))
+		saved = frappe.db.get_value("Company", fixtures.COMPANY, "payment_terms")
+		frappe.db.set_value("Company", fixtures.COMPANY, "payment_terms", None)
+		frappe.clear_document_cache("Company", fixtures.COMPANY)
+		self.addCleanup(TermsCase.restore_company_terms, self, saved)
+		posted = add_days(today, -40)
+		old = self.sell(own, "70.000")
+		frappe.db.set_value("Sales Invoice", old, {"posting_date": posted, "due_date": add_days(today, -10)})
+		self.sell(own, "30.000")
+		grouped_bill = self.sell(grouped, "11.000")
+		self.sell(plain, "12.000")
+		rows = rows_by_customer(web_admin.credit_customers(self.profile.name))
+		self.assertEqual(
+			(rows[own]["overdue"], rows[own]["oldest_unpaid"], rows[own]["credit_days"]),
+			("70.000", str(posted), 30),
+		)
+		self.assertEqual(rows[own]["credit_days_source"], "customer")
+		self.assertEqual((rows[grouped]["credit_days"], rows[grouped]["credit_days_source"]), (45, "group"))
+		self.assertEqual(rows[grouped]["overdue"], "0.000")
+		self.assertEqual(
+			rows[grouped]["oldest_unpaid"],
+			str(frappe.db.get_value("Sales Invoice", grouped_bill, "posting_date")),
+		)
+		for key in ("overdue", "oldest_unpaid", "credit_days", "credit_days_source"):
+			self.assertIn(key, rows[plain])
+		self.assertEqual((rows[plain]["credit_days"], rows[plain]["credit_days_source"]), (None, None))
 
 
 class TestCreditPageForAccountants(WebCreditCase):
@@ -616,6 +664,124 @@ class TestSaveCreditLimit(WebCreditCase):
 			frappe.clear_document_cache("POS Profile", self.profile.name)
 
 
+class TestSaveCreditDays(WebCreditCase):
+	"""save_credit_limit also takes the customer's credit days (House Account phase 2, Task 9)."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# a long-lived test site holds more credit customers than the page lists: the shop lists only
+		# these two groups, one of them with 45 days of its own
+		for group, terms in ((DAYS_GROUP, None), (DAYS_GROUP_45, days_template(45))):
+			if not frappe.db.exists("Customer Group", group):
+				frappe.get_doc(
+					{
+						"doctype": "Customer Group",
+						"customer_group_name": group,
+						"parent_customer_group": "All Customer Groups",
+						"is_group": 0,
+					}
+				).insert(ignore_permissions=True)
+			frappe.db.set_value("Customer Group", group, "payment_terms", terms)
+		profile = frappe.get_doc("POS Profile", cls.profile.name)
+		cls.saved_groups = [row.customer_group for row in profile.customer_groups]
+		profile.set("customer_groups", [{"customer_group": DAYS_GROUP}, {"customer_group": DAYS_GROUP_45}])
+		profile.flags.ignore_validate = True
+		profile.save(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep
+		frappe.clear_document_cache("POS Profile", cls.profile.name)
+
+	@classmethod
+	def tearDownClass(cls):
+		profile = frappe.get_doc("POS Profile", cls.profile.name)
+		profile.set("customer_groups", [{"customer_group": g} for g in cls.saved_groups])
+		profile.flags.ignore_validate = True
+		profile.save(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep
+		frappe.clear_document_cache("POS Profile", cls.profile.name)
+		super().tearDownClass()
+
+	def customer(self, label, group=None, limit=100):
+		name = make_customer(label, limit=limit)
+		frappe.db.set_value("Customer", name, "customer_group", group or DAYS_GROUP)
+		frappe.db.commit()  # nosemgrep
+		return name
+
+	def modified(self, customer):
+		return self.row_of(customer)["modified"]
+
+	def comments(self, customer):
+		return frappe.get_all(
+			"Comment",
+			filters={
+				"reference_doctype": "Customer",
+				"reference_name": customer,
+				"content": ["like", "Credit%app.crenya.com by Administrator%"],
+			},
+			pluck="content",
+		)
+
+	def test_save_days_sets_template(self):
+		customer = self.customer("webdays")
+		row = web_admin.save_credit_limit(self.profile.name, customer, "100", self.modified(customer), 30)
+		self.assertEqual((row["credit_days"], row["credit_days_source"]), (30, "customer"))
+		self.assertEqual(frappe.db.get_value("Customer", customer, "payment_terms"), days_template(30))
+		row = web_admin.save_credit_limit(self.profile.name, customer, "100", row["modified"], "0")
+		self.assertEqual((row["credit_days"], row["credit_days_source"]), (0, "customer"))
+
+	def test_save_without_days_keeps_days(self):
+		customer = self.customer("webkeep")
+		doc = frappe.get_doc("Customer", customer)
+		apply_customer_terms(doc, fixtures.COMPANY, days=30)
+		doc.save(ignore_permissions=True)
+		row = web_admin.save_credit_limit(self.profile.name, customer, "150", self.modified(customer))
+		self.assertEqual((row["credit_limit"], row["credit_days"]), ("150.000", 30))
+		self.assertEqual(frappe.db.get_value("Customer", customer, "payment_terms"), days_template(30))
+
+	def test_save_days_blank_keeps_limit_and_answers_source(self):
+		customer = self.customer("webblank", DAYS_GROUP_45)
+		doc = frappe.get_doc("Customer", customer)
+		apply_customer_terms(doc, fixtures.COMPANY, days=30)
+		doc.save(ignore_permissions=True)
+		for blank in ("", None):
+			doc = frappe.get_doc("Customer", customer)
+			apply_customer_terms(doc, fixtures.COMPANY, days=30)
+			doc.save(ignore_permissions=True)
+			row = web_admin.save_credit_limit(
+				self.profile.name, customer, "100", self.modified(customer), blank
+			)
+			self.assertEqual((row["credit_days"], row["credit_days_source"]), (45, "group"))
+			self.assertEqual((row["credit_limit"], row["limit_source"]), ("100.000", "customer"))
+			self.assertFalse(frappe.db.get_value("Customer", customer, "payment_terms"))
+
+	def test_days_invalid_refused(self):
+		customer = self.customer("webbad")
+		modified = self.modified(customer)
+		for bad in (366, "366", "x", "-1", "1.5"):
+			with self.assertRaises(frappe.ValidationError):
+				web_admin.save_credit_limit(self.profile.name, customer, "100", modified, bad)
+		self.assertFalse(frappe.db.get_value("Customer", customer, "payment_terms"))
+		self.assertEqual(self.comments(customer), [])
+
+	def test_outlet_manager_cannot_set_days(self):
+		customer = self.customer("webmgrdays")
+		modified = self.modified(customer)
+		self.as_manager()
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.save_credit_limit(self.profile.name, customer, "100", modified, 30)
+		self.assertFalse(frappe.db.get_value("Customer", customer, "payment_terms"))
+
+	def test_one_comment_per_save(self):
+		customer = self.customer("webcomment")
+		row = web_admin.save_credit_limit(self.profile.name, customer, "200", self.modified(customer), 30)
+		comments = self.comments(customer)
+		self.assertEqual(len(comments), 1)
+		self.assertIn("limit for _Test Crenya POS Co 100.000 \u2192 200.000", comments[0])
+		self.assertIn("days (all companies) none \u2192 30", comments[0])
+		web_admin.save_credit_limit(self.profile.name, customer, "200", row["modified"])
+		self.assertEqual(len(self.comments(customer)), 2)
+
+
 class TestCreditAndExpenseSettings(WebCreditCase):
 	def fields(self, answer):
 		return {f["fieldname"]: f for section in answer["sections"] for f in section["fields"]}
@@ -708,6 +874,8 @@ ROW_KEYS_0132 = {
 	"over_limit",
 	"open_invoices",
 }
+# 0.16.0 (House Account phase 2) adds these to every row
+ROW_KEYS_0160 = {"overdue", "oldest_unpaid", "credit_days", "credit_days_source"}
 ANSWER_KEYS_0132 = {"outlet", "currency", "rows", "more", "can_edit"}
 SHOP_KEYS_0132 = {"name", "outlet_name", "company", "currency", "credit_view", "credit_enabled", "can_edit"}
 
@@ -730,7 +898,9 @@ class TestShopAnswersUnchanged(WebCreditCase):
 		row = rows[over]
 		self.assertEqual(
 			set(row),
-			ROW_KEYS_0132 | {"credit_enabled", "mobile_no", "credit_sales", "payments", "location"},
+			ROW_KEYS_0132
+			| ROW_KEYS_0160
+			| {"credit_enabled", "mobile_no", "credit_sales", "payments", "location"},
 		)
 		self.assertEqual(
 			(row["credit_limit"], row["limit_source"], row["outstanding"], row["available"]),
@@ -752,7 +922,9 @@ class TestShopAnswersUnchanged(WebCreditCase):
 		self.assertEqual(web_admin.credit_shops(), web_admin.credit_shops("shop"))
 		frappe.set_user("Administrator")
 		saved = web_admin.save_credit_limit(self.profile.name, over, "200", row["modified"])
-		self.assertEqual(set(saved), ROW_KEYS_0132 | {"credit_enabled", "mobile_no", "location"})
+		self.assertEqual(
+			set(saved), ROW_KEYS_0132 | ROW_KEYS_0160 | {"credit_enabled", "mobile_no", "location"}
+		)
 		self.assertEqual((saved["credit_limit"], saved["available"]), ("200.000", "50.000"))
 
 

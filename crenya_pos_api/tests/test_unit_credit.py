@@ -4,6 +4,7 @@ fields (no site)."""
 
 import copy
 import unittest
+from datetime import date
 from decimal import Decimal
 
 import frappe
@@ -14,10 +15,12 @@ from crenya_pos_api.sync.approvals import (
 	APPROVAL_DEFAULT_OFF,
 	approvals_bootstrap,
 )
+from crenya_pos_api.sync.credit import overdue_figures
 from crenya_pos_api.sync.errors import VALIDATION, SyncError
 from crenya_pos_api.sync.validation import validate_invoice_payload, validate_shift_payload
 from crenya_pos_api.tests.test_unit_shift import SHIFT, mutate
 from crenya_pos_api.tests.test_unit_validation import SALE, make_return
+from crenya_pos_api.utils.decimal import format_money
 
 
 def sale(**over):
@@ -244,3 +247,49 @@ class TestOnAccountAndCredited(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestOverdueFigures(unittest.TestCase):
+	"""`overdue_figures`, the one rule of the overdue figure (pure: the caller reads the bills)."""
+
+	TODAY = date(2026, 10, 28)
+
+	def bill(self, outstanding, due, posted):
+		return {"outstanding_amount": outstanding, "due_date": due, "posting_date": posted}
+
+	def test_overdue_figures_omr(self):
+		rows = [
+			self.bill("6.000", date(2026, 10, 1), date(2026, 9, 5)),
+			self.bill("10.000", date(2026, 11, 30), date(2026, 10, 31)),
+		]
+		overdue, oldest = overdue_figures(rows, Decimal("16.000"), 3, today=self.TODAY)
+		self.assertEqual(format_money(overdue, 3), "6.000")
+		self.assertEqual(oldest, date(2026, 9, 5))
+
+	def test_overdue_capped_by_advance(self):
+		rows = [self.bill("20.000", date(2026, 10, 1), date(2026, 9, 5))]
+		overdue, oldest = overdue_figures(rows, Decimal("10.000"), 3, today=self.TODAY)
+		self.assertEqual(format_money(overdue, 3), "10.000")
+		self.assertEqual(oldest, date(2026, 9, 5))
+		overdue, _ = overdue_figures(rows, Decimal("-5.000"), 3, today=self.TODAY)
+		self.assertEqual(format_money(overdue, 3), "0.000")
+
+	def test_due_today_is_not_overdue(self):
+		rows = [self.bill("7.500", self.TODAY, date(2026, 9, 28))]
+		overdue, oldest = overdue_figures(rows, Decimal("7.500"), 3, today=self.TODAY)
+		self.assertEqual(overdue, Decimal(0))
+		# the oldest unpaid bill counts whatever its due date
+		self.assertEqual(oldest, date(2026, 9, 28))
+
+	def test_no_bills(self):
+		self.assertEqual(overdue_figures([], Decimal(0), 3, today=self.TODAY), (Decimal(0), None))
+
+	def test_paid_bills_and_missing_due_dates_are_ignored(self):
+		rows = [
+			self.bill("0.000", date(2026, 9, 1), date(2026, 8, 1)),
+			self.bill("4.000", None, date(2026, 10, 2)),
+			self.bill("3.000", "2026-10-10", "2026-10-05"),
+		]
+		overdue, oldest = overdue_figures(rows, Decimal("7.000"), 3, today=self.TODAY)
+		self.assertEqual(format_money(overdue, 3), "3.000")
+		self.assertEqual(oldest, date(2026, 10, 2))

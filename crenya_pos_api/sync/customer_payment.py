@@ -28,7 +28,6 @@ company, say) is a refused sync event with a hint on the Refused page; the cash 
 drawer and the till's Z report counts it, and Retry books it once the account exists.
 """
 
-from contextlib import contextmanager
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -54,6 +53,7 @@ from crenya_pos_api.sync.validation import (
 )
 from crenya_pos_api.utils.dates import format_db_datetime
 from crenya_pos_api.utils.decimal import DecimalParseError, as_decimal, format_money, parse_decimal, quantize
+from crenya_pos_api.utils.session import elevated_as_administrator
 
 AGGREGATE_CUSTOMER_PAYMENT = "Customer Payment"
 PAYMENT_ENTRY = "Payment Entry"
@@ -71,8 +71,9 @@ LOCAL_INVOICE_PREFIX = "local:"
 # the last part of the remarks of a payment that skipped ticked bills (`payment_result` reads it back)
 SKIPPED_REMARK = "skipped ticked invoices: "
 # the Payment Entry fields a booking may set through `extra` (0.15.0): the service provider a
-# settlement is from (crenya_restaurant); any other field is refused
-EXTRA_FIELDS = frozenset({"crenya_service_provider"})
+# settlement is from (crenya_restaurant), and (0.16.0) a till payment's shift, cashier and device;
+# any other field is refused
+EXTRA_FIELDS = frozenset({"crenya_service_provider", "crenya_shift_id", "crenya_cashier", "crenya_device"})
 
 
 def _invoices(payload):
@@ -373,16 +374,9 @@ def _remarks(ctx, data, cashier):
 	return "; ".join(parts)
 
 
-@contextmanager
-def _as_administrator():
-	"""The session is Administrator inside the block and the user it was before after it, however
-	the block ends."""
-	user = frappe.session.user
-	frappe.set_user("Administrator")  # nosemgrep  # the booking only: restored in `finally`
-	try:
-		yield
-	finally:
-		frappe.set_user(user)  # nosemgrep  # back to the device user
+# the booking only: the helper restores user, sid, session data and form dict (a web Settle runs in
+# the manager's cookie session); tests patch this name
+_as_administrator = elevated_as_administrator
 
 
 class PaymentBooking(NamedTuple):
@@ -458,6 +452,11 @@ def book_payment(ctx, data, notes):
 		reference=data["reference"],
 		remarks=_remarks(ctx, data, cashier),
 		invoices=data.get("invoices"),
+		extra={
+			"crenya_shift_id": data["shift_local_id"],
+			"crenya_cashier": cashier,
+			"crenya_device": ctx.device_id,
+		},
 	)
 	return post_payment_entry(booking, notes)
 

@@ -55,7 +55,17 @@ from crenya_pos_api.sync.credit import (
 	customer_in_outlet,
 	facility_editor_refusal,
 	open_invoices_answer,
+	overdue_by_customer,
 	payable_of,
+)
+from crenya_pos_api.sync.credit_terms import (
+	MAX_CREDIT_LIMIT,
+	UNSET,
+	apply_customer_terms,
+	customer_terms,
+	parse_days,
+	parse_limit,
+	terms_audit_text,
 )
 from crenya_pos_api.sync.customer import LOCATION_FIELD, _default_customer_group, _default_territory
 from crenya_pos_api.sync.customer_payment import (
@@ -94,8 +104,6 @@ CREDIT_LIMIT = "Customer Credit Limit"
 # the most customers listed, and the most candidates read before the list is cut
 MAX_CREDIT_ROWS = 200
 MAX_CANDIDATES = 1000
-# the largest limit a Currency field holds
-MAX_CREDIT_LIMIT = Decimal("999999999999")
 # the most payments `customer_payments` lists, newest first
 MAX_PAYMENT_ROWS = 200
 # a Mode of Payment of this type is never taken on the web (D5, D7)
@@ -266,6 +274,22 @@ def _row(customer, limit, source, outstanding, open_invoices, precision) -> dict
 	}
 
 
+def _add_overdue_and_days(rows, company, precision) -> None:
+	"""Add `overdue`, `oldest_unpaid` (one grouped query for the rows) and `credit_days` with its
+	source ("customer" | "group" | "company" | null) to each row, in place."""
+	figures = overdue_by_customer(
+		[row["customer"] for row in rows],
+		company,
+		precision,
+		outstanding={row["customer"]: as_decimal(row["outstanding"]) for row in rows},
+	)
+	for row in rows:
+		terms = customer_terms(row["customer"], company)
+		row.update(figures[row["customer"]])
+		row["credit_days"] = terms["credit_days"]
+		row["credit_days_source"] = terms["credit_days_source"]
+
+
 def _sort_key(row):
 	return (not row["over_limit"], -Decimal(row["outstanding"]), row["name"])
 
@@ -372,6 +396,7 @@ def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 		for row in rows
 	]
 	exact.sort(key=_sort_key)
+	_add_overdue_and_days(exact, ctx.company, precision)
 	if is_restaurant(ctx):
 		# a disabled customer who still owes stays listed, marked so the page can say so
 		for row in exact:
@@ -723,25 +748,6 @@ def credit_shops(product: str = "shop") -> dict:
 	return {"shops": shops}
 
 
-def parse_limit(value, precision) -> Decimal | None:
-	"""The limit typed (pure): a decimal string with at most `precision` decimals and at most
-	MAX_CREDIT_LIMIT; 0 or blank clears the customer's own limit (None); ValueError for anything
-	else, a negative included."""
-	if value is None or (isinstance(value, str) and not value.strip()):
-		return None
-	try:
-		limit = parse_decimal(value, "credit_limit")
-	except DecimalParseError as e:
-		raise ValueError(str(e))
-	if limit < 0:
-		raise ValueError("The credit limit cannot be negative")
-	if quantize(limit, precision) != limit:
-		raise ValueError(f"The credit limit has more than {precision} decimals")
-	if limit > MAX_CREDIT_LIMIT:
-		raise ValueError(f"The credit limit is more than {MAX_CREDIT_LIMIT:,}")
-	return limit if limit > 0 else None
-
-
 def audit_text(company, old, new, source, user, precision) -> str:
 	"""The comment a limit change leaves on the Customer (pure): the old and the new figure."""
 
@@ -751,14 +757,28 @@ def audit_text(company, old, new, source, user, precision) -> str:
 	return f"Credit limit for {company} changed from {shown(old)} to {shown(new)} from {source} by {user}"
 
 
+UNSET_ARG = "__unset__"  # a web form sends text: this `credit_days` means "leave the days alone"
+
+
 @frappe.whitelist(methods=["POST"])
-def save_credit_limit(outlet: str, customer: str, credit_limit: str | None, modified: str) -> dict:
+def save_credit_limit(
+	outlet: str,
+	customer: str,
+	credit_limit: str | None,
+	modified: str,
+	credit_days: str | int | None = UNSET_ARG,
+) -> dict:
 	"""Set the customer's own credit limit for the shop's company, a System Manager's or an Accounts
 	Manager's: the Customer's *Credit Limit* row, written, or removed for 0 or blank (a bypass flag
 	on the row is kept: the row then stays at 0). `modified` is the one `credit_customers` answered
 	for the customer (changed since is refused). The customer must be one of the shop's. Clearing
 	the customer's own limit is not "no limit" when its group or the company has one: the answer is
-	the row as ERPNext now reads it, with `limit_source`."""
+	the row as ERPNext now reads it, with `limit_source`.
+
+	`credit_days` is the customer's own credit days in the same save: left out (an older page) the
+	days stay; None or blank clears the customer's own (its group's or the company's apply, the
+	answer's `credit_days_source` says which); 0 to 365 sets "House Account N days". One save, one
+	Comment."""
 	ctx = credit_editor(outlet)
 	if not customer_in_outlet(ctx, customer):
 		refuse(_("Customer {0} is not a customer of shop {1}").format(customer, ctx.outlet))
@@ -768,24 +788,21 @@ def save_credit_limit(outlet: str, customer: str, credit_limit: str | None, modi
 		limit = parse_limit(credit_limit, precision)
 	except ValueError as e:
 		invalid(str(e))
+	days = UNSET
+	if credit_days != UNSET_ARG:
+		try:
+			days = parse_days(credit_days)
+		except ValueError as e:
+			invalid(str(e))
 	check_modified(CUSTOMER, customer, modified)
 	doc = frappe.get_doc(CUSTOMER, customer)
-	rows = [row for row in doc.get("credit_limits") or [] if row.company == ctx.company]
-	old = as_decimal(rows[0].credit_limit) if rows and as_decimal(rows[0].credit_limit) > 0 else None
-	if limit is None:
-		for row in rows:
-			if row.get("bypass_credit_limit_check"):
-				row.credit_limit = 0
-			else:
-				doc.remove(row)
-	elif rows:
-		rows[0].credit_limit = float(limit)
-		for extra in rows[1:]:
-			doc.remove(extra)
-	else:
-		doc.append("credit_limits", {"company": ctx.company, "credit_limit": float(limit)})
+	change = apply_customer_terms(doc, ctx.company, limit=limit, days=days)
 	doc.save(ignore_permissions=True)
-	doc.add_comment("Info", audit_text(ctx.company, old, limit, ctx.source, ctx.approver, precision))
+	if days is UNSET:
+		text = audit_text(ctx.company, change["old_limit"], limit, ctx.source, ctx.approver, precision)
+	else:
+		text = terms_audit_text(ctx.company, change, ctx.source, ctx.approver, precision)
+	doc.add_comment("Info", text)
 	rows, _more = credit_rows(ctx, only=customer)
 	return rows[0]
 
@@ -1637,3 +1654,47 @@ def payment_receipt_pdf(outlet: str, payment_entry: str, lang: str = "en") -> No
 	frappe.local.response.filename = f"{doc.name}.pdf"
 	frappe.local.response.filecontent = pdf
 	frappe.local.response.type = "pdf"
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def credit_outstanding(
+	outlet: str, as_on: str | None = None, from_date: str | None = None, customer: str | None = None
+) -> dict:
+	"""The House Account Outstanding report with ageing (0.16.0): {outlet, company, currency, as_on,
+	from_date, more, rows: [{customer, name, credit_days, opening, charged, paid, closing, range_0_30,
+	range_31_60, range_61_90, range_90_plus, overdue, oldest_unpaid}], totals}. The body and the rules
+	are `credit_reports.credit_outstanding_report`."""
+	from crenya_pos_api.api.web_admin.credit_reports import credit_outstanding_report
+
+	return credit_outstanding_report(outlet, as_on, from_date, customer)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def credit_statement(
+	outlet: str, customer: str, from_date: str | None = None, to_date: str | None = None
+) -> dict:
+	"""A customer's House Account statement with the running balance (0.16.0): {customer, name,
+	company, currency, from_date, to_date, opening, closing, more, rows: [{posting_date, voucher_type,
+	voucher_no, bill_no, description, debit, credit, balance}]}. The body and the rules are
+	`credit_reports.credit_statement_report`."""
+	from crenya_pos_api.api.web_admin.credit_reports import credit_statement_report
+
+	return credit_statement_report(outlet, customer, from_date, to_date)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def credit_transactions(
+	outlet: str,
+	from_date: str | None = None,
+	to_date: str | None = None,
+	shift: str | None = None,
+	cashier: str | None = None,
+) -> dict:
+	"""The House Account transactions by day and shift (0.16.0): {outlet, currency, from_date,
+	to_date, more, rows: [{posting_date, kind (sale | cancel | collection), voucher_no, bill_no,
+	customer, name, amount, mode_of_payment, shift_id, shift_number, cashier, cashier_name, source
+	(till | web_desk)}], days, shifts, totals}. The body and the rules are
+	`credit_reports.credit_transactions_report`."""
+	from crenya_pos_api.api.web_admin.credit_reports import credit_transactions_report
+
+	return credit_transactions_report(outlet, from_date, to_date, shift, cashier)

@@ -51,3 +51,15 @@ class TestElevatedAsAdministrator(unittest.TestCase):
 			self.data["csrf_token"] = "changed"
 			self.data.clear()
 		self._check_restored()
+
+	def test_restores_when_set_user_fails_part_way(self):
+		def failing_set_user(user):
+			_fake_set_user(user)  # the session is already replaced ...
+			if user == "Administrator":
+				raise frappe.AuthenticationError("boom")  # ... when it fails
+
+		with patch.object(frappe, "set_user", failing_set_user):
+			with self.assertRaises(frappe.AuthenticationError):
+				with elevated_as_administrator():
+					self.fail("the block must not run")
+		self._check_restored()

@@ -7,6 +7,7 @@ from crenya_pos_api import extension
 from crenya_pos_api.expenses.sync import ExpenseAggregate
 from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.aggregates import CustomerHandler, SalesInvoiceHandler, ShiftHandler
+from crenya_pos_api.sync.credit_facility import CreditFacilityHandler
 from crenya_pos_api.sync.customer_payment import CustomerPaymentHandler
 from crenya_pos_api.sync.errors import ExtensionHookError, SyncError
 from crenya_pos_api.sync.hashing import payload_hash
@@ -69,6 +70,7 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		self.assertIsInstance(handlers["Crenya POS Shift"], ShiftHandler)
 		self.assertIsInstance(handlers["POS Expense"], ExpenseAggregate)
 		self.assertIsInstance(handlers["Customer Payment"], CustomerPaymentHandler)
+		self.assertIsInstance(handlers["Customer Credit Facility"], CreditFacilityHandler)
 		for handler in handlers.values():
 			# an expense is added, amended and cancelled; every other built-in only submits
 			expected = (
@@ -77,8 +79,9 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 			self.assertEqual(handler.operations, expected)
 			self.assertIsNone(handler.retention_days)
 			# a customer's payment is booked as a Payment Entry
-			doctype = (
-				"Payment Entry" if handler.aggregate_type == "Customer Payment" else handler.aggregate_type
+			# and the facility event changes the Customer it enables
+			doctype = {"Customer Payment": "Payment Entry", "Customer Credit Facility": "Customer"}.get(
+				handler.aggregate_type, handler.aggregate_type
 			)
 			self.assertEqual(handler.result_doctype, doctype)
 		self.assertEqual(handlers["Sales Invoice"].local_id_field, "crenya_local_id")
@@ -111,7 +114,8 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 			validate_envelope(make_event(SALE, aggregate_type="Crenya Order"))
 		self.assertEqual(
 			ctx.exception.message,
-			"aggregate_type must be one of Customer, Sales Invoice, Crenya POS Shift, POS Expense, Customer Payment",
+			"aggregate_type must be one of Customer, Sales Invoice, Crenya POS Shift, POS Expense, Customer Payment, "
+			"Customer Credit Facility",
 		)
 		with self.assertRaises(SyncError) as ctx:
 			validate_envelope(make_event(SALE, operation="create"))

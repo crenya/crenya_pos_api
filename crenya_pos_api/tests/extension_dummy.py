@@ -284,3 +284,34 @@ def flags_not_a_dict(names):
 
 def no_flags(names):
 	return None
+
+
+# credit facility checkers (the `crenya_pos_credit_facility_checkers` hook)
+
+FACILITY_ACCEPT = "crenya_pos_api.tests.extension_dummy.facility_accept"
+FACILITY_ACCEPT_NOTE = "crenya_pos_api.tests.extension_dummy.facility_accept_with_note"
+FACILITY_REFUSE = "crenya_pos_api.tests.extension_dummy.facility_refuse"
+FACILITY_BAD_ANSWER = "crenya_pos_api.tests.extension_dummy.facility_bad_answer"
+FACILITY_REFUSAL = "The test checker does not allow this"
+FACILITY_NOTE = "Accepted by <b>the test checker</b>"
+FACILITY_CALLS = []
+
+
+def facility_accept(ctx, customer, data, notes):
+	FACILITY_CALLS.append((ctx.device_id, customer.name, data.get("credit_limit"), data.get("credit_days")))
+	return None
+
+
+def facility_accept_with_note(ctx, customer, data, notes):
+	FACILITY_CALLS.append((ctx.device_id, customer.name, data.get("credit_limit"), data.get("credit_days")))
+	notes.append(FACILITY_NOTE)
+	return None
+
+
+def facility_refuse(ctx, customer, data, notes):
+	FACILITY_CALLS.append((ctx.device_id, customer.name, data.get("credit_limit"), data.get("credit_days")))
+	return FACILITY_REFUSAL
+
+
+def facility_bad_answer(ctx, customer, data, notes):
+	return True

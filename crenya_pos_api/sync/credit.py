@@ -346,7 +346,13 @@ def credit_enabled_for(customer):
 GRANT_FLAG = "crenya_credit_grant"
 TILL_GRANT = "till"
 WEB_GRANT = "web"
-GRANT_SOURCES = frozenset({TILL_GRANT, WEB_GRANT})
+# 0.16.0: the till's Customer Credit Facility event (sync.credit_facility) switches the House Account
+# on for an EXISTING customer after a manager's approval and its checker's yes; the flag counts only
+# on the save of an existing customer (`_granted_on_update`), never on an insert
+TILL_ENABLE_GRANT = "till_enable"
+CREATE_GRANT_SOURCES = frozenset({TILL_GRANT, WEB_GRANT})
+UPDATE_GRANT_SOURCES = frozenset({TILL_ENABLE_GRANT})
+GRANT_SOURCES = CREATE_GRANT_SOURCES | UPDATE_GRANT_SOURCES
 
 
 def _granted_on_create(doc):
@@ -356,17 +362,29 @@ def _granted_on_create(doc):
 	if doc is None or not flags.get("in_insert") or doc.get_doc_before_save() is not None:
 		return False
 	grant = flags.get(GRANT_FLAG)
-	return isinstance(grant, str) and grant in GRANT_SOURCES
+	return isinstance(grant, str) and grant in CREATE_GRANT_SOURCES
+
+
+def _granted_on_update(doc):
+	"""Whether server code granted the facility on the save of an EXISTING customer
+	(`GRANT_FLAG` = `TILL_ENABLE_GRANT`, set by the Customer Credit Facility event after its
+	checks): not inside an insert, and a saved version must exist."""
+	flags = (getattr(doc, "flags", None) or {}) if doc is not None else {}
+	if doc is None or flags.get("in_insert") or doc.get_doc_before_save() is None:
+		return False
+	grant = flags.get(GRANT_FLAG)
+	return isinstance(grant, str) and grant in UPDATE_GRANT_SOURCES
 
 
 def _may_switch_facility(doc=None):
 	"""Whether this save may change `crenya_credit_enabled`: Administrator, a System Manager or an
 	Accounts Manager (P4), the app's own install, patch or migrate, or a new customer the server
-	granted it to (`GRANT_FLAG`)."""
+	granted it to (`GRANT_FLAG`), or an existing customer the till's facility event granted it to
+	(`GRANT_FLAG` = `TILL_ENABLE_GRANT`)."""
 	flags = frappe.flags
 	if flags.in_install or flags.in_patch or flags.in_migrate:
 		return True
-	if _granted_on_create(doc):
+	if _granted_on_create(doc) or _granted_on_update(doc):
 		return True
 	user = frappe.session.user if getattr(frappe.local, "session", None) else None
 	if user == "Administrator":

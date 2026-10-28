@@ -45,6 +45,7 @@ DEVICE_ROLE_HOOK = "crenya_pos_device_roles"
 PROFILE_FLAG_HOOK = "crenya_pos_profile_flags"
 ENTITLEMENT_HOOK = "crenya_pos_entitlement"
 CREDIT_DEVICE_TYPES_HOOK = "crenya_pos_credit_device_types"
+CREDIT_FACILITY_CHECKER_HOOK = "crenya_pos_credit_facility_checkers"
 # device types whose customers carry the House Account facility flag (`credit_enabled`, 0.14.0)
 CREDIT_CUSTOMER_FLAG_HOOK = "crenya_pos_credit_customer_flag_device_types"
 
@@ -323,6 +324,12 @@ def invoice_extenders():
 def customer_extenders():
 	"""`crenya_pos_customer_extenders` functions: fn(ctx, customer, data, notes) -> str | None."""
 	return _cached(CUSTOMER_EXTENDER_HOOK, lambda: _load_functions(CUSTOMER_EXTENDER_HOOK))
+
+
+def credit_facility_checkers():
+	"""The functions of the `crenya_pos_credit_facility_checkers` hook, in hook order (none: the Customer
+	Credit Facility event refuses every grant)."""
+	return _cached(CREDIT_FACILITY_CHECKER_HOOK, lambda: _load_functions(CREDIT_FACILITY_CHECKER_HOOK))
 
 
 def profile_flag_hooks():

@@ -55,9 +55,10 @@ from crenya_pos_api.sync.credit import (
 	customer_in_outlet,
 	facility_editor_refusal,
 	open_invoices_answer,
+	overdue_by_customer,
 	payable_of,
 )
-from crenya_pos_api.sync.credit_terms import apply_customer_terms
+from crenya_pos_api.sync.credit_terms import apply_customer_terms, customer_terms
 from crenya_pos_api.sync.customer import LOCATION_FIELD, _default_customer_group, _default_territory
 from crenya_pos_api.sync.customer_payment import (
 	LOCAL_ID_FIELD,
@@ -267,6 +268,22 @@ def _row(customer, limit, source, outstanding, open_invoices, precision) -> dict
 	}
 
 
+def _add_overdue_and_days(rows, company, precision) -> None:
+	"""Add `overdue`, `oldest_unpaid` (one grouped query for the rows) and `credit_days` with its
+	source ("customer" | "group" | "company" | null) to each row, in place."""
+	figures = overdue_by_customer(
+		[row["customer"] for row in rows],
+		company,
+		precision,
+		outstanding={row["customer"]: as_decimal(row["outstanding"]) for row in rows},
+	)
+	for row in rows:
+		terms = customer_terms(row["customer"], company)
+		row.update(figures[row["customer"]])
+		row["credit_days"] = terms["credit_days"]
+		row["credit_days_source"] = terms["credit_days_source"]
+
+
 def _sort_key(row):
 	return (not row["over_limit"], -Decimal(row["outstanding"]), row["name"])
 
@@ -373,6 +390,7 @@ def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 		for row in rows
 	]
 	exact.sort(key=_sort_key)
+	_add_overdue_and_days(exact, ctx.company, precision)
 	if is_restaurant(ctx):
 		# a disabled customer who still owes stays listed, marked so the page can say so
 		for row in exact:

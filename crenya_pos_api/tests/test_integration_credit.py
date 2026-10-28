@@ -6,9 +6,10 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module creny
 """
 
 import uuid
+from decimal import Decimal
 
 import frappe
-from frappe.utils import flt, nowdate
+from frappe.utils import add_days, flt, getdate, nowdate
 
 from crenya_pos_api.api import credit as credit_api
 from crenya_pos_api.api import device as device_api
@@ -17,7 +18,13 @@ from crenya_pos_api.api.auth import sign_in
 from crenya_pos_api.sync import credit as credit_service
 from crenya_pos_api.sync.approvals import APPROVAL_ACTIONS
 from crenya_pos_api.sync.context import DEVICE_ROLE, POS_USER_ROLE, get_device_context
-from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD, credit_limit_waived
+from crenya_pos_api.sync.credit import (
+	CREDIT_SALES_FIELD,
+	credit_limit_waived,
+	overdue_by_customer,
+	overdue_of,
+)
+from crenya_pos_api.sync.credit_terms import apply_customer_terms
 from crenya_pos_api.sync.errors import InvalidRequestError
 from crenya_pos_api.sync.pull import CREDIT_SCOPE, CustomerSpec
 from crenya_pos_api.tests import extension_dummy as dummy
@@ -343,6 +350,122 @@ class TestCreditStatus(CreditCase):
 		# switched on again, the customer with nothing owing is answered
 		self.assertEqual(
 			credit_api.get_status(device_id=self.device_id, customer=clear)["outstanding"], "0.000"
+		)
+
+
+class TestCreditOverdue(CreditCase):
+	"""The overdue figure, the oldest unpaid bill and the credit days of the credit status."""
+
+	def setUp(self):
+		super().setUp()
+		self.today = getdate(nowdate())
+
+	def sell(self, customer, total, posted=None, due=None):
+		"""An on-account sale; `posted` / `due` (dates) set the bill's dates afterwards."""
+		name = self.post(self.on_account_sale(customer, total))["name"]
+		values = {}
+		if posted:
+			values["posting_date"] = posted
+		if due:
+			values["due_date"] = due
+		if values:
+			frappe.db.set_value("Sales Invoice", name, values)
+		return name
+
+	def status(self, customer):
+		return credit_service.credit_status(customer, fixtures.COMPANY)
+
+	def test_status_has_overdue_fields(self):
+		customer = make_customer("overdue", limit=500)
+		doc = frappe.get_doc("Customer", customer)
+		apply_customer_terms(doc, fixtures.COMPANY, days=30)
+		doc.save(ignore_permissions=True)
+		posted = add_days(self.today, -31)
+		self.sell(customer, "80.000", posted=posted, due=add_days(self.today, -1))
+		self.sell(customer, "20.000")
+		status = self.status(customer)
+		self.assertEqual(status["outstanding"], "100.000")
+		self.assertEqual(status["overdue"], "80.000")
+		self.assertEqual(status["oldest_unpaid"], str(posted))
+		self.assertEqual(status["credit_days"], 30)
+		self.assertEqual(
+			credit_api.get_status(device_id=self.device_id, customer=customer)["overdue"], "80.000"
+		)
+
+	def test_status_no_bills(self):
+		customer = make_customer("nobills", limit=500)
+		status = self.status(customer)
+		self.assertEqual((status["overdue"], status["oldest_unpaid"]), ("0.000", None))
+		self.assertIsNone(status["credit_days"])
+
+	def test_due_today_not_overdue(self):
+		customer = make_customer("duetoday", limit=500)
+		self.sell(customer, "40.000", posted=add_days(self.today, -10), due=self.today)
+		status = self.status(customer)
+		self.assertEqual(status["overdue"], "0.000")
+		self.assertEqual(status["oldest_unpaid"], str(add_days(self.today, -10)))
+		self.assertEqual(overdue_of(customer, fixtures.COMPANY)["overdue"], "0.000")
+
+	def test_returns_and_paid_bills_ignored(self):
+		customer = make_customer("ignored", limit=500)
+		yesterday = add_days(self.today, -1)
+		old = add_days(self.today, -90)
+		paid = self.sell(customer, "30.000", posted=old, due=yesterday)
+		frappe.db.set_value("Sales Invoice", paid, "outstanding_amount", 0)
+		ret = self.sell(customer, "10.000", posted=old, due=yesterday)
+		frappe.db.set_value("Sales Invoice", ret, "is_return", 1)
+		live = self.sell(customer, "5.000", posted=add_days(self.today, -5), due=yesterday)
+		figures = overdue_of(customer, fixtures.COMPANY, outstanding=Decimal("5.000"))
+		self.assertEqual(figures, {"overdue": "5.000", "oldest_unpaid": str(add_days(self.today, -5))})
+		self.assertTrue(live)
+
+	def test_overdue_ignores_other_company_invoices(self):
+		customer = make_customer("othercompany", limit=500)
+		self.sell(customer, "60.000", posted=add_days(self.today, -40), due=add_days(self.today, -2))
+		own = {"overdue": "60.000", "oldest_unpaid": str(add_days(self.today, -40))}
+		self.assertEqual(overdue_of(customer, fixtures.COMPANY, outstanding=Decimal("60.000")), own)
+		other = "_Test Crenya Other Company"
+		empty = {"overdue": "0.000", "oldest_unpaid": None}
+		self.assertEqual(overdue_of(customer, other, outstanding=Decimal("60.000")), empty)
+		self.assertEqual(
+			overdue_by_customer([customer], other, 3, outstanding={customer: Decimal("60.000")}),
+			{customer: empty},
+		)
+
+	def test_overdue_by_customer_matches_overdue_of(self):
+		a = make_customer("grpa", limit=500)
+		b = make_customer("grpb", limit=500)
+		c = make_customer("grpc", limit=500)
+		self.sell(a, "30.000", posted=add_days(self.today, -20), due=add_days(self.today, -3))
+		self.sell(a, "12.000", posted=add_days(self.today, -2), due=add_days(self.today, 28))
+		self.sell(b, "9.000", posted=add_days(self.today, -50), due=add_days(self.today, -5))
+		outstanding = {a: Decimal("42.000"), b: Decimal("9.000"), c: Decimal(0)}
+		grouped = overdue_by_customer([a, b, c], fixtures.COMPANY, 3, outstanding=outstanding)
+		self.assertEqual(grouped[a], {"overdue": "30.000", "oldest_unpaid": str(add_days(self.today, -20))})
+		self.assertEqual(grouped[b], {"overdue": "9.000", "oldest_unpaid": str(add_days(self.today, -50))})
+		self.assertEqual(grouped[c], {"overdue": "0.000", "oldest_unpaid": None})
+		for customer in (a, b, c):
+			self.assertEqual(
+				grouped[customer],
+				overdue_of(customer, fixtures.COMPANY, outstanding=outstanding[customer]),
+			)
+
+	def test_retail_till_status_keys_superset(self):
+		customer = make_customer("superset", limit=500)
+		self.post(self.on_account_sale(customer, "120.000", cash="20.000"))
+		status = credit_api.get_status(device_id=self.device_id, customer=customer)
+		old = {
+			"customer": customer,
+			"credit_limit": "500.000",
+			"outstanding": "100.000",
+			"available": "400.000",
+			"over_limit": False,
+		}
+		for key, value in old.items():
+			self.assertEqual(status[key], value)
+		self.assertEqual(
+			set(status) - {"as_of"},
+			set(old) | {"overdue", "oldest_unpaid", "credit_days"},
 		)
 
 

@@ -156,7 +156,7 @@ class TestCreditFacilityEvent(CreditCase):
 		self.assertIsNotNone(now["changed_at"])
 		self.assertEqual(versions(customer), count + 1)
 		[comment] = comments(customer)
-		self.assertIn("Credit terms for", comment)
+		self.assertIn("Credit terms changed", comment)
 		self.assertIn(fixtures.COMPANY, comment)
 		self.assertIn(MANAGER, comment)
 		self.assertEqual(dummy.FACILITY_CALLS, [(self.restaurant, customer, "50.000", 30)])

@@ -151,10 +151,13 @@ def days_template(days: int) -> str:
 			],
 		}
 	)
+	shown = len(frappe.local.message_log)
 	try:
 		doc.insert(ignore_permissions=True)
 	except frappe.DuplicateEntryError:
-		# the winner committed after our snapshot (the `exists` read): read it back locked
+		# the winner committed after our snapshot (the `exists` read): read it back locked. Frappe's
+		# insert said "already exists" to the user; it is handled here, so take that message back
+		del frappe.local.message_log[shown:]
 		return _checked(name, days, latest=True)
 	return doc.name
 
@@ -231,7 +234,8 @@ def apply_customer_terms(doc, company, *, limit=UNSET, days=UNSET) -> dict:
 
 
 def terms_audit_text(company, change, source, user, precision) -> str:
-	"""The comment a credit terms change leaves on the Customer (pure)."""
+	"""The comment a credit terms change leaves on the Customer (pure). The limit is the company's; the
+	credit days are the Customer's payment terms, one for every company."""
 
 	def limit(value):
 		return "no limit of its own" if value is None else format_money(value, precision)
@@ -240,8 +244,8 @@ def terms_audit_text(company, change, source, user, precision) -> str:
 		return "none" if value is None else str(value)
 
 	return (
-		f"Credit terms for {company} changed: limit {limit(change['old_limit'])} → "
-		f"{limit(change['new_limit'])}, days {shown_days(change['old_days'])} → "
+		f"Credit terms changed: limit for {company} {limit(change['old_limit'])} → "
+		f"{limit(change['new_limit'])}, days (all companies) {shown_days(change['old_days'])} → "
 		f"{shown_days(change['new_days'])} from {source} by {user}"
 	)
 

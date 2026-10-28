@@ -339,6 +339,46 @@ class TestCustomerPayment(PaymentCase):
 		self.assertTrue(row["hint"] and row["hint_ar"])
 
 
+class TestShiftCashierDevice(PaymentCase):
+	"""0.16.0: a till's Payment Entry records its shift, cashier and device (Task 8 reads them)."""
+
+	def entry_of(self, payload):
+		result = self.assertOk(self.pay(payload))
+		return frappe.get_doc(PAYMENT_ENTRY, result["name"])
+
+	def test_till_payment_has_shift_cashier_device(self):
+		customer = make_customer("shiftcols", limit=None)
+		cashier = ensure_person("shift.cashier@example.com", [POS_USER_ROLE, "Sales User"])
+		entry = self.entry_of(self.payment(customer, "5.000", shift_local_id="S-1", cashier=cashier))
+		self.assertEqual(entry.crenya_shift_id, "S-1")
+		self.assertEqual(entry.crenya_cashier, cashier)
+		self.assertEqual(entry.crenya_device, self.device_id)
+
+	def test_payment_without_shift_leaves_field_empty(self):
+		customer = make_customer("noshift", limit=None)
+		entry = self.entry_of(self.payment(customer, "5.000", shift_local_id=None))
+		self.assertFalse(entry.crenya_shift_id)
+		self.assertEqual(entry.crenya_device, self.device_id)
+
+	def test_unknown_cashier_falls_back_to_session_user(self):
+		customer = make_customer("nocashier", limit=None)
+		entry = self.entry_of(self.payment(customer, "5.000", cashier="nobody@nowhere.invalid"))
+		self.assertEqual(entry.crenya_cashier, payments.enabled_user("Administrator"))
+
+	def test_patch_idempotent(self):
+		from crenya_pos_api.patches.v0_16 import payment_entry_shift_fields
+
+		customer = make_customer("patchtwice", limit=None)
+		entry = self.entry_of(self.payment(customer, "5.000", shift_local_id="S-9"))
+		before = frappe.db.get_value(PAYMENT_ENTRY, entry.name, "modified")
+		payment_entry_shift_fields.execute()
+		payment_entry_shift_fields.execute()
+		self.assertEqual(frappe.db.get_value(PAYMENT_ENTRY, entry.name, "modified"), before)
+		self.assertEqual(frappe.db.get_value(PAYMENT_ENTRY, entry.name, "crenya_shift_id"), "S-9")
+		for name in ("crenya_shift_id", "crenya_cashier", "crenya_device"):
+			self.assertEqual(frappe.db.count("Custom Field", {"dt": PAYMENT_ENTRY, "fieldname": name}), 1)
+
+
 class TestCustomerPaymentRules(PaymentCase):
 	def test_oldest_means_posting_date_before_creation(self):
 		customer = make_customer("postdate", limit=None)

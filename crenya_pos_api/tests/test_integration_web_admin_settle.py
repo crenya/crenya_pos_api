@@ -114,6 +114,15 @@ class TestOpenInvoices(SettleCase):
 
 
 class TestSettle(SettleCase):
+	def test_web_settle_has_no_shift(self):
+		customer = make_customer("webnoshift", limit=None)
+		self.bills(customer, "10.000")
+		frappe.set_user(REST_MANAGER)
+		self.settle(customer, "5.000")
+		frappe.set_user("Administrator")
+		entry = frappe.get_doc(PAYMENT_ENTRY, self.entries_of(customer)[0])
+		self.assertEqual((entry.crenya_shift_id, entry.crenya_cashier, entry.crenya_device), (None, None, None))
+
 	def test_settle_refuses_cash_mode(self):
 		"""D5 and D7: a cash-type mode is refused by the server even when the outlet takes it."""
 		customer = make_customer("webcash", limit=None)

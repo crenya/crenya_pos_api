@@ -71,8 +71,11 @@ LOCAL_INVOICE_PREFIX = "local:"
 # the last part of the remarks of a payment that skipped ticked bills (`payment_result` reads it back)
 SKIPPED_REMARK = "skipped ticked invoices: "
 # the Payment Entry fields a booking may set through `extra` (0.15.0): the service provider a
-# settlement is from (crenya_restaurant); any other field is refused
-EXTRA_FIELDS = frozenset({"crenya_service_provider"})
+# settlement is from (crenya_restaurant), and (0.16.0) a till payment's shift, cashier and device;
+# any other field is refused
+EXTRA_FIELDS = frozenset(
+	{"crenya_service_provider", "crenya_shift_id", "crenya_cashier", "crenya_device"}
+)
 
 
 def _invoices(payload):
@@ -458,6 +461,11 @@ def book_payment(ctx, data, notes):
 		reference=data["reference"],
 		remarks=_remarks(ctx, data, cashier),
 		invoices=data.get("invoices"),
+		extra={
+			"crenya_shift_id": data["shift_local_id"],
+			"crenya_cashier": cashier,
+			"crenya_device": ctx.device_id,
+		},
 	)
 	return post_payment_entry(booking, notes)
 

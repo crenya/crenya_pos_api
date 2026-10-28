@@ -3,7 +3,13 @@ ageing from ERPNext's Accounts Receivable rows and the totals row, at OMR's 3 de
 
 import unittest
 
-from crenya_pos_api.api.web_admin.credit_reports import ageing_buckets, is_zero_row, sum_rows
+from crenya_pos_api.api.web_admin.credit_reports import (
+	ageing_buckets,
+	is_zero_row,
+	statement_description,
+	statement_rows,
+	sum_rows,
+)
 
 
 class TestAgeingBuckets(unittest.TestCase):
@@ -109,3 +115,45 @@ class TestTotals(unittest.TestCase):
 		}
 		self.assertTrue(is_zero_row(zero))
 		self.assertFalse(is_zero_row({**zero, "paid": "0.001"}))
+
+
+class TestStatementRows(unittest.TestCase):
+	def test_statement_rows_running_balance_omr(self):
+		entries = [
+			{
+				"posting_date": "2026-10-02",
+				"voucher_type": "Sales Invoice",
+				"voucher_no": "SI-1",
+				"debit": 12,
+				"credit": 0,
+				"bill_no": "OFF-1",
+			},
+			{
+				"posting_date": "2026-10-03",
+				"voucher_type": "Payment Entry",
+				"voucher_no": "PE-1",
+				"debit": 0,
+				"credit": 5,
+			},
+			{
+				"posting_date": "2026-10-04",
+				"voucher_type": "Sales Invoice",
+				"voucher_no": "SI-2",
+				"debit": 0,
+				"credit": 1,
+				"is_return": True,
+			},
+		]
+		rows, closing = statement_rows("8.000", entries, 3)
+		self.assertEqual([row["balance"] for row in rows], ["20.000", "15.000", "14.000"])
+		self.assertEqual(closing, "14.000")
+		self.assertEqual([row["description"] for row in rows], ["sale", "payment", "credit_note"])
+		self.assertEqual((rows[0]["bill_no"], rows[1]["bill_no"]), ("OFF-1", None))
+		self.assertEqual((rows[0]["debit"], rows[0]["credit"]), ("12.000", "0.000"))
+
+	def test_closing_is_opening_without_entries(self):
+		self.assertEqual(statement_rows("8", [], 3), ([], "8.000"))
+
+	def test_description_of_other_vouchers_is_raw(self):
+		self.assertEqual(statement_description("Journal Entry"), "journal")
+		self.assertEqual(statement_description("Period Closing Voucher"), "Period Closing Voucher")

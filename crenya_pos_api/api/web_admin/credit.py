@@ -1642,3 +1642,16 @@ def credit_outstanding(
 	from crenya_pos_api.api.web_admin.credit_reports import credit_outstanding_report
 
 	return credit_outstanding_report(outlet, as_on, from_date, customer)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def credit_statement(
+	outlet: str, customer: str, from_date: str | None = None, to_date: str | None = None
+) -> dict:
+	"""A customer's House Account statement with the running balance (0.16.0): {customer, name,
+	company, currency, from_date, to_date, opening, closing, more, rows: [{posting_date, voucher_type,
+	voucher_no, bill_no, description, debit, credit, balance}]}. The body and the rules are
+	`credit_reports.credit_statement_report`."""
+	from crenya_pos_api.api.web_admin.credit_reports import credit_statement_report
+
+	return credit_statement_report(outlet, customer, from_date, to_date)

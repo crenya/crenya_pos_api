@@ -493,3 +493,99 @@ class TestOutstandingFixRound1(OutstandingCase):
 		self.ledger(customer, [("journal", 90, "4.000"), ("invoice", 20, "2.000")])
 		row = self.row(customer)
 		self.assertEqual(row["oldest_unpaid"], add_days(nowdate(), -20))
+
+
+def statement(outlet=RESTAURANT_A, customer=None, **args):
+	args.setdefault("from_date", add_days(nowdate(), -30))
+	args.setdefault("to_date", nowdate())
+	return web_admin.credit_statement(outlet, customer, **args)
+
+
+class TestStatement(OutstandingCase):
+	def stmt(self, customer, **args):
+		frappe.set_user(REST_MANAGER)
+		return statement(customer=customer, **args)
+
+	def test_statement_closing_equals_outstanding(self):
+		from erpnext.selling.doctype.customer.customer import get_customer_outstanding
+
+		customer = self.customer("stmt", limit=None)
+		self.enable(customer)
+		self.ledger(customer, [("invoice", 60, "8.000")])
+		self.ledger(
+			customer, [("invoice", 5, "12.000"), ("payment", 4, "5.000"), ("credit_note", 3, "1.000")]
+		)
+		answer = self.stmt(customer, from_date=add_days(nowdate(), -10))
+		self.assertEqual(answer["opening"], "8.000")
+		self.assertEqual([r["balance"] for r in answer["rows"]], ["20.000", "15.000", "14.000"])
+		self.assertEqual([r["description"] for r in answer["rows"]], ["sale", "payment", "credit_note"])
+		self.assertEqual(answer["closing"], "14.000")
+		frappe.set_user("Administrator")
+		self.assertEqual(answer["closing"], f"{get_customer_outstanding(customer, fixtures.COMPANY):.3f}")
+		self.assertEqual((answer["company"], answer["currency"]["precision"]), (fixtures.COMPANY, 3))
+
+	def test_opening_zero_before_first_entry(self):
+		customer = self.customer("stmt0", limit=None)
+		self.ledger(customer, [("invoice", 5, "4.000")])
+		answer = self.stmt(customer)
+		self.assertEqual((answer["opening"], answer["closing"]), ("0.000", "4.000"))
+		empty = self.stmt(customer, from_date=add_days(nowdate(), -90), to_date=add_days(nowdate(), -60))
+		self.assertEqual((empty["rows"], empty["opening"], empty["closing"]), ([], "0.000", "0.000"))
+
+	def test_cash_pos_sale_shows_debit_and_credit_same_voucher(self):
+		"""A11: a till sale part cash, part on account posts receivable Dr 100 and Cr 40 in one voucher."""
+		customer = self.customer("stmtpos", limit=None)
+		self.enable(customer)
+		sale = self.on_account_sale(customer, "100.000", cash="40.000")
+		name = self.post(sale)["name"]
+		answer = self.stmt(customer)
+		lines = [r for r in answer["rows"] if r["voucher_no"] == name]
+		self.assertEqual(len(lines), 1)
+		self.assertEqual(
+			(lines[0]["debit"], lines[0]["credit"], lines[0]["balance"]), ("100.000", "40.000", "60.000")
+		)
+		self.assertEqual(lines[0]["bill_no"], sale["offline_number"])
+		self.assertEqual(lines[0]["description"], "sale")
+
+	def test_cancelled_entries_excluded(self):
+		customer = self.customer("stmtcxl", limit=None)
+		names = self.ledger(customer, [("invoice", 5, "4.000"), ("invoice", 4, "3.000")])
+		frappe.set_user("Administrator")
+		frappe.get_doc("Sales Invoice", names[0]).cancel()
+		frappe.db.commit()  # nosemgrep
+		answer = self.stmt(customer)
+		self.assertEqual([r["voucher_no"] for r in answer["rows"]], [names[1]])
+		self.assertEqual(answer["closing"], "3.000")
+
+	def test_journal_opening_entry_appears(self):
+		customer = self.customer("stmtjv", limit=None)
+		self.ledger(customer, [("journal", 5, "9.000")])
+		answer = self.stmt(customer)
+		self.assertEqual([(r["description"], r["debit"]) for r in answer["rows"]], [("journal", "9.000")])
+		self.assertEqual(answer["closing"], "9.000")
+
+	def test_statement_of_other_outlet_customer_refused(self):
+		customer = self.customer("stmtx", limit=None)
+		frappe.set_user(REST_MANAGER)
+		with self.assertRaises(frappe.PermissionError):
+			statement(customer=self.profile.customer)
+		with self.assertRaises(frappe.PermissionError):
+			statement(customer="No such customer")
+		with mock.patch.object(credit_reports, "excluded_customers", return_value={customer}):
+			with self.assertRaises(frappe.PermissionError):
+				statement(customer=customer)
+		frappe.set_user(CASHIER)
+		with self.assertRaises(frappe.PermissionError):
+			statement(customer=customer)
+
+	def test_dates_required(self):
+		customer = self.customer("stmtd", limit=None)
+		frappe.set_user(REST_MANAGER)
+		for args in (
+			{"from_date": None},
+			{"to_date": ""},
+			{"from_date": "2026-02-02", "to_date": "2026-02-01"},
+			{"from_date": "02/02/2026"},
+		):
+			with self.assertRaises(frappe.ValidationError):
+				statement(customer=customer, **args)

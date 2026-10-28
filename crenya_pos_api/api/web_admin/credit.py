@@ -1629,3 +1629,16 @@ def payment_receipt_pdf(outlet: str, payment_entry: str, lang: str = "en") -> No
 	frappe.local.response.filename = f"{doc.name}.pdf"
 	frappe.local.response.filecontent = pdf
 	frappe.local.response.type = "pdf"
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def credit_outstanding(
+	outlet: str, as_on: str | None = None, from_date: str | None = None, customer: str | None = None
+) -> dict:
+	"""The House Account Outstanding report with ageing (0.16.0): {outlet, company, currency, as_on,
+	from_date, more, rows: [{customer, name, credit_days, opening, charged, paid, closing, range_0_30,
+	range_31_60, range_61_90, range_90_plus, overdue, oldest_unpaid}], totals}. The body and the rules
+	are `credit_reports.credit_outstanding_report`."""
+	from crenya_pos_api.api.web_admin.credit_reports import credit_outstanding_report
+
+	return credit_outstanding_report(outlet, as_on, from_date, customer)

@@ -8,6 +8,7 @@ re-exported here so `crenya_pos_api.api.web_admin.<name>` resolves. Who manages 
 from crenya_pos_api.api.web_admin.credit import (
 	create_credit_customer,
 	credit_customers,
+	credit_outstanding,
 	credit_shops,
 	customer_open_invoices,
 	customer_payments,
@@ -45,6 +46,7 @@ __all__ = [
 	"company_wording",
 	"create_credit_customer",
 	"credit_customers",
+	"credit_outstanding",
 	"credit_shops",
 	"customer_open_invoices",
 	"customer_payments",

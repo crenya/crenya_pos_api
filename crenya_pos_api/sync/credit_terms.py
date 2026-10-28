@@ -14,15 +14,18 @@ customer's own days. It is the one place the limit row logic lives (`save_credit
 """
 
 import re
+from decimal import Decimal
 
 import frappe
 from frappe import _
 
-from crenya_pos_api.utils.decimal import as_decimal, format_money
+from crenya_pos_api.utils.decimal import DecimalParseError, as_decimal, format_money, parse_decimal, quantize
 
 TEMPLATE_PREFIX = "House Account "
 TEMPLATE_SUFFIX = " days"
 MAX_CREDIT_DAYS = 365
+# the largest limit a Currency field holds
+MAX_CREDIT_LIMIT = Decimal("999999999999")
 DAYS_BASIS = "Day(s) after invoice date"
 
 TEMPLATE = "Payment Terms Template"
@@ -63,6 +66,25 @@ def parse_days(value) -> int | None:
 	if not isinstance(value, int) or not 0 <= value <= MAX_CREDIT_DAYS:
 		raise ValueError(DAYS_ERROR)
 	return value
+
+
+def parse_limit(value, precision) -> Decimal | None:
+	"""The limit typed (pure): a decimal string with at most `precision` decimals and at most
+	MAX_CREDIT_LIMIT; 0 or blank clears the customer's own limit (None); ValueError for anything
+	else, a negative included."""
+	if value is None or (isinstance(value, str) and not value.strip()):
+		return None
+	try:
+		limit = parse_decimal(value, "credit_limit")
+	except DecimalParseError as e:
+		raise ValueError(str(e))
+	if limit < 0:
+		raise ValueError("The credit limit cannot be negative")
+	if quantize(limit, precision) != limit:
+		raise ValueError(f"The credit limit has more than {precision} decimals")
+	if limit > MAX_CREDIT_LIMIT:
+		raise ValueError(f"The credit limit is more than {MAX_CREDIT_LIMIT:,}")
+	return limit if limit > 0 else None
 
 
 def _whole_days(days) -> int:
@@ -219,6 +241,7 @@ def terms_audit_text(company, change, source, user, precision) -> str:
 __all__ = [
 	"DAYS_BASIS",
 	"MAX_CREDIT_DAYS",
+	"MAX_CREDIT_LIMIT",
 	"TEMPLATE_PREFIX",
 	"TEMPLATE_SUFFIX",
 	"UNSET",
@@ -226,6 +249,7 @@ __all__ = [
 	"customer_terms",
 	"days_template",
 	"parse_days",
+	"parse_limit",
 	"template_days",
 	"template_name",
 	"terms_audit_text",

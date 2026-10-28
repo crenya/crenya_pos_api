@@ -58,7 +58,12 @@ from crenya_pos_api.sync.credit import (
 	overdue_by_customer,
 	payable_of,
 )
-from crenya_pos_api.sync.credit_terms import apply_customer_terms, customer_terms
+from crenya_pos_api.sync.credit_terms import (
+	MAX_CREDIT_LIMIT,
+	apply_customer_terms,
+	customer_terms,
+	parse_limit,
+)
 from crenya_pos_api.sync.customer import LOCATION_FIELD, _default_customer_group, _default_territory
 from crenya_pos_api.sync.customer_payment import (
 	LOCAL_ID_FIELD,
@@ -96,8 +101,6 @@ CREDIT_LIMIT = "Customer Credit Limit"
 # the most customers listed, and the most candidates read before the list is cut
 MAX_CREDIT_ROWS = 200
 MAX_CANDIDATES = 1000
-# the largest limit a Currency field holds
-MAX_CREDIT_LIMIT = Decimal("999999999999")
 # the most payments `customer_payments` lists, newest first
 MAX_PAYMENT_ROWS = 200
 # a Mode of Payment of this type is never taken on the web (D5, D7)
@@ -740,25 +743,6 @@ def credit_shops(product: str = "shop") -> dict:
 			}
 		)
 	return {"shops": shops}
-
-
-def parse_limit(value, precision) -> Decimal | None:
-	"""The limit typed (pure): a decimal string with at most `precision` decimals and at most
-	MAX_CREDIT_LIMIT; 0 or blank clears the customer's own limit (None); ValueError for anything
-	else, a negative included."""
-	if value is None or (isinstance(value, str) and not value.strip()):
-		return None
-	try:
-		limit = parse_decimal(value, "credit_limit")
-	except DecimalParseError as e:
-		raise ValueError(str(e))
-	if limit < 0:
-		raise ValueError("The credit limit cannot be negative")
-	if quantize(limit, precision) != limit:
-		raise ValueError(f"The credit limit has more than {precision} decimals")
-	if limit > MAX_CREDIT_LIMIT:
-		raise ValueError(f"The credit limit is more than {MAX_CREDIT_LIMIT:,}")
-	return limit if limit > 0 else None
 
 
 def audit_text(company, old, new, source, user, precision) -> str:

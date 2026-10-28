@@ -133,6 +133,21 @@ class TestDaysTemplate(TermsCase):
 			self.assertEqual(days_template(33), "House Account 33 days")
 		self.assertEqual(frappe.db.count(TEMPLATE, {"name": "House Account 33 days"}), 1)
 
+	def test_days_template_read_back_when_exists_missed_it(self):
+		# `exists` answers False (the snapshot predates the winner's commit): the insert hits the
+		# duplicate and the template is read back, locked
+		from unittest import mock
+
+		delete_template("House Account 34 days")
+		days_template(34)
+		with mock.patch.object(frappe.db, "exists", return_value=False):
+			self.assertEqual(days_template(34), "House Account 34 days")
+		make_template("House Account 34 days", [(100, DAYS_BASIS, 99)])
+		with mock.patch.object(frappe.db, "exists", return_value=False):
+			with self.assertRaises(frappe.ValidationError):
+				days_template(34)
+		delete_template("House Account 34 days")
+
 	def test_days_template_rejects_bad_days(self):
 		for bad in (-1, 366, True, None):
 			with self.assertRaises(ValueError):

@@ -1655,3 +1655,21 @@ def credit_statement(
 	from crenya_pos_api.api.web_admin.credit_reports import credit_statement_report
 
 	return credit_statement_report(outlet, customer, from_date, to_date)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def credit_transactions(
+	outlet: str,
+	from_date: str | None = None,
+	to_date: str | None = None,
+	shift: str | None = None,
+	cashier: str | None = None,
+) -> dict:
+	"""The House Account transactions by day and shift (0.16.0): {outlet, currency, from_date,
+	to_date, more, rows: [{posting_date, kind (sale | cancel | collection), voucher_no, bill_no,
+	customer, name, amount, mode_of_payment, shift_id, shift_number, cashier, cashier_name, source
+	(till | web_desk)}], days, shifts, totals}. The body and the rules are
+	`credit_reports.credit_transactions_report`."""
+	from crenya_pos_api.api.web_admin.credit_reports import credit_transactions_report
+
+	return credit_transactions_report(outlet, from_date, to_date, shift, cashier)

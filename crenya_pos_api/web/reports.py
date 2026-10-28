@@ -27,14 +27,14 @@ def parse_date(value) -> date:
 	raise frappe.ValidationError(_("Dates must be YYYY-MM-DD."))
 
 
-def date_range(from_date, to_date) -> tuple[date, date]:
+def date_range(from_date, to_date, max_days=MAX_RANGE_DAYS) -> tuple[date, date]:
 	"""(from, to) as dates; frappe.ValidationError when not YYYY-MM-DD, reversed or longer than
-	MAX_RANGE_DAYS."""
+	`max_days` (MAX_RANGE_DAYS by default)."""
 	first, last = parse_date(from_date), parse_date(to_date)
 	if last < first:
 		raise frappe.ValidationError(_("From Date must be before To Date"))
-	if (last - first).days + 1 > MAX_RANGE_DAYS:
-		raise frappe.ValidationError(_("Choose at most {0} days.").format(MAX_RANGE_DAYS))
+	if (last - first).days + 1 > max_days:
+		raise frappe.ValidationError(_("Choose at most {0} days.").format(max_days))
 	return first, last
 
 

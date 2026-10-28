@@ -21,8 +21,10 @@ from crenya_pos_api.tests.test_integration_credit import make_customer
 from crenya_pos_api.tests.test_integration_web_admin_credit import (
 	CASHIER,
 	REST_MANAGER,
+	REST_MANAGER_B,
 	RESTAURANT_A,
 	RESTAURANT_B,
+	SETTLE_BANK,
 	rows_by_customer,
 )
 from crenya_pos_api.tests.test_integration_web_admin_settle import SettleCase
@@ -589,3 +591,222 @@ class TestStatement(OutstandingCase):
 		):
 			with self.assertRaises(frappe.ValidationError):
 				statement(customer=customer, **args)
+
+
+def transactions(outlet=RESTAURANT_A, **args):
+	args.setdefault("from_date", add_days(nowdate(), -30))
+	args.setdefault("to_date", nowdate())
+	return web_admin.credit_transactions(outlet, **args)
+
+
+class TestTransactions(OutstandingCase):
+	"""Task 8: the House Account transactions by day and shift."""
+
+	def person(self, label):
+		from crenya_pos_api.sync.context import POS_USER_ROLE
+		from crenya_pos_api.tests.test_integration_device_users import ensure_user as ensure_person
+
+		return ensure_person(f"tx.{label}@example.com", [POS_USER_ROLE, "Sales User"])
+
+	def txn(self, outlet=RESTAURANT_A, **args):
+		"""The report as the outlet's manager. The test till sells under its own POS Profile, so the
+		sales this test posted and the till's device are moved to the restaurant outlet first."""
+		for name in getattr(self, "posted", []):
+			frappe.db.set_value("Sales Invoice", name, "pos_profile", RESTAURANT_A)
+		frappe.db.set_value("Crenya POS Device", self.device_id, "pos_profile", RESTAURANT_A)
+		self.addCleanup(
+			frappe.db.set_value, "Crenya POS Device", self.device_id, "pos_profile", self.profile.name
+		)
+		frappe.set_user(REST_MANAGER)
+		return transactions(outlet, **args)
+
+	def till_sale(self, customer, total, cash="0.000", shift=None, cashier=None):
+		payload = self.on_account_sale(customer, total, cash=cash)
+		if shift:
+			payload["shift_local_id"] = shift
+		if cashier:
+			payload["cashier"] = cashier
+		sold = self.post(payload)
+		self.remember(sold["name"])
+		return payload, sold
+
+	def remember(self, name):
+		self.__dict__.setdefault("posted", []).append(name)
+
+	def till_payment(self, customer, amount, shift=None, cashier=None):
+		over = {}
+		if shift:
+			over["shift_local_id"] = shift
+		if cashier:
+			over["cashier"] = cashier
+		self.assertOk(self.pay(self.payment(customer, amount, **over)))
+
+	def listed(self):
+		customer = self.customer("tx", limit=None)
+		self.enable(customer)
+		return customer
+
+	def test_sale_and_collection_under_shift_and_cashier(self):
+		"""Spec 10 step 6c: a till sale on account and a till payment in shift S1 by cashier C."""
+		customer, cashier, shift = self.listed(), self.person("c1"), f"S1-{uuid.uuid4().hex[:6]}"
+		shift_event = self.shift_payload(local_id=shift, shift_number="SH-TX-1", cashier=cashier)
+		self.assertOk(self.push_one(self.event(shift_event, "Crenya POS Shift")))
+		self.till_sale(customer, "13.000", shift=shift, cashier=cashier)
+		self.till_payment(customer, "5.000", shift=shift, cashier=cashier)
+		answer = self.txn(shift=shift)
+		self.assertEqual(
+			# ordered by posting date, shift number and voucher number (ACC-PAY before ACC-SINV)
+			sorted((r["kind"], r["amount"], r["source"]) for r in answer["rows"]),
+			[("collection", "5.000", "till"), ("sale", "13.000", "till")],
+		)
+		for row in answer["rows"]:
+			self.assertEqual(
+				(row["shift_id"], row["shift_number"], row["cashier"], row["customer"]),
+				(shift, "SH-TX-1", cashier, customer),
+			)
+			self.assertTrue(row["cashier_name"])
+		self.assertEqual(
+			answer["shifts"],
+			[
+				{
+					"shift_id": shift,
+					"shift_number": "SH-TX-1",
+					"cashier": cashier,
+					"cashier_name": answer["rows"][0]["cashier_name"],
+					"sales": "13.000",
+					"collections": "5.000",
+				}
+			],
+		)
+		self.assertEqual(
+			answer["days"], [{"posting_date": nowdate(), "sales": "13.000", "collections": "5.000"}]
+		)
+		self.assertEqual(answer["totals"], {"sales": "13.000", "collections": "5.000"})
+		self.assertEqual((answer["outlet"], answer["currency"]["precision"]), (RESTAURANT_A, 3))
+
+	def test_shift_not_on_server_has_null_number(self):
+		customer, shift = self.listed(), f"S-{uuid.uuid4().hex[:6]}"
+		self.till_sale(customer, "4.000", shift=shift)
+		row = self.txn(shift=shift)["rows"][0]
+		self.assertEqual((row["shift_id"], row["shift_number"]), (shift, None))
+
+	def test_split_sale_only_house_account_part(self):
+		customer, shift = self.listed(), f"S-{uuid.uuid4().hex[:6]}"
+		self.till_sale(customer, "18.000", cash="5.000", shift=shift)
+		rows = self.txn(shift=shift)["rows"]
+		self.assertEqual([(r["kind"], r["amount"]) for r in rows], [("sale", "13.000")])
+
+	def test_cash_sale_not_listed(self):
+		customer, shift = self.listed(), f"S-{uuid.uuid4().hex[:6]}"
+		self.till_sale(customer, "10.000", cash="10.000", shift=shift)
+		self.assertEqual(self.txn(shift=shift)["rows"], [])
+
+	def test_cancel_negative(self):
+		customer, shift = self.listed(), f"S-{uuid.uuid4().hex[:6]}"
+		sale, _sold = self.till_sale(customer, "100.000", cash="40.000", shift=shift)
+		ret = self.return_payload(sale, [(fixtures.MILK, "-1", "50.000", 1)], credit_offset="50.000")
+		ret["payments"] = []
+		ret["shift_local_id"] = shift
+		self.remember(self.assertOk(self.push_one(self.event(ret)))["name"])
+		answer = self.txn(shift=shift)
+		self.assertEqual(
+			[(r["kind"], r["amount"]) for r in answer["rows"]], [("sale", "60.000"), ("cancel", "-50.000")]
+		)
+		self.assertEqual(answer["totals"], {"sales": "10.000", "collections": "0.000"})
+
+	def test_web_settlement_listed_as_web_desk(self):
+		customer = self.listed()
+		self.sell(customer, "10.000")
+		frappe.set_user(REST_MANAGER)
+		self.settle(customer, "4.000")
+		answer = self.txn()
+		mine = [r for r in answer["rows"] if r["customer"] == customer and r["kind"] == "collection"]
+		self.assertEqual(len(mine), 1)
+		self.assertEqual(
+			(
+				mine[0]["amount"],
+				mine[0]["source"],
+				mine[0]["shift_id"],
+				mine[0]["shift_number"],
+				mine[0]["cashier"],
+			),
+			("4.000", "web_desk", None, None, None),
+		)
+		self.assertEqual(mine[0]["mode_of_payment"], SETTLE_BANK)
+
+	def test_old_payment_without_shift_shows_dash(self):
+		customer = self.listed()
+		self.ledger(customer, [("payment", 1, "2.000")])
+		mine = [r for r in self.txn()["rows"] if r["customer"] == customer]
+		self.assertEqual(
+			[(r["kind"], r["source"], r["shift_id"], r["amount"]) for r in mine],
+			[("collection", "web_desk", None, "2.000")],
+		)
+
+	def test_other_outlet_sales_excluded(self):
+		customer, shift = self.listed(), f"S-{uuid.uuid4().hex[:6]}"
+		_sale, sold = self.till_sale(customer, "6.000", shift=shift)
+		self.assertEqual(len(self.txn(shift=shift)["rows"]), 1)
+		frappe.db.set_value("Sales Invoice", sold["name"], "pos_profile", RESTAURANT_B)
+		self.posted.remove(sold["name"])
+		self.assertEqual(self.txn(shift=shift)["rows"], [])
+		# the same sale is the other outlet's (its own manager reads it)
+		frappe.set_user(REST_MANAGER_B)
+		self.assertEqual(
+			[r["voucher_no"] for r in transactions(RESTAURANT_B, shift=shift)["rows"]], [sold["name"]]
+		)
+
+	def test_other_customers_desk_payment_not_listed(self):
+		outsider = make_customer("txout", limit=None)
+		self.ledger(outsider, [("payment", 1, "3.000")])
+		self.assertEqual([r for r in self.txn()["rows"] if r["customer"] == outsider], [])
+
+	def test_shift_filter(self):
+		customer, one, two = self.listed(), f"S1-{uuid.uuid4().hex[:6]}", f"S2-{uuid.uuid4().hex[:6]}"
+		self.till_sale(customer, "3.000", shift=one)
+		self.till_sale(customer, "4.000", shift=two)
+		self.till_payment(customer, "1.000", shift=two)
+		self.ledger(customer, [("payment", 0, "2.000")])
+		rows = self.txn(shift=two)["rows"]
+		self.assertEqual(
+			sorted((r["kind"], r["amount"]) for r in rows), [("collection", "1.000"), ("sale", "4.000")]
+		)
+
+	def test_cashier_filter(self):
+		customer, first, second = self.listed(), self.person("f1"), self.person("f2")
+		shift = f"S-{uuid.uuid4().hex[:6]}"
+		self.till_sale(customer, "3.000", shift=shift, cashier=first)
+		self.till_sale(customer, "7.000", shift=shift, cashier=second)
+		self.till_payment(customer, "2.000", shift=shift, cashier=second)
+		self.ledger(customer, [("payment", 0, "9.000")])
+		rows = self.txn(cashier=second, shift=shift)["rows"]
+		self.assertEqual(
+			sorted((r["kind"], r["amount"]) for r in rows), [("collection", "2.000"), ("sale", "7.000")]
+		)
+		answer = self.txn(cashier=second)
+		# a web_desk row has no cashier: it drops out under a filter
+		self.assertNotIn("web_desk", {r["source"] for r in answer["rows"]})
+
+	def test_range_over_92_days_refused(self):
+		frappe.set_user(REST_MANAGER)
+		today = nowdate()
+		with self.assertRaises(frappe.ValidationError):
+			transactions(from_date=add_days(today, -92), to_date=today)
+		transactions(from_date=add_days(today, -91), to_date=today)
+		for args in (
+			{"from_date": None},
+			{"to_date": ""},
+			{"from_date": today, "to_date": add_days(today, -1)},
+		):
+			with self.assertRaises(frappe.ValidationError):
+				transactions(**args)
+
+	def test_outlet_manager_reads(self):
+		frappe.set_user(REST_MANAGER)
+		self.assertIn("rows", transactions())
+		frappe.set_user(CASHIER)
+		with self.assertRaises(frappe.PermissionError):
+			transactions()
+		frappe.set_user(REST_MANAGER)
+		with self.assertRaises(frappe.PermissionError):
+			transactions(RESTAURANT_B)

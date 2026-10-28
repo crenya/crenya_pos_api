@@ -9,6 +9,7 @@ from crenya_pos_api.api.web_admin.credit_reports import (
 	statement_description,
 	statement_rows,
 	sum_rows,
+	transaction_subtotals,
 )
 
 
@@ -157,3 +158,43 @@ class TestStatementRows(unittest.TestCase):
 	def test_description_of_other_vouchers_is_raw(self):
 		self.assertEqual(statement_description("Journal Entry"), "journal")
 		self.assertEqual(statement_description("Period Closing Voucher"), "Period Closing Voucher")
+
+
+class TestTransactionSubtotals(unittest.TestCase):
+	def rows(self):
+		def row(day, kind, amount, shift="S1", cashier="c@x", number="1"):
+			return {
+				"posting_date": day,
+				"kind": kind,
+				"amount": amount,
+				"shift_id": shift,
+				"shift_number": number if shift else None,
+				"cashier": cashier if shift else None,
+				"cashier_name": "C" if shift else None,
+			}
+
+		return [
+			row("2026-10-01", "sale", "13.000"),
+			row("2026-10-01", "cancel", "-3.000"),
+			row("2026-10-01", "collection", "5.000"),
+			row("2026-10-02", "collection", "2.000", shift=None),
+			row("2026-10-02", "sale", "1.000", shift="S2", number=None),
+		]
+
+	def test_days_shifts_totals(self):
+		days, shifts, totals = transaction_subtotals(self.rows(), 3)
+		self.assertEqual(
+			days,
+			[
+				{"posting_date": "2026-10-01", "sales": "10.000", "collections": "5.000"},
+				{"posting_date": "2026-10-02", "sales": "1.000", "collections": "2.000"},
+			],
+		)
+		self.assertEqual(
+			[(s["shift_id"], s["sales"], s["collections"]) for s in shifts],
+			[("S1", "10.000", "5.000"), ("S2", "1.000", "0.000")],
+		)
+		self.assertEqual(totals, {"sales": "11.000", "collections": "7.000"})
+
+	def test_empty(self):
+		self.assertEqual(transaction_subtotals([], 3), ([], [], {"sales": "0.000", "collections": "0.000"}))

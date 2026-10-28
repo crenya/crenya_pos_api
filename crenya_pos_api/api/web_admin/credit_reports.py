@@ -34,19 +34,20 @@ import frappe
 from frappe import _
 from frappe.query_builder import Case
 from frappe.query_builder.functions import Min, Sum
-from frappe.utils import cint, getdate, nowdate
+from frappe.utils import cint, get_fullname, getdate, nowdate
 
 from crenya_pos_api.api.web_admin.credit import (
 	CREDIT_ENABLED_FIELD,
 	CUSTOMER,
 	_outlet_customer_filter,
+	credit_sale_part,
 	credit_sales_of,
 	credit_view,
 	excluded_customers,
 	outlet_customer_refusal,
 )
 from crenya_pos_api.sync.context import money_precision
-from crenya_pos_api.sync.credit import overdue_figures
+from crenya_pos_api.sync.credit import credited_to_account, overdue_figures
 from crenya_pos_api.sync.credit_terms import customer_terms
 from crenya_pos_api.utils.decimal import as_decimal, format_money
 from crenya_pos_api.utils.session import elevated_as_administrator
@@ -62,6 +63,9 @@ RANGE_KEYS = ("range_0_30", "range_31_60", "range_61_90", "range_90_plus")
 AR_RANGES = ("range1", "range2", "range3", "range4")
 # the most rows one statement lists
 MAX_STATEMENT_ROWS = 2000
+# the longest range and the most rows of the transactions report
+MAX_TRANSACTION_DAYS = 92
+MAX_TRANSACTION_ROWS = 2000
 MONEY_KEYS = ("opening", "charged", "paid", "closing", *RANGE_KEYS, "overdue")
 TOTAL_KEYS = ("opening", "charged", "paid", "closing", *RANGE_KEYS, "overdue")
 
@@ -139,6 +143,62 @@ def statement_rows(opening, entries, precision) -> tuple[list[dict], str]:
 			}
 		)
 	return rows, format_money(balance, precision)
+
+
+def transaction_subtotals(rows, precision) -> tuple[list[dict], list[dict], dict]:
+	"""(days, shifts, totals) of the transaction rows (pure). `sales` = the sale rows less the cancel
+	rows (a cancel's amount is negative), `collections` = the collection rows. `days` are by
+	posting_date, `shifts` by shift_id (a row without a shift is in no shift), each in the order
+	first met in a date sorted list: days by date, shifts by shift number (then id)."""
+	days, shifts = {}, {}
+	sales_total, collected_total = Decimal(0), Decimal(0)
+	for row in rows:
+		amount = as_decimal(row["amount"])
+		sale, collected = (amount, Decimal(0)) if row["kind"] != "collection" else (Decimal(0), amount)
+		sales_total += sale
+		collected_total += collected
+		day = days.setdefault(row["posting_date"], [Decimal(0), Decimal(0)])
+		day[0] += sale
+		day[1] += collected
+		if row.get("shift_id"):
+			entry = shifts.setdefault(
+				row["shift_id"],
+				{
+					"shift_id": row["shift_id"],
+					"shift_number": row.get("shift_number"),
+					"cashier": row.get("cashier"),
+					"cashier_name": row.get("cashier_name"),
+					"sales": Decimal(0),
+					"collections": Decimal(0),
+				},
+			)
+			entry["sales"] += sale
+			entry["collections"] += collected
+	return (
+		[
+			{
+				"posting_date": day,
+				"sales": format_money(v[0], precision),
+				"collections": format_money(v[1], precision),
+			}
+			for day, v in sorted(days.items())
+		],
+		[
+			{
+				**v,
+				"sales": format_money(v["sales"], precision),
+				"collections": format_money(v["collections"], precision),
+			}
+			for v in sorted(
+				shifts.values(),
+				key=lambda v: (v["shift_number"] is None, v["shift_number"] or "", v["shift_id"]),
+			)
+		],
+		{
+			"sales": format_money(sales_total, precision),
+			"collections": format_money(collected_total, precision),
+		},
+	)
 
 
 def is_zero_row(row) -> bool:
@@ -384,9 +444,7 @@ def _rows(ctx, names, enabled, first, end, precision, keep_zero) -> list[dict]:
 	return rows
 
 
-def credit_statement_report(
-	outlet: str, customer: str, from_date: str | None, to_date: str | None
-) -> dict:
+def credit_statement_report(outlet: str, customer: str, from_date: str | None, to_date: str | None) -> dict:
 	"""A customer's House Account statement, see the module docstring of `credit_outstanding`: the
 	General Ledger of the customer and the outlet's company, one line per voucher (a cash sale to a
 	named customer posts both a debit and a credit in one voucher, so both columns sit on its line),
@@ -423,6 +481,7 @@ def credit_statement_report(
 		.groupby(entry.voucher_type, entry.voucher_no, entry.posting_date)
 		.orderby(entry.posting_date)
 		.orderby(Min(entry.creation))
+		.orderby(entry.voucher_no)
 		.limit(MAX_STATEMENT_ROWS + 1)
 		.run()
 	)
@@ -484,4 +543,291 @@ def credit_statement_report(
 		"closing": closing,
 		"more": more,
 		"rows": rows,
+	}
+
+
+# the House Account transactions (Task 8)
+
+
+def _transaction_row(day, kind, voucher_no, bill_no, customer, amount, precision, mode=None, **who):
+	return {
+		"posting_date": str(day),
+		"kind": kind,
+		"voucher_no": voucher_no,
+		"bill_no": bill_no or None,
+		"customer": customer,
+		"amount": format_money(amount, precision),
+		"mode_of_payment": mode or None,
+		"shift_id": who.get("shift_id") or None,
+		"cashier": who.get("cashier") or None,
+		"source": who.get("source", "till"),
+	}
+
+
+def _sale_rows(ctx, first, last, precision, shift, cashier, cap) -> list[dict]:
+	"""The outlet's till sales that put something on a House Account in the range (the part is
+	`credit_sale_part`; the SQL cut is `on_account_sql`) and the credit notes against them that
+	credited it back (`credited_to_account`): "sale" rows, then "cancel" rows (negative)."""
+	invoice = frappe.qb.DocType("Sales Invoice")
+	own = (
+		(invoice.company == ctx.company)
+		& (invoice.docstatus == 1)
+		& (invoice.pos_profile == ctx.outlet)
+		& (invoice.posting_date >= first)
+		& (invoice.posting_date <= last)
+	)
+	if shift:
+		own = own & (invoice.crenya_shift_id == shift)
+	if cashier:
+		own = own & (invoice.crenya_cashier == cashier)
+	fields = (
+		invoice.name,
+		invoice.customer,
+		invoice.posting_date,
+		invoice.grand_total,
+		invoice.rounded_total,
+		invoice.disable_rounded_total,
+		invoice.paid_amount,
+		invoice.change_amount,
+		invoice.write_off_amount,
+		invoice.loyalty_amount,
+		invoice.update_outstanding_for_self,
+		invoice.return_against,
+		invoice.crenya_offline_number,
+		invoice.crenya_shift_id,
+		invoice.crenya_cashier,
+	)
+	half = Decimal(1).scaleb(-precision) / 2
+	sales = (
+		frappe.qb.from_(invoice)
+		.select(*fields)
+		.where(own & (invoice.is_return == 0) & (on_account_sql(invoice, precision) > half))
+		.orderby(invoice.posting_date)
+		.orderby(invoice.name)
+		.limit(cap)
+		.run(as_dict=True)
+	)
+	rows = []
+	for sale in sales:
+		part = credit_sale_part(sale, precision)
+		if part > 0:
+			rows.append(
+				_transaction_row(
+					sale.posting_date,
+					"sale",
+					sale.name,
+					sale.crenya_offline_number,
+					sale.customer,
+					part,
+					precision,
+					shift_id=sale.crenya_shift_id,
+					cashier=sale.crenya_cashier,
+				)
+			)
+	original = frappe.qb.DocType("Sales Invoice", alias="original")
+	of_outlet = (
+		frappe.qb.from_(original)
+		.select(original.name)
+		.where(
+			(original.company == ctx.company)
+			& (original.docstatus == 1)
+			& (original.is_return == 0)
+			& (original.pos_profile == ctx.outlet)
+			& (on_account_sql(original, precision) > half)
+		)
+	)
+	returns = (
+		frappe.qb.from_(invoice)
+		.select(*fields)
+		.where(own & (invoice.is_return == 1) & invoice.return_against.isin(of_outlet))
+		.orderby(invoice.posting_date)
+		.orderby(invoice.name)
+		.limit(cap)
+		.run(as_dict=True)
+	)
+	if returns:
+		parts = {
+			row.name: credit_sale_part(row, precision)
+			for row in frappe.get_all(
+				"Sales Invoice",
+				filters={"name": ["in", sorted({r.return_against for r in returns})]},
+				fields=[
+					"name",
+					"grand_total",
+					"rounded_total",
+					"disable_rounded_total",
+					"paid_amount",
+					"change_amount",
+					"write_off_amount",
+					"loyalty_amount",
+				],
+			)
+		}
+		refunds = {}
+		for payment in frappe.get_all(
+			"Sales Invoice Payment",
+			filters={"parent": ["in", [r.name for r in returns]], "parenttype": "Sales Invoice"},
+			fields=["parent", "amount"],
+		):
+			refunds.setdefault(payment.parent, []).append(payment)
+		for ret in returns:
+			credited = min(credited_to_account([ret], refunds, precision), parts.get(ret.return_against, 0))
+			if credited > 0:
+				rows.append(
+					_transaction_row(
+						ret.posting_date,
+						"cancel",
+						ret.name,
+						ret.crenya_offline_number,
+						ret.customer,
+						-credited,
+						precision,
+						shift_id=ret.crenya_shift_id,
+						cashier=ret.crenya_cashier,
+					)
+				)
+	return rows
+
+
+def _collection_rows(ctx, first, last, precision, shift, cashier, cap) -> tuple[list[dict], bool]:
+	"""(rows, more): the company's submitted Receive Payment Entries of customers in the range, a
+	till's (its `crenya_device` belongs to the outlet; "till") and, when no shift or cashier is
+	asked for, the desk's and the web's (no device, a customer of the outlet's House Account set;
+	"web_desk")."""
+	entry = frappe.qb.DocType("Payment Entry")
+	base = (
+		(entry.docstatus == 1)
+		& (entry.payment_type == "Receive")
+		& (entry.party_type == CUSTOMER)
+		& (entry.company == ctx.company)
+		& (entry.posting_date >= first)
+		& (entry.posting_date <= last)
+	)
+	if shift:
+		base = base & (entry.crenya_shift_id == shift)
+	if cashier:
+		base = base & (entry.crenya_cashier == cashier)
+	devices = frappe.get_all("Crenya POS Device", filters={"pos_profile": ctx.outlet}, pluck="name")
+	more = False
+	where = [("till", base & entry.crenya_device.isin(devices or [""]))]
+	if not shift and not cashier:
+		names, _enabled, more = _candidates(ctx, first, last, precision)
+		where.append(
+			(
+				"web_desk",
+				base
+				& entry.party.isin(names or [""])
+				& (entry.crenya_device.isnull() | (entry.crenya_device == "")),
+			)
+		)
+	rows = []
+	for source, condition in where:
+		found = (
+			frappe.qb.from_(entry)
+			.select(
+				entry.name,
+				entry.party,
+				entry.posting_date,
+				entry.paid_amount,
+				entry.mode_of_payment,
+				entry.reference_no,
+				entry.crenya_shift_id,
+				entry.crenya_cashier,
+			)
+			.where(condition)
+			.orderby(entry.posting_date)
+			.orderby(entry.name)
+			.limit(cap)
+			.run(as_dict=True)
+		)
+		more = more or len(found) >= cap
+		for pay in found:
+			rows.append(
+				_transaction_row(
+					pay.posting_date,
+					"collection",
+					pay.name,
+					pay.reference_no,
+					pay.party,
+					pay.paid_amount,
+					precision,
+					mode=pay.mode_of_payment,
+					shift_id=pay.crenya_shift_id,
+					cashier=pay.crenya_cashier,
+					source=source,
+				)
+			)
+	return rows, more
+
+
+def credit_transactions_report(
+	outlet: str,
+	from_date: str | None,
+	to_date: str | None,
+	shift: str | None = None,
+	cashier: str | None = None,
+) -> dict:
+	"""The House Account transactions of the outlet per day and shift: what was put on an account
+	("sale": the on-account part of the outlet's till sales; "cancel": minus what a return credited
+	back), and what was collected ("collection": a till's payments, the desk's and the web's
+	settlements of the outlet's House Account customers). Both dates are required (YYYY-MM-DD, at
+	most MAX_TRANSACTION_DAYS days). `shift` (a shift's local id) and `cashier` (a user) limit the
+	rows; a "web_desk" row has neither, so it drops out under either. At most MAX_TRANSACTION_ROWS
+	rows (`more`) ordered by date, shift number and voucher; `days`, `shifts` and `totals` sum every
+	row the queries found, so they match the rows unless `more`."""
+	ctx = credit_view(outlet)
+	if not from_date or not to_date:
+		raise frappe.ValidationError(_("From Date and To Date are required"))
+	first, last = date_range(from_date, to_date, MAX_TRANSACTION_DAYS)
+	precision = money_precision(ctx.currency)
+	shift = (shift or "").strip() or None
+	cashier = (cashier or "").strip() or None
+	cap = MAX_TRANSACTION_ROWS + 1
+	rows = _sale_rows(ctx, first, last, precision, shift, cashier, cap)
+	more = len(rows) > MAX_TRANSACTION_ROWS
+	collected, more_collected = _collection_rows(ctx, first, last, precision, shift, cashier, cap)
+	rows += collected
+	more = more or more_collected
+	numbers = {}
+	shift_ids = sorted({row["shift_id"] for row in rows if row["shift_id"]})
+	if shift_ids:
+		numbers = dict(
+			frappe.get_all(
+				"Crenya POS Shift",
+				filters={"local_id": ["in", shift_ids]},
+				fields=["local_id", "shift_number"],
+				as_list=True,
+			)
+		)
+	customers = sorted({row["customer"] for row in rows})
+	labels = (
+		{
+			row.name: row.customer_name or row.name
+			for row in frappe.get_all(
+				CUSTOMER, filters={"name": ["in", customers]}, fields=["name", "customer_name"]
+			)
+		}
+		if customers
+		else {}
+	)
+	full_names = {user: get_fullname(user) for user in {row["cashier"] for row in rows if row["cashier"]}}
+	for row in rows:
+		row["name"] = labels.get(row["customer"], row["customer"])
+		row["shift_number"] = numbers.get(row["shift_id"]) if row["shift_id"] else None
+		row["cashier_name"] = full_names.get(row["cashier"]) if row["cashier"] else None
+	rows.sort(key=lambda row: (row["posting_date"], row["shift_number"] or "", row["voucher_no"]))
+	days, shifts, totals = transaction_subtotals(rows, precision)
+	if len(rows) > MAX_TRANSACTION_ROWS:
+		more = True
+		rows = rows[:MAX_TRANSACTION_ROWS]
+	return {
+		"outlet": ctx.outlet,
+		"currency": money_view(ctx.currency),
+		"from_date": first.isoformat(),
+		"to_date": last.isoformat(),
+		"more": more,
+		"rows": rows,
+		"days": days,
+		"shifts": shifts,
+		"totals": totals,
 	}

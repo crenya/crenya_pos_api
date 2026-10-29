@@ -27,6 +27,7 @@ passed, the report runs as Administrator (`elevated_as_administrator`) and the s
 `finally`, always. The report is asked for exactly the listed customers.
 """
 
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -34,11 +35,12 @@ import frappe
 from frappe import _
 from frappe.query_builder import Case
 from frappe.query_builder.functions import Min, Sum
-from frappe.utils import cint, get_fullname, getdate, nowdate
+from frappe.utils import cint, get_datetime, get_fullname, getdate, nowdate
 
 from crenya_pos_api.api.web_admin.credit import (
 	CREDIT_ENABLED_FIELD,
 	CUSTOMER,
+	_is_credit_editor,
 	_outlet_customer_filter,
 	credit_sale_part,
 	credit_sales_of,
@@ -48,7 +50,7 @@ from crenya_pos_api.api.web_admin.credit import (
 )
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.credit import credited_to_account, overdue_figures
-from crenya_pos_api.sync.credit_terms import customer_terms
+from crenya_pos_api.sync.credit_terms import customers_terms
 from crenya_pos_api.utils.decimal import as_decimal, format_money
 from crenya_pos_api.utils.session import elevated_as_administrator
 from crenya_pos_api.web.context import refuse
@@ -145,6 +147,33 @@ def statement_rows(opening, entries, precision) -> tuple[list[dict], str]:
 	return rows, format_money(balance, precision)
 
 
+def shift_sort_key(number) -> tuple:
+	"""The sort key of a shift number (pure): numbers by their digits' value, not as text ("SH-D1-10"
+	after "SH-D1-9"), a row without a shift number last. Text and number chunks alternate, so any
+	two keys compare."""
+	if number is None or number == "":
+		return (1, ())
+	parts = re.split(r"(\d+)", str(number))
+	return (0, tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in parts if part))
+
+
+def collection_source(source, created, tracking_since) -> str:
+	"""The source of a collection row (pure): a desk or web Payment Entry ("web_desk") created before the
+	Payment Entry's shift fields existed on the site (`tracking_since`, when the field was made) is
+	"before_tracking": it could be a till's, a desk's or the web's, and the report cannot tell. A
+	till's entry is the till's, and a site with no known date keeps "web_desk"."""
+	if source != "web_desk" or not created or not tracking_since:
+		return source
+	return "before_tracking" if get_datetime(created) < get_datetime(tracking_since) else source
+
+
+def house_account_member(credit_enabled, sold_on_account) -> bool:
+	"""Whether a customer is on the outlet's House Account (pure): its facility is switched on, or the
+	outlet's tills put something on its account in the range. A customer who is only a desk debtor
+	(an ordinary B2B receivable) is not."""
+	return bool(cint(credit_enabled)) or (sold_on_account or 0) > 0
+
+
 def transaction_subtotals(rows, precision) -> tuple[list[dict], list[dict], dict]:
 	"""(days, shifts, totals) of the transaction rows (pure). `sales` = the sale rows less the cancel
 	rows (a cancel's amount is negative), `collections` = the collection rows. `days` are by
@@ -191,7 +220,7 @@ def transaction_subtotals(rows, precision) -> tuple[list[dict], list[dict], dict
 			}
 			for v in sorted(
 				shifts.values(),
-				key=lambda v: (v["shift_number"] is None, v["shift_number"] or "", v["shift_id"]),
+				key=lambda v: (shift_sort_key(v["shift_number"]), v["shift_id"]),
 			)
 		],
 		{
@@ -237,10 +266,11 @@ def _left_out(ctx) -> set:
 	return left_out
 
 
-def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
-	"""(customer names, the enabled live ones, more): the enabled customers of the outlet and those with a
+def _candidates(ctx, first, last, precision) -> tuple[list[str], set]:
+	"""(customer names, the enabled live ones): the enabled customers of the outlet and those with a
 	till sale on account posted in `first..last`, inside the outlet's customer groups, without the
-	walk-in and the excluded."""
+	walk-in and the excluded. Every one, not a first thousand: the report cuts its rows by the closing
+	balance after the figures are read, so no customer drops out by its name."""
 	base = _outlet_customer_filter(ctx)
 	# a restaurant keeps a disabled customer who still owes (`_outlet_customer_filter`'s rule): listed
 	# here, dropped below when all its figures are zero; a shop's filter already says disabled = 0
@@ -249,7 +279,7 @@ def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
 		filters={**base, CREDIT_ENABLED_FIELD: 1},
 		fields=["name", "disabled"],
 		order_by="name asc",
-		limit=MAX_REPORT_ROWS + 1,
+		limit_page_length=0,
 	)
 	enabled = [row.name for row in enabled_rows]
 	live = {row.name for row in enabled_rows if not cint(row.disabled)}
@@ -285,7 +315,6 @@ def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
 			)
 			.groupby(invoice.customer)
 			.orderby(invoice.customer)
-			.limit(MAX_REPORT_ROWS + 1)
 			.run()
 		)
 	]
@@ -298,8 +327,7 @@ def _candidates(ctx, first, last, precision) -> tuple[list[str], set, bool]:
 		pool = set(
 			frappe.get_all(CUSTOMER, filters={**base, "name": ["in", sorted(pool) or [""]]}, pluck="name")
 		)
-	more = len(enabled) > MAX_REPORT_ROWS or len(sold) > MAX_REPORT_ROWS
-	return sorted(pool), live, more
+	return sorted(pool), live
 
 
 def _gl_where(entry, names, company):
@@ -369,6 +397,24 @@ def _receivable_rows(names, company, as_on) -> list[dict]:
 	return rows
 
 
+def customer_refusal(ctx, customer, first, last, precision):
+	"""Why the session user may not read `customer`'s figures on the outlet's House Account pages, or
+	None: the customer is of the outlet (`outlet_customer_refusal`) and not an excluded one, and for
+	an outlet manager (no System Manager or Accounts role) also on the House Account of the outlet:
+	enabled, or sold on account at the company's tills in `first..last`. A desk debtor of the
+	company is not the manager's to read by name."""
+	refusal = outlet_customer_refusal(ctx, customer)
+	if not refusal and customer in excluded_customers(ctx):
+		refusal = _("{0} is not on this page").format(customer)
+	if refusal or _is_credit_editor():
+		return refusal
+	enabled = cint(frappe.db.get_value(CUSTOMER, customer, CREDIT_ENABLED_FIELD))
+	sold = 0 if enabled else credit_sales_of([customer], ctx.company, first, last, precision).get(customer)
+	if not house_account_member(enabled, sold):
+		return _("{0} is not on the House Account of {1}").format(customer, ctx.outlet)
+	return None
+
+
 def credit_outstanding_report(
 	outlet: str, as_on: str | None = None, from_date: str | None = None, customer: str | None = None
 ) -> dict:
@@ -383,20 +429,18 @@ def credit_outstanding_report(
 		raise frappe.ValidationError(_("From Date must be before As On"))
 	precision = money_precision(ctx.currency)
 	if customer:
-		refusal = outlet_customer_refusal(ctx, customer)
-		if not refusal and customer in excluded_customers(ctx):
-			refusal = _("{0} is not on this page").format(customer)
+		refusal = customer_refusal(ctx, customer, first, end, precision)
 		if refusal:
 			refuse(refusal)
-		names, enabled, more = [customer], set(), False
+		names, enabled = [customer], set()
 	else:
-		names, enabled, more = _candidates(ctx, first, end, precision)
+		names, enabled = _candidates(ctx, first, end, precision)
 	rows = []
 	if names:
 		rows = _rows(ctx, names, enabled, first, end, precision, keep_zero=bool(customer))
 	rows.sort(key=lambda row: (-as_decimal(row["closing"]), row["name"]))
-	if len(rows) > MAX_REPORT_ROWS:
-		more = True
+	more = len(rows) > MAX_REPORT_ROWS
+	if more:
 		rows = rows[:MAX_REPORT_ROWS]
 	return {
 		"outlet": ctx.outlet,
@@ -428,6 +472,7 @@ def _rows(ctx, names, enabled, first, end, precision, keep_zero) -> list[dict]:
 					"posting_date": row.get("posting_date"),
 				}
 			)
+	terms = customers_terms(names, ctx.company)
 	rows = []
 	for name in names:
 		charged, paid = moved.get(name, (Decimal(0), Decimal(0)))
@@ -438,7 +483,7 @@ def _rows(ctx, names, enabled, first, end, precision, keep_zero) -> list[dict]:
 		row = {
 			"customer": name,
 			"name": labels.get(name, name),
-			"credit_days": customer_terms(name, ctx.company)["credit_days"],
+			"credit_days": terms[name]["credit_days"],
 			"opening": format_money(start, precision),
 			"charged": format_money(charged, precision),
 			"paid": format_money(paid, precision),
@@ -463,12 +508,10 @@ def credit_statement_report(outlet: str, customer: str, from_date: str | None, t
 	if not from_date or not to_date:
 		raise frappe.ValidationError(_("From Date and To Date are required"))
 	first, last = date_range(from_date, to_date)
-	refusal = outlet_customer_refusal(ctx, customer)
-	if not refusal and customer in excluded_customers(ctx):
-		refusal = _("{0} is not on this page").format(customer)
+	precision = money_precision(ctx.currency)
+	refusal = customer_refusal(ctx, customer, first, last, precision)
 	if refusal:
 		refuse(refusal)
-	precision = money_precision(ctx.currency)
 	opening = _gl_opening([customer], ctx.company, first).get(customer, Decimal(0))
 	entry = frappe.qb.DocType("GL Entry")
 	found = (
@@ -705,7 +748,8 @@ def _collection_rows(ctx, first, last, precision, shift, cashier, cap) -> tuple[
 	"""(rows, more): the company's submitted Receive Payment Entries of customers in the range, a
 	till's (its `crenya_device` belongs to the outlet; "till") and, when no shift or cashier is
 	asked for, the desk's and the web's (no device, a customer of the outlet's House Account set;
-	"web_desk")."""
+	"web_desk"; one made before the site had the shift fields is "before_tracking", see
+	`collection_source`)."""
 	entry = frappe.qb.DocType("Payment Entry")
 	base = (
 		(entry.docstatus == 1)
@@ -727,7 +771,7 @@ def _collection_rows(ctx, first, last, precision, shift, cashier, cap) -> tuple[
 		till = till & entry.party.notin(sorted(left_out))
 	where = [("till", till)]
 	if not shift and not cashier:
-		names, _enabled, more = _candidates(ctx, first, last, precision)
+		names, _enabled = _candidates(ctx, first, last, precision)
 		where.append(
 			(
 				"web_desk",
@@ -736,6 +780,8 @@ def _collection_rows(ctx, first, last, precision, shift, cashier, cap) -> tuple[
 				& (entry.crenya_device.isnull() | (entry.crenya_device == "")),
 			)
 		)
+	# when the shift fields were made on this site: older desk entries have none and cannot be told apart
+	tracking_since = frappe.db.get_value("Custom Field", "Payment Entry-crenya_shift_id", "creation")
 	rows = []
 	for source, condition in where:
 		found = (
@@ -747,6 +793,7 @@ def _collection_rows(ctx, first, last, precision, shift, cashier, cap) -> tuple[
 				entry.paid_amount,
 				entry.mode_of_payment,
 				entry.reference_no,
+				entry.creation,
 				entry.crenya_shift_id,
 				entry.crenya_cashier,
 			)
@@ -770,7 +817,7 @@ def _collection_rows(ctx, first, last, precision, shift, cashier, cap) -> tuple[
 					mode=pay.mode_of_payment,
 					shift_id=pay.crenya_shift_id,
 					cashier=pay.crenya_cashier,
-					source=source,
+					source=collection_source(source, pay.creation, tracking_since),
 				)
 			)
 	return rows, more
@@ -788,7 +835,7 @@ def credit_transactions_report(
 	back), and what was collected ("collection": a till's payments, the desk's and the web's
 	settlements of the outlet's House Account customers). Both dates are required (YYYY-MM-DD, at
 	most MAX_TRANSACTION_DAYS days). `shift` (a shift's local id) and `cashier` (a user) limit the
-	rows; a "web_desk" row has neither, so it drops out under either. At most MAX_TRANSACTION_ROWS
+	rows; a "web_desk" or "before_tracking" row has neither, so it drops out under either. At most MAX_TRANSACTION_ROWS
 	rows (`more`) ordered by date, shift number and voucher; `days`, `shifts` and `totals` sum every
 	row the queries found, so they match the rows unless `more`."""
 	ctx = credit_view(outlet)
@@ -831,7 +878,7 @@ def credit_transactions_report(
 		row["name"] = labels.get(row["customer"], row["customer"])
 		row["shift_number"] = numbers.get(row["shift_id"]) if row["shift_id"] else None
 		row["cashier_name"] = full_names.get(row["cashier"]) if row["cashier"] else None
-	rows.sort(key=lambda row: (row["posting_date"], row["shift_number"] or "", row["voucher_no"]))
+	rows.sort(key=lambda row: (row["posting_date"], shift_sort_key(row["shift_number"]), row["voucher_no"]))
 	days, shifts, totals = transaction_subtotals(rows, precision)
 	if len(rows) > MAX_TRANSACTION_ROWS:
 		more = True

@@ -116,6 +116,11 @@ def template_days(template: str | None, *, latest: bool = False) -> int | None:
 			fields=["due_date_based_on", "invoice_portion", "credit_days"],
 			limit_page_length=3,
 		)
+	return _days_of_rows(rows)
+
+
+def _days_of_rows(rows) -> int | None:
+	"""`template_days` of one template's detail rows (pure)."""
 	if len(rows) != 1:
 		return None
 	row = rows[0]
@@ -189,6 +194,74 @@ def customer_terms(customer: str, company: str) -> dict:
 	}
 
 
+def terms_of(own, group_template, company_template) -> tuple:
+	"""(template, source) of the first of a customer's own, its group's and the company's payment
+	terms template that is set (pure); (None, None) when none."""
+	if own:
+		return own, "customer"
+	if group_template:
+		return group_template, "group"
+	if company_template:
+		return company_template, "company"
+	return None, None
+
+
+def customers_terms(customers, company: str) -> dict:
+	"""{customer: `customer_terms`' answer} for many customers, the same answers in a fixed number of
+	queries (customers, their groups, the company, the templates' rows), not four per customer."""
+	customers = list(dict.fromkeys(customers))
+	if not customers:
+		return {}
+	rows = {
+		row.name: row
+		for row in frappe.get_all(
+			"Customer",
+			filters={"name": ["in", customers]},
+			fields=["name", "payment_terms", "customer_group"],
+			limit_page_length=0,
+		)
+	}
+	groups = {row.customer_group for row in rows.values() if row.customer_group and not row.payment_terms}
+	group_templates = (
+		dict(
+			frappe.get_all(
+				"Customer Group",
+				filters={"name": ["in", sorted(groups)]},
+				fields=["name", "payment_terms"],
+				as_list=True,
+				limit_page_length=0,
+			)
+		)
+		if groups
+		else {}
+	)
+	company_template = frappe.db.get_value("Company", company, "payment_terms") if company else None
+	chosen = {}
+	for customer in customers:
+		row = rows.get(customer)
+		own, group = (row.payment_terms, row.customer_group) if row else (None, None)
+		chosen[customer] = terms_of(own, group_templates.get(group) if group else None, company_template)
+	templates = sorted({template for template, _source in chosen.values() if template})
+	details = {}
+	if templates:
+		for detail in frappe.get_all(
+			DETAIL,
+			filters={"parent": ["in", templates], "parenttype": TEMPLATE},
+			fields=["parent", "due_date_based_on", "invoice_portion", "credit_days"],
+			limit_page_length=0,
+		):
+			details.setdefault(detail.parent, []).append(detail)
+	answers = {}
+	for customer, (template, source) in chosen.items():
+		days = _days_of_rows(details.get(template, [])) if template else None
+		answers[customer] = {
+			"payment_terms": template or None,
+			"credit_days": days,
+			"credit_days_source": source if days is not None else None,
+		}
+	return answers
+
+
 def current_terms(doc, company):
 	"""(own credit limit of `company` as a Decimal or None, own credit days as an int or None) of the
 	Customer document `doc` as it stands in memory: the first *Credit Limit* row of the company (0 is
@@ -260,6 +333,7 @@ __all__ = [
 	"apply_customer_terms",
 	"current_terms",
 	"customer_terms",
+	"customers_terms",
 	"days_template",
 	"parse_days",
 	"parse_limit",

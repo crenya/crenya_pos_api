@@ -489,6 +489,34 @@ class TestOutstandingFixRound1(OutstandingCase):
 		self.assertIs(answer["more"], True)
 		self.assertEqual(len(answer["rows"]), 2)
 
+	def test_no_customer_dropped_by_name_past_the_cap(self):
+		"""M8: the cut is by the biggest closing, never the alphabet: the last name by alphabet with the
+		biggest balance is listed when the cap is smaller than the number of customers."""
+		small = [self.customer(f"aa{n}") for n in range(3)]
+		for name in small:
+			self.enable(name)
+			self.bills(name, "1.000")
+		last = self.customer("zzbig")
+		self.enable(last)
+		self.bills(last, "9.000")
+		with mock.patch.object(credit_reports, "MAX_REPORT_ROWS", 2):
+			frappe.set_user(REST_MANAGER)
+			answer = report()
+		self.assertIs(answer["more"], True)
+		self.assertEqual(answer["rows"][0]["customer"], last)
+		self.assertEqual(len(answer["rows"]), 2)
+
+	def test_credit_days_batched_per_report(self):
+		for n in range(3):
+			self.enable(self.customer(f"terms{n}"))
+		frappe.set_user(REST_MANAGER)
+		with mock.patch.object(
+			credit_reports, "customers_terms", wraps=credit_reports.customers_terms
+		) as batched:
+			answer = report()
+		self.assertEqual(batched.call_count, 1)
+		self.assertTrue(all("credit_days" in row for row in answer["rows"]))
+
 	def test_oldest_unpaid_is_from_sales_invoices_only(self):
 		customer = self.customer("oldest")
 		self.enable(customer)
@@ -528,6 +556,7 @@ class TestStatement(OutstandingCase):
 
 	def test_opening_zero_before_first_entry(self):
 		customer = self.customer("stmt0", limit=None)
+		self.enable(customer)
 		self.ledger(customer, [("invoice", 5, "4.000")])
 		answer = self.stmt(customer)
 		self.assertEqual((answer["opening"], answer["closing"]), ("0.000", "4.000"))
@@ -551,6 +580,7 @@ class TestStatement(OutstandingCase):
 
 	def test_cancelled_entries_excluded(self):
 		customer = self.customer("stmtcxl", limit=None)
+		self.enable(customer)
 		names = self.ledger(customer, [("invoice", 5, "4.000"), ("invoice", 4, "3.000")])
 		frappe.set_user("Administrator")
 		frappe.get_doc("Sales Invoice", names[0]).cancel()
@@ -561,6 +591,7 @@ class TestStatement(OutstandingCase):
 
 	def test_journal_opening_entry_appears(self):
 		customer = self.customer("stmtjv", limit=None)
+		self.enable(customer)
 		self.ledger(customer, [("journal", 5, "9.000")])
 		answer = self.stmt(customer)
 		self.assertEqual([(r["description"], r["debit"]) for r in answer["rows"]], [("journal", "9.000")])
@@ -579,6 +610,29 @@ class TestStatement(OutstandingCase):
 		frappe.set_user(CASHIER)
 		with self.assertRaises(frappe.PermissionError):
 			statement(customer=customer)
+
+	def test_manager_cannot_read_a_desk_debtor_by_name(self):
+		"""M7: a customer of the outlet's groups with only a desk invoice (no House Account, no till
+		sale on account) is refused to the outlet manager, in the statement and the one-customer
+		outstanding report; a System Manager or an Accounts Manager still reads it."""
+		from crenya_pos_api.tests.test_integration_web_admin_credit import ACCOUNTS
+
+		debtor = self.customer("stmtdesk", limit=None)
+		self.ledger(debtor, [("invoice", 5, "4.000")])
+		frappe.set_user(REST_MANAGER)
+		with self.assertRaises(frappe.PermissionError):
+			statement(customer=debtor)
+		with self.assertRaises(frappe.PermissionError):
+			report(customer=debtor)
+		for user in ("Administrator", ACCOUNTS):
+			frappe.set_user(user)
+			self.assertEqual(statement(customer=debtor)["closing"], "4.000")
+			self.assertEqual(report(customer=debtor)["rows"][0]["closing"], "4.000")
+
+	def test_manager_reads_a_customer_sold_on_account_in_the_range(self):
+		customer = self.customer("stmtsold", limit=None)
+		self.post(self.on_account_sale(customer, "6.000"))
+		self.assertEqual(self.stmt(customer)["closing"], "6.000")
 
 	def test_dates_required(self):
 		customer = self.customer("stmtd", limit=None)
@@ -775,6 +829,18 @@ class TestTransactions(OutstandingCase):
 			[(r["kind"], r["source"], r["shift_id"], r["amount"]) for r in mine],
 			[("collection", "web_desk", None, "2.000")],
 		)
+
+	def test_payment_entry_older_than_the_shift_fields_is_before_tracking(self):
+		"""M4: a desk entry made before the site had the shift fields is not labelled web/desk."""
+		customer = self.listed()
+		self.ledger(customer, [("payment", 1, "2.000")])
+		entry = frappe.get_all(
+			"Payment Entry", filters={"party": customer, "docstatus": 1}, pluck="name", limit=1
+		)[0]
+		since = frappe.db.get_value("Custom Field", "Payment Entry-crenya_shift_id", "creation")
+		frappe.db.set_value("Payment Entry", entry, "creation", add_days(since, -1), update_modified=False)
+		mine = [r for r in self.txn()["rows"] if r["customer"] == customer]
+		self.assertEqual([(r["kind"], r["source"]) for r in mine], [("collection", "before_tracking")])
 
 	def test_other_outlet_sales_excluded(self):
 		customer, shift = self.listed(), f"S-{uuid.uuid4().hex[:6]}"

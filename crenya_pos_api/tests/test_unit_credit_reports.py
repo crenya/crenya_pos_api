@@ -2,15 +2,21 @@
 ageing from ERPNext's Accounts Receivable rows and the totals row, at OMR's 3 decimals."""
 
 import unittest
+from decimal import Decimal
+from unittest import mock
 
 from crenya_pos_api.api.web_admin.credit_reports import (
 	ageing_buckets,
+	collection_source,
+	house_account_member,
 	is_zero_row,
+	shift_sort_key,
 	statement_description,
 	statement_rows,
 	sum_rows,
 	transaction_subtotals,
 )
+from crenya_pos_api.sync.credit_terms import customers_terms
 
 
 class TestAgeingBuckets(unittest.TestCase):
@@ -198,3 +204,130 @@ class TestTransactionSubtotals(unittest.TestCase):
 
 	def test_empty(self):
 		self.assertEqual(transaction_subtotals([], 3), ([], [], {"sales": "0.000", "collections": "0.000"}))
+
+
+class TestShiftSort(unittest.TestCase):
+	def test_numbers_sort_by_value_not_text(self):
+		numbers = ["SH-D02-000010", "SH-D02-000009", "SH-D02-000100", None, "SH-D02-000002"]
+		self.assertEqual(
+			sorted(numbers, key=shift_sort_key),
+			["SH-D02-000002", "SH-D02-000009", "SH-D02-000010", "SH-D02-000100", None],
+		)
+
+	def test_unpadded_and_plain_numbers(self):
+		self.assertEqual(sorted(["10", "9", "1"], key=shift_sort_key), ["1", "9", "10"])
+		self.assertEqual(sorted(["S10", "S9", "S2"], key=shift_sort_key), ["S2", "S9", "S10"])
+
+	def test_mixed_text_and_numbers_compare(self):
+		self.assertEqual(sorted(["A-1", "10", "B"], key=shift_sort_key), ["10", "A-1", "B"])
+
+	def test_subtotals_list_shifts_numerically(self):
+		def row(shift, number):
+			return {
+				"posting_date": "2026-10-01",
+				"kind": "sale",
+				"amount": "1.000",
+				"shift_id": shift,
+				"shift_number": number,
+			}
+
+		rows = [row("S10", "SH-1-10"), row("S9", "SH-1-9")]
+		_days, shifts, _totals = transaction_subtotals(rows, 3)
+		self.assertEqual([s["shift_number"] for s in shifts], ["SH-1-9", "SH-1-10"])
+
+
+class TestCollectionSource(unittest.TestCase):
+	def test_a_till_entry_is_a_till_entry(self):
+		self.assertEqual(collection_source("till", "2026-01-01 10:00:00", "2026-10-01 00:00:00"), "till")
+
+	def test_desk_entry_made_before_the_shift_fields_is_not_web_desk(self):
+		self.assertEqual(
+			collection_source("web_desk", "2026-09-01 10:00:00", "2026-10-01 00:00:00"), "before_tracking"
+		)
+
+	def test_desk_entry_after_the_fields_stays_web_desk(self):
+		self.assertEqual(
+			collection_source("web_desk", "2026-10-02 10:00:00", "2026-10-01 00:00:00"), "web_desk"
+		)
+
+	def test_unknown_cutoff_keeps_web_desk(self):
+		self.assertEqual(collection_source("web_desk", "2026-09-01 10:00:00", None), "web_desk")
+
+
+class TestHouseAccountMember(unittest.TestCase):
+	def test_enabled_customer_is_a_member(self):
+		self.assertTrue(house_account_member(1, Decimal("0")))
+
+	def test_sold_on_account_in_range_is_a_member(self):
+		self.assertTrue(house_account_member(0, Decimal("2.500")))
+
+	def test_a_desk_debtor_is_not(self):
+		self.assertFalse(house_account_member(0, Decimal("0")))
+		self.assertFalse(house_account_member(None, None))
+
+
+class TestCustomersTerms(unittest.TestCase):
+	"""`customers_terms` answers like `customer_terms` for each customer, in a fixed number of queries."""
+
+	def run_terms(self, customers, rows, groups, company_template, details):
+		import frappe
+
+		def get_all(doctype, **kw):
+			if doctype == "Customer":
+				return [frappe._dict(r) for r in rows]
+			if doctype == "Customer Group":
+				return [(g, t) for g, t in groups.items()]
+			return [frappe._dict(d) for d in details]
+
+		fake = mock.MagicMock()
+		fake.get_all.side_effect = get_all
+		fake.db.get_value.return_value = company_template
+		fake._dict = frappe._dict
+		with mock.patch("crenya_pos_api.sync.credit_terms.frappe", fake):
+			return customers_terms(customers, "Co"), fake.get_all.call_count
+
+	def test_sources_and_fixed_query_count(self):
+		day30 = {
+			"parent": "T30",
+			"due_date_based_on": "Day(s) after invoice date",
+			"invoice_portion": 100,
+			"credit_days": 30,
+		}
+		day10 = {**day30, "parent": "T10", "credit_days": 10}
+		answers, queries = self.run_terms(
+			["own", "grouped", "plain", "ghost"],
+			[
+				{"name": "own", "payment_terms": "T30", "customer_group": "G"},
+				{"name": "grouped", "payment_terms": None, "customer_group": "G"},
+				{"name": "plain", "payment_terms": None, "customer_group": "H"},
+			],
+			{"G": "T10"},
+			"T30",
+			[day30, day10],
+		)
+		self.assertEqual(
+			answers["own"], {"payment_terms": "T30", "credit_days": 30, "credit_days_source": "customer"}
+		)
+		self.assertEqual(
+			answers["grouped"], {"payment_terms": "T10", "credit_days": 10, "credit_days_source": "group"}
+		)
+		self.assertEqual(answers["plain"]["credit_days_source"], "company")
+		self.assertEqual(answers["ghost"]["credit_days_source"], "company")
+		self.assertEqual(queries, 3)
+
+	def test_a_template_with_two_rows_has_no_days(self):
+		row = {
+			"parent": "T",
+			"due_date_based_on": "Day(s) after invoice date",
+			"invoice_portion": 50,
+			"credit_days": 30,
+		}
+		answers, _ = self.run_terms(
+			["a"], [{"name": "a", "payment_terms": "T", "customer_group": None}], {}, None, [row, row]
+		)
+		self.assertEqual(
+			answers["a"], {"payment_terms": "T", "credit_days": None, "credit_days_source": None}
+		)
+
+	def test_nobody_asks_nothing(self):
+		self.assertEqual(customers_terms([], "Co"), {})

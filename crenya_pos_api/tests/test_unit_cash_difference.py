@@ -4,7 +4,14 @@ which sign (no site)."""
 import unittest
 from decimal import Decimal
 
-from crenya_pos_api.cash_difference import OFF, cash_difference_block, cash_rows
+from crenya_pos_api.cash_difference import (
+	ERROR_CODES,
+	OFF,
+	cash_difference_block,
+	cash_rows,
+	error_code,
+	stored_error,
+)
 
 CASH_MODES = {"Cash", "Cash USD"}
 
@@ -54,9 +61,40 @@ class TestCashRows(unittest.TestCase):
 			cash_difference_block({}), {"state": OFF, "entry": None, "error": None, "can_retry": False}
 		)
 		self.assertTrue(
-			cash_difference_block({"cash_difference_state": "Not posted", "cash_difference_error": "x"})[
+			cash_difference_block({"cash_difference_state": "Not posted", "cash_difference_error": "x: y"})[
 				"can_retry"
 			]
+		)
+
+	def test_error_codes_pinned(self):
+		# the web Z page translates these (contract, Task 2); anything else shows one generic line
+		for code in (
+			"missing_account",
+			"account_not_leaf",
+			"account_wrong_type",
+			"no_cash_account",
+			"frozen_date",
+		):
+			self.assertIn(code, ERROR_CODES)
+		for code in ERROR_CODES:
+			self.assertRegex(code, r"^[a-z][a-z_]+$")
+
+	def test_block_sends_the_code_never_the_words(self):
+		stored = stored_error("frozen_date", "The accounts of <b>X</b> are frozen up to 2026-11-04")
+		self.assertTrue(stored.startswith("frozen_date: "))
+		block = cash_difference_block(
+			{"cash_difference_state": "Not posted", "cash_difference_error": stored}
+		)
+		self.assertEqual(
+			block, {"state": "Not posted", "entry": None, "error": "frozen_date", "can_retry": True}
+		)
+		# words from before the codes (or anything not code-shaped) are a generic code
+		self.assertEqual(error_code("Account X is frozen"), "posting_failed")
+		self.assertEqual(error_code("entry_refused: Debit and credit not equal"), "entry_refused")
+		self.assertIsNone(error_code(None))
+		# a posted shift carries no error
+		self.assertIsNone(
+			cash_difference_block({"cash_difference_state": "Posted", "cash_difference_error": "x"})["error"]
 		)
 
 

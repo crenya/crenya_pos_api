@@ -18,7 +18,7 @@ words in `cash_difference_error`; the shop's manager presses Retry on app.crenya
 owner fixes it (`api/web_admin/day_close.post_cash_difference`). The states:
 
 - "Posted": the entry is `cash_difference_entry`;
-- "Not posted": `cash_difference_error` says why;
+- "Not posted": `cash_difference_error` says why ("<code>: <words>"; the Z answer sends the code);
 - "Not needed": no Cash-type mode has a difference;
 - "Off": the outlet's switch was off when the shift arrived.
 
@@ -28,6 +28,7 @@ entry of the shift (not cancelled) before making one. A Retry takes the database
 stale, a named lock taken before the transaction's first read is not.
 """
 
+import re
 from contextlib import contextmanager
 from decimal import Decimal
 
@@ -55,8 +56,53 @@ LOCK_WAIT_SECONDS = 25
 SAVEPOINT = "crenya_cash_difference"
 
 
+# the codes a "Not posted" shift's `error` carries in the Z answer (the web translates them); the
+# words for the desk and the Sync Event note follow the code in `cash_difference_error`
+MISSING_ACCOUNT = "missing_account"
+ACCOUNT_NOT_LEAF = "account_not_leaf"
+ACCOUNT_WRONG_TYPE = "account_wrong_type"
+NO_CASH_ACCOUNT = "no_cash_account"
+FROZEN_DATE = "frozen_date"
+# code-shaped, shown by the web as one generic line
+ACCOUNT_WRONG_COMPANY = "account_wrong_company"
+ACCOUNT_DISABLED = "account_disabled"
+NO_COST_CENTER = "no_cost_center"
+ENTRY_REFUSED = "entry_refused"
+POSTING_FAILED = "posting_failed"
+ERROR_CODES = (
+	MISSING_ACCOUNT,
+	ACCOUNT_NOT_LEAF,
+	ACCOUNT_WRONG_TYPE,
+	NO_CASH_ACCOUNT,
+	FROZEN_DATE,
+	ACCOUNT_WRONG_COMPANY,
+	ACCOUNT_DISABLED,
+	NO_COST_CENTER,
+	ENTRY_REFUSED,
+	POSTING_FAILED,
+)
+
+
 class NotPostable(Exception):
-	"""A setup problem: the shift's entry cannot be posted until the owner fixes it (the message)."""
+	"""A setup problem: the shift's entry cannot be posted until the owner fixes it (`code`, and the
+	words as the message)."""
+
+	def __init__(self, code, message):
+		super().__init__(message)
+		self.code = code
+
+
+def stored_error(code, words) -> str:
+	"""`cash_difference_error` as stored: "<code>: <words>" (the Z answer sends the code alone)."""
+	return f"{code}: {clean_message(words)}" if words else code
+
+
+def error_code(stored) -> str | None:
+	"""The code of a stored `cash_difference_error` (pure); anything not code-shaped is POSTING_FAILED."""
+	if not stored:
+		return None
+	code = str(stored).split(":", 1)[0].strip()
+	return code if re.fullmatch(r"[a-z][a-z_]{0,39}", code) else POSTING_FAILED
 
 
 def cash_rows(shift_doc, cash_modes, precision) -> list[tuple[str, Decimal]]:
@@ -74,24 +120,28 @@ def cash_rows(shift_doc, cash_modes, precision) -> list[tuple[str, Decimal]]:
 	return rows
 
 
-def account_problem(account, company) -> str | None:
+def account_problem(account, company) -> tuple[str, str] | None:
 	"""Why `account` cannot take an outlet's cash over/short (the words for the owner), or None: it
 	must be an enabled ledger (not a group) of the outlet's company, of root type Expense or Income."""
 	if not account:
-		return _("Set the cash over/short account in the outlet's settings")
+		return MISSING_ACCOUNT, _("Set the cash over/short account in the outlet's settings")
 	row = frappe.db.get_value(
 		"Account", account, ["company", "is_group", "root_type", "disabled"], as_dict=True
 	)
 	if not row:
-		return _("The cash over/short account {0} does not exist").format(account)
+		return MISSING_ACCOUNT, _("The cash over/short account {0} does not exist").format(account)
 	if row.company != company:
-		return _("The cash over/short account {0} is not an account of {1}").format(account, company)
+		return ACCOUNT_WRONG_COMPANY, _("The cash over/short account {0} is not an account of {1}").format(
+			account, company
+		)
 	if cint(row.is_group):
-		return _("The cash over/short account {0} is a group, not a ledger").format(account)
+		return ACCOUNT_NOT_LEAF, _("The cash over/short account {0} is a group, not a ledger").format(account)
 	if cint(row.disabled):
-		return _("The cash over/short account {0} is disabled").format(account)
+		return ACCOUNT_DISABLED, _("The cash over/short account {0} is disabled").format(account)
 	if row.root_type not in ACCOUNT_ROOT_TYPES:
-		return _("The cash over/short account {0} must be an expense or income account").format(account)
+		return ACCOUNT_WRONG_TYPE, _(
+			"The cash over/short account {0} must be an expense or income account"
+		).format(account)
 	return None
 
 
@@ -102,7 +152,7 @@ def validate_profile(doc, method=None):
 	if account:
 		problem = account_problem(account, doc.company)
 		if problem:
-			frappe.throw(problem)
+			frappe.throw(problem[1])
 
 
 def cash_modes() -> set[str]:
@@ -138,7 +188,9 @@ def _entry_accounts(rows, over_short_account, company, cost_center, precision):
 	for mode, difference in rows:
 		cash_account = _cash_account(mode, company)
 		if not cash_account:
-			raise NotPostable(_("Mode of payment {0} has no account for {1}").format(mode, company))
+			raise NotPostable(
+				NO_CASH_ACCOUNT, _("Mode of payment {0} has no account for {1}").format(mode, company)
+			)
 		amount = flt(format_money(abs(difference), precision), precision)
 		# short: the drawer holds less than expected, the loss is debited
 		cash_side, other_side = ("credit", "debit") if difference < 0 else ("debit", "credit")
@@ -176,19 +228,21 @@ def _post(shift, profile, precision):
 	account = profile.get(CASH_DIFFERENCE_ACCOUNT_FIELD)
 	problem = account_problem(account, company)
 	if problem:
-		raise NotPostable(problem)
+		raise NotPostable(*problem)
 	posting_date = getdate(shift.closed_at)
 	frozen = _frozen_till(company)
 	if frozen and posting_date <= frozen:
 		raise NotPostable(
+			FROZEN_DATE,
 			_("The accounts of {0} are frozen up to {1}: the shift closed on {2}").format(
 				company, frozen, posting_date
-			)
+			),
 		)
 	cost_center = _cost_center(profile, company)
 	if not cost_center:
 		raise NotPostable(
-			_("Set a cost center on the outlet or a default cost center of {0}").format(company)
+			NO_COST_CENTER,
+			_("Set a cost center on the outlet or a default cost center of {0}").format(company),
 		)
 	entry = frappe.new_doc(JOURNAL_ENTRY)
 	entry.update(
@@ -237,11 +291,11 @@ def _post_and_store(shift_name):
 		raise
 	except NotPostable as exc:
 		frappe.db.rollback(save_point=SAVEPOINT)
-		state, entry, error = NOT_POSTED, None, clean_message(str(exc))
+		state, entry, error = NOT_POSTED, None, stored_error(exc.code, str(exc))
 	except Exception as exc:
 		# ERPNext refused the entry (its words): nothing of it is kept, the shift still stands
 		frappe.db.rollback(save_point=SAVEPOINT)
-		state, entry, error = NOT_POSTED, None, clean_message(str(exc) or type(exc).__name__)
+		state, entry, error = NOT_POSTED, None, stored_error(ENTRY_REFUSED, str(exc) or type(exc).__name__)
 		# a frappe.throw left its message for the response: the answer says it instead
 		frappe.clear_messages()
 	values = {"cash_difference_state": state, "cash_difference_entry": entry, "cash_difference_error": error}
@@ -257,7 +311,8 @@ def cash_difference_block(shift_doc, can_retry=None) -> dict:
 	return {
 		"state": state,
 		"entry": shift_doc.get("cash_difference_entry") or None,
-		"error": shift_doc.get("cash_difference_error") or None,
+		# a code (ERROR_CODES), never the words: the web translates it
+		"error": error_code(shift_doc.get("cash_difference_error")) if state == NOT_POSTED else None,
 		"can_retry": (state == NOT_POSTED) if can_retry is None else bool(can_retry),
 	}
 
@@ -301,14 +356,18 @@ def record_for_new_shift(doc, notes) -> None:
 		frappe.db.set_value(
 			SHIFT_DOCTYPE,
 			doc.name,
-			{"cash_difference_state": NOT_POSTED, "cash_difference_error": clean_message(str(exc))},
+			{
+				"cash_difference_state": NOT_POSTED,
+				"cash_difference_error": stored_error(POSTING_FAILED, str(exc)),
+			},
 			update_modified=False,
 		)
-		block = {"state": NOT_POSTED, "error": clean_message(str(exc))}
+		block = {"state": NOT_POSTED, "error": POSTING_FAILED}
+	stored = frappe.db.get_value(SHIFT_DOCTYPE, doc.name, "cash_difference_error")
 	doc.cash_difference_state = block["state"]
 	doc.cash_difference_entry = block.get("entry")
-	doc.cash_difference_error = block.get("error")
+	doc.cash_difference_error = stored
 	if block["state"] == NOT_POSTED:
-		notes.append(f"Cash over/short not posted: {block['error']}")
+		notes.append(f"Cash over/short not posted: {stored or block['error']}")
 	elif block["state"] == POSTED:
 		notes.append(f"Cash over/short posted: {block['entry']}")

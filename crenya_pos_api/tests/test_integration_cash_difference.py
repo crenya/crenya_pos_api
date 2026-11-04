@@ -208,6 +208,11 @@ class TestCashDifference(SyncCase):
 		row = self.state(result["name"])
 		self.assertEqual(row.cash_difference_state, "Not posted")
 		self.assertIn("over/short account", row.cash_difference_error)
+		self.assertTrue(row.cash_difference_error.startswith("missing_account: "))
+		self.assertEqual(
+			cash_difference.cash_difference_block(frappe.get_doc(SHIFT, result["name"])),
+			{"state": "Not posted", "entry": None, "error": "missing_account", "can_retry": True},
+		)
 		self.assertEqual(self.entries(result["name"]), [])
 		# the account set, the manager retries: one entry
 		frappe.db.set_value(
@@ -250,6 +255,10 @@ class TestCashDifference(SyncCase):
 		row = self.state(result["name"])
 		self.assertEqual(row.cash_difference_state, "Not posted")
 		self.assertIn("frozen", row.cash_difference_error)
+		self.assertEqual(
+			cash_difference.cash_difference_block(frappe.get_doc(SHIFT, result["name"]))["error"],
+			"frozen_date",
+		)
 		self.assertEqual(self.entries(result["name"]), [])
 		# never another date: the owner unfreezes, Retry posts at the close date
 		restore()

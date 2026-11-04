@@ -35,7 +35,10 @@ DEVICE_ROLE = "Crenya POS Device"
 #   Program is submitted (found by retail P1 Task 0, v15 and v16; 0.12.1);
 # - `erpnext.controllers.accounts_controller.get_taxes_and_charges` checks `select` on the Sales
 #   Taxes and Charges Template: a sale wholly on account is a plain (not POS) invoice, whose tax rows
-#   the builder reads with it (0.13.0).
+#   the builder reads with it (0.13.0);
+# - `erpnext.stock.get_item_details.get_pos_profile` checks `has_permission("POS Profile", "read",
+#   doc=..., throw=True)` for every line of a POS invoice (ERPNext v15 and v16, late 2026-10: a
+#   device-role-only user's push was refused "Not permitted"; 0.16.3).
 # {DocType: right}, read-only, never a write; granted to the roles of devices that post sales only
 # (`ensure_push_reads`).
 PUSH_READS = {
@@ -43,6 +46,7 @@ PUSH_READS = {
 	"Item": "read",
 	"Customer": "read",
 	"Sales Taxes and Charges Template": "select",
+	"POS Profile": "read",
 }
 
 

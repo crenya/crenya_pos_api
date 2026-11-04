@@ -8,10 +8,11 @@ crenya_pos_api.tests.test_integration_credit_reports
 """
 
 import uuid
+from datetime import timedelta
 from unittest import mock
 
 import frappe
-from frappe.utils import add_days, nowdate
+from frappe.utils import add_days, get_datetime, now_datetime, nowdate
 
 from crenya_pos_api.api import web_admin
 from crenya_pos_api.api.web_admin import credit_reports
@@ -498,7 +499,8 @@ class TestOutstandingFixRound1(OutstandingCase):
 			self.bills(name, "1.000")
 		last = self.customer("zzbig")
 		self.enable(last)
-		self.bills(last, "9.000")
+		# well above any other customer this class leaves in the report group (e.g. 9.750)
+		self.bills(last, "99.000")
 		with mock.patch.object(credit_reports, "MAX_REPORT_ROWS", 2):
 			frappe.set_user(REST_MANAGER)
 			answer = report()
@@ -655,6 +657,21 @@ def transactions(outlet=RESTAURANT_A, **args):
 
 class TestTransactions(OutstandingCase):
 	"""Task 8: the House Account transactions by day and shift."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# the shift fields are made at install, under the install's time zone; ERPNext's test setup
+		# then moves the site to another (America/New_York), so an entry made now can carry an earlier
+		# wall-clock `creation` than the field and read as "before_tracking". On a real site the time
+		# zone is set once: put the field's creation before this run's entries
+		field = "Payment Entry-crenya_shift_id"
+		since = frappe.db.get_value("Custom Field", field, "creation")
+		if since and get_datetime(since) > now_datetime() - timedelta(hours=1):
+			frappe.db.set_value(
+				"Custom Field", field, "creation", now_datetime() - timedelta(days=1), update_modified=False
+			)
+			frappe.db.commit()  # nosemgrep
 
 	def person(self, label):
 		from crenya_pos_api.sync.context import POS_USER_ROLE

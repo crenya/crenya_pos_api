@@ -209,13 +209,15 @@ class TestCreditCustomers(WebCreditCase):
 			(None, None, False),
 		)
 		self.assertIsNone(rows[free]["limit_source"])
-		# a limit and no balance is listed too
-		self.assertEqual((rows[idle]["credit_limit"], rows[idle]["outstanding"]), ("250.000", "0.000"))
+		# a limit and no till sale on account is no House Account (M2): an accountant lists it
+		self.assertNotIn(idle, rows)
 		# over the limit first
 		names = [row["customer"] for row in answer["rows"]]
 		self.assertLess(names.index(over), names.index(under))
 		self.assertLess(names.index(over), names.index(free))
 		self.assertIs(web_admin.credit_customers(self.profile.name)["more"], False)
+		idle_row = self.row_of(idle, ACCOUNTS)
+		self.assertEqual((idle_row["credit_limit"], idle_row["outstanding"]), ("250.000", "0.000"))
 
 	def test_the_source_of_an_inherited_limit_is_named(self):
 		group_customer = make_customer("websrcgroup", limit=None)

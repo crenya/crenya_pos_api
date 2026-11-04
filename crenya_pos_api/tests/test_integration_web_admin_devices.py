@@ -157,3 +157,12 @@ class TestWebAdminDevices(WebAdminCase):
 		self.assertEqual(
 			(self.stored(device_id).device_name, self.stored(device_id).update_channel), ("Till 2", "stable")
 		)
+
+	def test_flat_web_admin_paths_resolve(self):
+		"""app.crenya.com calls `crenya_pos_api.api.web_admin.<method>`: the new methods are there, in
+		`__all__` (the every-method API-key loop covers them) and whitelisted."""
+		for name in ("rename_device", "set_device_channel", "post_cash_difference"):
+			self.assertIn(name, web_admin.__all__)
+			function = frappe.get_attr(f"crenya_pos_api.api.web_admin.{name}")
+			self.assertIn(function, frappe.whitelisted, name)
+		self.assertIn("can_set_channel", web_admin.devices(self.profile.name))

@@ -174,9 +174,11 @@ class ShiftHandler(AggregateHandler):
 
 def builtin_handlers():
 	"""The aggregates every till speaks, in protocol order. `POS Expense` (0.13.0, moved down from
-	crenya_restaurant) is built in for both products; the device's type picks the product."""
+	crenya_restaurant) is built in for both products; the device's type picks the product. `Crenya
+	POS Control Log` (0.17.0) is a retail till's only."""
 	# the expenses handler extends AggregateHandler: imported when asked, not at import
 	from crenya_pos_api.expenses.sync import ExpenseAggregate
+	from crenya_pos_api.sync.control_log import ControlLogHandler
 	from crenya_pos_api.sync.credit_facility import CreditFacilityHandler
 	from crenya_pos_api.sync.customer_payment import CustomerPaymentHandler
 
@@ -189,5 +191,7 @@ def builtin_handlers():
 			ExpenseAggregate(),
 			CustomerPaymentHandler(),
 			CreditFacilityHandler(),
+			# 0.17.0: a retail till's store-control events, sent at shift close
+			ControlLogHandler(),
 		)
 	}

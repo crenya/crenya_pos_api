@@ -25,6 +25,7 @@ from crenya_pos_api.sync.context import (
 	require_device_role,
 	user_can_use_profile,
 )
+from crenya_pos_api.sync.control_log import FEATURE_CONTROL_LOG
 from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
 from crenya_pos_api.sync.customer_payment import FEATURE_SETTLE_INVOICES
 from crenya_pos_api.sync.entitlement import device_rows, get_entitlement, registration_refusal
@@ -504,6 +505,8 @@ def bootstrap(ctx):
 		# 0.14.0: a receipt may name the bills it settles (`invoices`); older tills ignore the key
 		doc["features"][FEATURE_SETTLE_INVOICES] = 1
 		doc["credit"] = {"enabled": bool(cint(profile.get(CREDIT_SALES_FIELD)))}
+		# 0.17.0: the till sends its shift's store-control events at close (Crenya POS Control Log)
+		doc["features"][FEATURE_CONTROL_LOG] = 1
 		# expenses paid out of the drawer (0.13.0): only on a site with erptrue_app's POS Expense, so
 		# the till hides Expenses everywhere else
 		if expenses_supported():

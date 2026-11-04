@@ -149,7 +149,13 @@ def validate_profile(doc, method=None):
 	"""POS Profile validate hook: a cash over/short account, when set, is one `account_problem`
 	accepts (left blank while the switch is on, the outlet's setup checks say so)."""
 	account = doc.get(CASH_DIFFERENCE_ACCOUNT_FIELD)
-	if account:
+	# only when the account or the switch changes: an account disabled later must not stop a manager
+	# saving the outlet's other settings (the setup check and "Not posted" say so instead)
+	changed = doc.is_new() or any(
+		doc.has_value_changed(field)
+		for field in (CASH_DIFFERENCE_ACCOUNT_FIELD, CASH_DIFFERENCE_SWITCH_FIELD)
+	)
+	if account and changed:
 		problem = account_problem(account, doc.company)
 		if problem:
 			frappe.throw(problem[1])
@@ -344,9 +350,20 @@ def _release(name):
 		pass
 
 
+def migrated() -> bool:
+	"""Whether the site has this release's fields (a code deploy runs before `bench migrate`): the
+	shift's state columns and the Journal Entry's link."""
+	return frappe.get_meta(SHIFT_DOCTYPE).has_field("cash_difference_state") and frappe.get_meta(
+		JOURNAL_ENTRY
+	).has_field(SHIFT_LINK_FIELD)
+
+
 def record_for_new_shift(doc, notes) -> None:
 	"""Called by `sync.shift.create_shift` after the shift is inserted: post (or not) and keep the
-	shift whatever happens, with a note on the Sync Event when nothing was posted for a reason."""
+	shift whatever happens, with a note on the Sync Event when nothing was posted for a reason. On a
+	site not migrated yet nothing is done: the shift is recorded as before 0.17.0."""
+	if not migrated():
+		return
 	try:
 		block = post_for_shift(doc.name, lock=False)
 	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):

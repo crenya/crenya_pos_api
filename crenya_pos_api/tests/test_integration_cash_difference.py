@@ -372,3 +372,42 @@ class TestCashDifference(SyncCase):
 			"cash_difference_account",
 			[row["key"] for row in web_admin.outlet_settings(self.profile.name)["setup_checks"]],
 		)
+
+	def test_shift_recorded_before_migrate(self):
+		"""Review L1: a code deploy that runs before `bench migrate` (no state columns, no Control Log
+		table) records the shift as before and skips the over/short and the log link, with no error."""
+		from crenya_pos_api.sync import control_log
+
+		self.outlet()
+		with (
+			mock.patch.object(cash_difference, "migrated", return_value=False),
+			mock.patch.object(control_log, "table_ready", return_value=False),
+		):
+			result, _payload = self.push_shift([self.cash("67.900", "67.850")])
+		self.assertTrue(frappe.db.exists(SHIFT, result["name"]))
+		self.assertFalse(self.state(result["name"]).cash_difference_state)
+		self.assertEqual(self.entries(result["name"]), [])
+
+	def test_disabled_account_does_not_block_other_settings(self):
+		"""Review L2: the account is checked when it (or the switch) changes, not on every save."""
+		self.keep_settings()
+		self.outlet()
+		frappe.db.set_value("Account", OVER_SHORT, "disabled", 1)
+		frappe.db.commit()
+
+		def enable():
+			frappe.db.set_value("Account", OVER_SHORT, "disabled", 0)
+			frappe.db.commit()
+
+		self.addCleanup(enable)
+		profile = frappe.get_doc("POS Profile", self.profile.name)
+		profile.write_off_limit = profile.write_off_limit or 1
+		profile.save(ignore_permissions=True)
+		frappe.db.rollback()
+		profile = frappe.get_doc("POS Profile", self.profile.name)
+		profile.set(CASH_DIFFERENCE_ACCOUNT_FIELD, None)
+		profile.save(ignore_permissions=True)
+		profile.set(CASH_DIFFERENCE_ACCOUNT_FIELD, OVER_SHORT)
+		with self.assertRaises(frappe.ValidationError):
+			profile.save(ignore_permissions=True)
+		frappe.db.rollback()

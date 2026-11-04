@@ -137,8 +137,16 @@ def apply_control_log(ctx, data, notes):
 	return doc
 
 
+def table_ready() -> bool:
+	"""Whether the site has the Control Log table (a code deploy runs before `bench migrate`)."""
+	return bool(frappe.db.table_exists(LOG_DOCTYPE))
+
+
 def link_shift(shift_doc):
-	"""Point the logs that arrived before their shift at it (called by `create_shift`)."""
+	"""Point the logs that arrived before their shift at it (called by `create_shift`); nothing on a
+	site not migrated yet."""
+	if not table_ready():
+		return
 	log = frappe.qb.DocType(LOG_DOCTYPE)
 	(
 		frappe.qb.update(log)

@@ -41,8 +41,12 @@ class SalesCase(SyncCase):
 		result = self.assertOk(self.push_one(self.event(payload)))
 		return payload, result["name"]
 
-	def refund(self, sale, lines, shift, cashier="Administrator"):
+	def refund(self, sale, lines, shift, cashier="Administrator", list_rates=None):
 		payload = self.return_payload(sale, lines, shift_local_id=shift, cashier=cashier)
+		# a return carries the original line's price list rate
+		for item, list_rate in zip(payload["items"], list_rates or [], strict=False):
+			if list_rate:
+				item["price_list_rate"] = list_rate
 		return self.assertOk(self.push_one(self.event(payload)))["name"]
 
 	def log(self, shift, events):
@@ -132,9 +136,11 @@ class TestZAdditions(SalesCase):
 		self.assertIs(answer["control_events_truncated"], False)
 
 	def test_z_truncates_at_2000(self):
+		import importlib
 		from unittest import mock
 
-		from crenya_pos_api.api.web_admin import day_close
+		# the module (the package re-exports the function of the same name)
+		day_close = importlib.import_module("crenya_pos_api.api.web_admin.day_close")
 
 		shift = new_id()
 		self.log(shift, [{}, {}, {}])
@@ -241,7 +247,7 @@ class TestSalesReports(SalesCase):
 		before = self.item(self.report("items"), fixtures.BREAD)
 		shift = new_id()
 		sale, _name = self.sell([(fixtures.BREAD, "3", "0.400")], shift, list_rates=["0.500"])
-		self.refund(sale, [(fixtures.BREAD, "-1", "0.400", 1)], shift)
+		self.refund(sale, [(fixtures.BREAD, "-1", "0.400", 1)], shift, list_rates=["0.500"])
 		answer = self.report("items")
 		self.assertEqual(
 			(answer["tab"], answer["from_date"], answer["to_date"]), ("items", nowdate(), nowdate())

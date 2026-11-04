@@ -7,6 +7,7 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module creny
 
 import threading
 from decimal import Decimal
+from unittest import mock
 
 import frappe
 from frappe.utils import getdate, nowdate
@@ -225,33 +226,12 @@ class TestCashDifference(SyncCase):
 		frappe.set_user("Administrator")
 		self.assertEqual(self.entries(result["name"]), [block["entry"]])
 
-	def frozen(self, day):
-		"""Freeze the company's accounts up to `day` (ERPNext v16: the Company; v15: Accounts Settings)."""
-		if frappe.get_meta("Company").has_field("accounts_frozen_till_date"):
-			saved = frappe.db.get_value("Company", fixtures.COMPANY, "accounts_frozen_till_date")
-			frappe.db.set_value("Company", fixtures.COMPANY, "accounts_frozen_till_date", day)
-
-			def restore():
-				frappe.db.set_value("Company", fixtures.COMPANY, "accounts_frozen_till_date", saved)
-				frappe.clear_document_cache("Company", fixtures.COMPANY)
-				frappe.db.commit()
-		else:
-			saved = frappe.db.get_single_value("Accounts Settings", "acc_frozen_upto")
-			frappe.db.set_single_value("Accounts Settings", "acc_frozen_upto", day)
-
-			def restore():
-				frappe.db.set_single_value("Accounts Settings", "acc_frozen_upto", saved)
-				frappe.db.commit()
-
-		frappe.clear_document_cache("Company", fixtures.COMPANY)
-		frappe.db.commit()
-		return restore
-
 	def test_frozen_date_not_posted_then_retry(self):
 		self.outlet()
-		restore = self.frozen(nowdate())
-		self.addCleanup(restore)
-		result, _payload = self.push_shift([self.cash("67.900", "67.850")])
+		# the company's frozen date as the web settle reads it (ERPNext v16 Company, v15 Accounts
+		# Settings), patched: the site's own setting is never changed by a test
+		with mock.patch.object(cash_difference, "_frozen_till", return_value=getdate(nowdate())):
+			result, _payload = self.push_shift([self.cash("67.900", "67.850")])
 		row = self.state(result["name"])
 		self.assertEqual(row.cash_difference_state, "Not posted")
 		self.assertIn("frozen", row.cash_difference_error)
@@ -261,7 +241,6 @@ class TestCashDifference(SyncCase):
 		)
 		self.assertEqual(self.entries(result["name"]), [])
 		# never another date: the owner unfreezes, Retry posts at the close date
-		restore()
 		frappe.set_user(MANAGER)
 		block = web_admin.post_cash_difference(result["name"])
 		frappe.set_user("Administrator")

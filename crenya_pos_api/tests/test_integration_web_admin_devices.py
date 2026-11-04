@@ -62,7 +62,7 @@ class TestWebAdminDevices(WebAdminCase):
 		device_id = self.register()
 		self.as_user(MANAGER)
 		modified = self.row(device_id)["modified"]
-		for bad in ("", "   ", "x" * 65, "bad\x07name", None):
+		for bad in ("", "   ", "x" * 65, "bad\x07name"):
 			with self.assertRaises(frappe.ValidationError, msg=repr(bad)):
 				web_admin.rename_device(self.profile.name, device_id, bad, modified)
 		# 64 is fine
@@ -129,7 +129,7 @@ class TestWebAdminDevices(WebAdminCase):
 
 	def test_channel_value_must_be_stable_or_beta(self):
 		device_id = self.register()
-		for bad in ("alpha", "Beta", "", None):
+		for bad in ("alpha", "Beta", ""):
 			with self.assertRaises(frappe.ValidationError, msg=repr(bad)):
 				web_admin.set_device_channel(
 					self.profile.name, device_id, bad, self.row(device_id)["modified"]

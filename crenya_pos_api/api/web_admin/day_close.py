@@ -11,11 +11,13 @@ from decimal import Decimal
 import frappe
 from frappe.utils import cint, flt, formatdate, getdate
 
-from crenya_pos_api.api.web_admin.scope import manage
+from crenya_pos_api import cash_difference
+from crenya_pos_api.api.web_admin.scope import manage, manage_company
 from crenya_pos_api.expenses.reports import expense_label, shift_expenses
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.shift import count_shift_invoices
 from crenya_pos_api.utils.decimal import as_decimal, format_money
+from crenya_pos_api.web.context import require_web_session
 from crenya_pos_api.web.devices import SHIFT_DOCTYPE, full_names, wire
 from crenya_pos_api.web.reports import common, date_range
 
@@ -362,3 +364,29 @@ def day_close(shift: str) -> dict:
 			expenses=shift_expenses(doc, cash_modes),
 		),
 	}
+
+
+@frappe.whitelist(methods=["POST"])
+def post_cash_difference(shift: str) -> dict:
+	"""Retry the cash over/short Journal Entry of a shift left "Not posted" (0.17.0), for a manager of
+	its shop permitted on its company, who needs no accounts role: the entry is posted as
+	Administrator after that check (`cash_difference.post_for_shift`, under the shift's lock, so two
+	presses post one entry). Answers the Z's `cash_difference` block; frappe.PermissionError for any
+	other (or no) shift."""
+	require_web_session()
+	row = (
+		frappe.db.get_value(
+			SHIFT_DOCTYPE, shift, ["name", "pos_profile", "cash_difference_state"], as_dict=True
+		)
+		if isinstance(shift, str) and shift
+		else None
+	)
+	if not row:
+		raise frappe.PermissionError
+	ctx = manage_company(row.pos_profile)
+	if row.cash_difference_state != cash_difference.NOT_POSTED:
+		# nothing to retry: answered as it stands
+		return cash_difference.cash_difference_block(frappe.get_doc(SHIFT_DOCTYPE, row.name))
+	block = cash_difference.post_for_shift(row.name)
+	ctx.log(frappe.get_doc(SHIFT_DOCTYPE, row.name))
+	return block

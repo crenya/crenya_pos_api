@@ -109,6 +109,40 @@ CREDIT_PROFILE_FIELDS = [
 	},
 ]
 
+# POS Profile's *Cash over/short* section (0.17.0), after the credit section: when the switch is on,
+# a pushed shift whose Cash-type modes counted a difference posts one Journal Entry
+# (crenya_pos_api.cash_difference). Both are a System Manager's (api/web_admin/settings.OWNER_ONLY)
+CASH_DIFFERENCE_SWITCH_FIELD = "crenya_post_cash_difference"
+CASH_DIFFERENCE_ACCOUNT_FIELD = "crenya_cash_difference_account"
+CASH_DIFFERENCE_PROFILE_FIELDS = [
+	{
+		"fieldname": "crenya_cash_difference_section",
+		"fieldtype": "Section Break",
+		"label": "Cash over/short",
+		"collapsible": 1,
+		"insert_after": CREDIT_PROFILE_FIELDS[-1]["fieldname"],
+	},
+	{
+		"fieldname": CASH_DIFFERENCE_SWITCH_FIELD,
+		"fieldtype": "Check",
+		"label": "Post cash over/short",
+		"default": "0",
+		"insert_after": "crenya_cash_difference_section",
+		"description": "When a closed shift's counted cash differs from the expected cash, post the "
+		"difference as a Journal Entry between the cash account and the account below, at the "
+		"shift's close date.",
+	},
+	{
+		"fieldname": CASH_DIFFERENCE_ACCOUNT_FIELD,
+		"fieldtype": "Link",
+		"label": "Cash over/short account",
+		"options": "Account",
+		"insert_after": CASH_DIFFERENCE_SWITCH_FIELD,
+		"depends_on": f"eval:doc.{CASH_DIFFERENCE_SWITCH_FIELD}",
+		"description": "An expense or income account of the outlet's company (not a group).",
+	},
+]
+
 # Customer's House Account facility (0.14.0, restaurant spec D6/RC14), after ERPNext's credit limits:
 # off for every customer until a System Manager or an Accounts Manager enables one on app.crenya.com.
 # `crenya_credit_changed_at` is written by the Customer validate hook (sync.credit.stamp_credit_change)
@@ -309,6 +343,21 @@ CUSTOM_FIELDS = {
 		# the outlet's expense settings, shared with the restaurant (expenses/fields.py)
 		*EXPENSE_PROFILE_FIELDS,
 		*CREDIT_PROFILE_FIELDS,
+		*CASH_DIFFERENCE_PROFILE_FIELDS,
+	],
+	# the cash over/short entry of a till's shift (0.17.0): its idempotency key
+	"Journal Entry": [
+		{
+			"fieldname": "crenya_pos_shift",
+			"fieldtype": "Link",
+			"options": "Crenya POS Shift",
+			"label": "Crenya POS Shift",
+			"insert_after": "user_remark",
+			"read_only": 1,
+			"no_copy": 1,
+			"print_hide": 1,
+			"search_index": 1,
+		},
 	],
 	"Payment Entry": [
 		# the receipt of a customer's payment taken at the till (Customer Payment aggregate): its

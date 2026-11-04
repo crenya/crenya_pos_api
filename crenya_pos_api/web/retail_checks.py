@@ -9,6 +9,7 @@ Arabic, keyed by `key`), `detail` the values read. Nothing here changes a settin
 import frappe
 from frappe.utils import cint
 
+from crenya_pos_api.setup.install import CASH_DIFFERENCE_ACCOUNT_FIELD, CASH_DIFFERENCE_SWITCH_FIELD
 from crenya_pos_api.sync.approvals import APPROVER_ROLE, required_actions
 from crenya_pos_api.sync.cashier import PIN_HASH_FIELD, staff_roles
 from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, DeviceContext
@@ -25,6 +26,8 @@ CHECK_KEYS = (
 	"cashiers",
 	"approver",
 )
+# the check listed after CHECK_KEYS' while the outlet posts its cash over/short (0.17.0)
+CASH_DIFFERENCE_CHECK_KEY = "cash_difference_account"
 
 
 def _price_list_check(facts):
@@ -124,8 +127,22 @@ def _approver_check(facts):
 	)
 
 
+def _cash_difference_check(facts):
+	"""Only while the outlet posts its cash over/short (0.17.0): the account it posts to."""
+	account = facts.get("cash_difference_account")
+	return check(
+		CASH_DIFFERENCE_CHECK_KEY,
+		OK if account else MISSING,
+		"A cash over/short account",
+		account,
+		"Settings → Cash over/short → Cash over/short account → an expense or income account of the company",
+	)
+
+
 def retail_checks(facts: dict) -> list[dict]:
-	"""The shop's checks of `retail_facts` (pure), in CHECK_KEYS order."""
+	"""The shop's checks of `retail_facts` (pure), in CHECK_KEYS order, then the cash over/short
+	account's while the outlet posts its cash over/short."""
+	extra = [_cash_difference_check(facts)] if facts.get("cash_difference_enabled") else []
 	return [
 		_price_list_check(facts),
 		_tax_template_check(facts),
@@ -135,6 +152,7 @@ def retail_checks(facts: dict) -> list[dict]:
 		_write_off_check(facts),
 		_cashiers_check(facts),
 		_approver_check(facts),
+		*extra,
 	]
 
 
@@ -175,6 +193,8 @@ def retail_facts(profile) -> dict:
 		"cashiers": len(with_pin),
 		"approvers": sum(1 for user in with_pin if APPROVER_ROLE in staff[user]),
 		"approvals_required": bool(required_actions(profile)),
+		"cash_difference_enabled": bool(cint(profile.get(CASH_DIFFERENCE_SWITCH_FIELD))),
+		"cash_difference_account": profile.get(CASH_DIFFERENCE_ACCOUNT_FIELD) or None,
 	}
 
 

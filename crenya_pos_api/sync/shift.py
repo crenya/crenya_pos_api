@@ -135,6 +135,10 @@ def create_shift(ctx, data, notes):
 	from crenya_pos_api.sync.control_log import link_shift
 
 	link_shift(doc)
+	# the outlet's optional cash over/short Journal Entry (0.17.0): never fails the shift
+	from crenya_pos_api.cash_difference import record_for_new_shift
+
+	record_for_new_shift(doc, notes)
 	return doc
 
 

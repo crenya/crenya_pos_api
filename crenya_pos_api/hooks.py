@@ -164,6 +164,8 @@ doc_events = {
 		"validate": [
 			"crenya_pos_api.sync.scale_rules.pos_profile_validate",
 			"crenya_pos_api.expenses.fields.validate_expenses",
+			# the cash over/short account is a ledger of the outlet's company (0.17.0)
+			"crenya_pos_api.cash_difference.validate_profile",
 		],
 	},
 	"Customer": {

@@ -19,7 +19,7 @@ from crenya_pos_api.api.web_admin.credit import (
 	save_credit_limit,
 	settle_customer,
 )
-from crenya_pos_api.api.web_admin.day_close import day_close, day_closes
+from crenya_pos_api.api.web_admin.day_close import day_close, day_closes, post_cash_difference
 from crenya_pos_api.api.web_admin.expenses import (
 	ensure_cash_supplier,
 	expenses_not_booked,
@@ -65,6 +65,7 @@ __all__ = [
 	"outlet_settings",
 	"outlets",
 	"payment_receipt_pdf",
+	"post_cash_difference",
 	"promotions",
 	"refused_sales",
 	"retry_expense_booking",

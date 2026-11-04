@@ -102,7 +102,9 @@ class TestPayloadValidation(unittest.TestCase):
 
 	def test_valid_payload_normalised(self):
 		data = validate_credit_facility_payload(payload())
-		self.assertEqual((data["customer"], data["credit_limit"], data["credit_days"]), ("CUST-1", "50.000", 30))
+		self.assertEqual(
+			(data["customer"], data["credit_limit"], data["credit_days"]), ("CUST-1", "50.000", 30)
+		)
 		self.assertEqual(data["subject_limit"], Decimal("50.000"))
 		self.assertEqual(data["approval"]["approved_by"], "manager@example.com")
 
@@ -124,7 +126,9 @@ class TestPayloadValidation(unittest.TestCase):
 class TestGrantOnUpdate(unittest.TestCase):
 	def granted(self, before="saved", **flags):
 		doc = FakeCustomer(
-			None if before is None else {CREDIT_ENABLED_FIELD: 0}, modified=MODIFIED, **{CREDIT_ENABLED_FIELD: 1}
+			None if before is None else {CREDIT_ENABLED_FIELD: 0},
+			modified=MODIFIED,
+			**{CREDIT_ENABLED_FIELD: 1},
 		)
 		doc["flags"] = frappe._dict(flags)
 		return doc
@@ -132,9 +136,13 @@ class TestGrantOnUpdate(unittest.TestCase):
 	def test_only_on_the_save_of_an_existing_customer(self):
 		self.assertTrue(credit._granted_on_update(self.granted(**{GRANT_FLAG: TILL_ENABLE_GRANT})))
 		# inside insert(): no
-		self.assertFalse(credit._granted_on_update(self.granted(in_insert=True, **{GRANT_FLAG: TILL_ENABLE_GRANT})))
+		self.assertFalse(
+			credit._granted_on_update(self.granted(in_insert=True, **{GRANT_FLAG: TILL_ENABLE_GRANT}))
+		)
 		# a customer never saved: no
-		self.assertFalse(credit._granted_on_update(self.granted(before=None, **{GRANT_FLAG: TILL_ENABLE_GRANT})))
+		self.assertFalse(
+			credit._granted_on_update(self.granted(before=None, **{GRANT_FLAG: TILL_ENABLE_GRANT}))
+		)
 		# other sources and non-strings: no
 		for value in ("till", "web", "desk", "", None, 1, True, ["till_enable"]):
 			self.assertFalse(credit._granted_on_update(self.granted(**{GRANT_FLAG: value})), msg=value)

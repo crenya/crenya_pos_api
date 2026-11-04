@@ -152,7 +152,9 @@ class TestCreditFacilityEvent(CreditCase):
 			{"customer": customer, "credit_enabled": True, "credit_limit": "50.000", "credit_days": 30},
 		)
 		now = state(customer)
-		self.assertEqual((now["enabled"], now["limit"], now["terms"]), (1, Decimal("50"), "House Account 30 days"))
+		self.assertEqual(
+			(now["enabled"], now["limit"], now["terms"]), (1, Decimal("50"), "House Account 30 days")
+		)
 		self.assertIsNotNone(now["changed_at"])
 		self.assertEqual(versions(customer), count + 1)
 		[comment] = comments(customer)
@@ -175,7 +177,9 @@ class TestCreditFacilityEvent(CreditCase):
 		result, _event = self.enable(customer, limit=..., days=14)
 		self.assertOk(result)
 		now = state(customer)
-		self.assertEqual((now["enabled"], now["limit"], now["terms"]), (1, Decimal("200"), "House Account 14 days"))
+		self.assertEqual(
+			(now["enabled"], now["limit"], now["terms"]), (1, Decimal("200"), "House Account 14 days")
+		)
 		self.assertEqual(result["facility"]["credit_limit"], "200.000")
 
 	def test_null_limit_and_days_clear(self):
@@ -208,7 +212,9 @@ class TestCreditFacilityEvent(CreditCase):
 
 	def test_a_checker_that_answers_neither_none_nor_a_reason_refuses(self):
 		customer = make_customer("odd checker")
-		self.refused(customer, "a checker must return None or a reason", checkers=(dummy.FACILITY_BAD_ANSWER,))
+		self.refused(
+			customer, "a checker must return None or a reason", checkers=(dummy.FACILITY_BAD_ANSWER,)
+		)
 
 	def test_refused_walk_in(self):
 		before = state(self.walk_in)

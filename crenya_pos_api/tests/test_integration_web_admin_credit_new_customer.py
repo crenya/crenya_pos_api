@@ -25,6 +25,7 @@ from crenya_pos_api.tests.test_integration_web_admin_credit import (
 	REST_MANAGER_B,
 	RESTAURANT_A,
 	ROW_KEYS_0132,
+	ROW_KEYS_0160,
 	SETTLE_BANK,
 	SHOP_KEYS_0132,
 	TEST_RESTAURANT,
@@ -39,6 +40,8 @@ from crenya_pos_api.web.context import WebAdminContext
 PROVIDER_TEXT = "{name} is a service provider: record its payment on Service providers → Settle"
 # the keys a shop row had in 0.14.0 (0.13.2's and the four added since)
 ROW_KEYS_0140 = ROW_KEYS_0132 | {"credit_enabled", "mobile_no", "credit_sales", "payments"}
+# 0.16.0 added the overdue and credit days keys to every row (`_add_overdue_and_days`)
+ROW_KEYS_0160_ALL = ROW_KEYS_0140 | ROW_KEYS_0160
 SHOP_KEYS_0140 = SHOP_KEYS_0132 | {"credit_on", "owing"}
 
 
@@ -114,7 +117,7 @@ class TestProductSeams(NewCustomerCase):
 			self.assertEqual(set(shop), SHOP_KEYS_0140)
 		after = rows_by_customer(web_admin.credit_customers(self.profile.name))[customer]
 		self.assertEqual(after, row)
-		self.assertEqual(set(row), ROW_KEYS_0140 | {"location"})
+		self.assertEqual(set(row), ROW_KEYS_0160_ALL | {"location"})
 		self.assertEqual(
 			(row["credit_limit"], row["outstanding"], row["over_limit"], row["location"]),
 			("100.000", "150.000", True, None),
@@ -267,7 +270,7 @@ class TestCreateCreditCustomer(NewCustomerCase):
 			location="Al Khuwair,   Way 3021",
 			request_id=request,
 		)
-		self.assertEqual(set(row), ROW_KEYS_0140 - {"credit_sales", "payments"} | {"location"})
+		self.assertEqual(set(row), ROW_KEYS_0160_ALL - {"credit_sales", "payments"} | {"location"})
 		self.assertEqual(
 			(row["name"], row["mobile_no"], row["location"], row["credit_enabled"], row["credit_limit"]),
 			(guest, number, "Al Khuwair, Way 3021", False, None),

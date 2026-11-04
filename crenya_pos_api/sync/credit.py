@@ -54,6 +54,15 @@ def customer_credit_limit(customer, company):
 LIMIT_SOURCES = ("customer", "group", "company")
 
 
+def _group_bypass_keeps_limit() -> bool:
+	"""Whether the installed ERPNext keeps a Customer Group's credit limit when its row bypasses the
+	check (`get_credit_limit_settings`, ERPNext v16 since 2026-11): the pull must answer what
+	ERPNext's own `get_credit_limit` does."""
+	from erpnext.selling.doctype.customer import customer
+
+	return hasattr(customer, "get_credit_limit_settings")
+
+
 def customer_credit_limit_sources(rows, company):
 	"""{customer name: (credit limit as a Decimal or None, where it comes from)} for the customer
 	`rows` (name, customer_group), in three queries for the page: ERPNext's `get_credit_limit`
@@ -75,9 +84,14 @@ def customer_credit_limit_sources(rows, company):
 		for row in found:
 			if row.parent in result:
 				continue
-			# ERPNext's `get_credit_limit` ignores a Customer Group row that bypasses the check
-			# (v15 and v16) and falls to the company's limit
-			bypass = parenttype == "Customer Group" and row.bypass_credit_limit_check
+			# ERPNext's `get_credit_limit` (v15) ignores a Customer Group row that bypasses the check
+			# and falls to the company's limit; since `get_credit_limit_settings` (v16, 2026-11) the
+			# group's limit stands and the bypass only skips the check
+			bypass = (
+				parenttype == "Customer Group"
+				and row.bypass_credit_limit_check
+				and not _group_bypass_keeps_limit()
+			)
 			result[row.parent] = None if bypass else row.credit_limit
 		return result
 

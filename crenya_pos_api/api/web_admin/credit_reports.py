@@ -46,6 +46,8 @@ from crenya_pos_api.api.web_admin.credit import (
 	credit_sales_of,
 	credit_view,
 	excluded_customers,
+	house_account_member,  # re-exported: the reports' rule lives in `credit`
+	house_account_members,
 	outlet_customer_refusal,
 )
 from crenya_pos_api.sync.context import money_precision
@@ -165,13 +167,6 @@ def collection_source(source, created, tracking_since) -> str:
 	if source != "web_desk" or not created or not tracking_since:
 		return source
 	return "before_tracking" if get_datetime(created) < get_datetime(tracking_since) else source
-
-
-def house_account_member(credit_enabled, sold_on_account) -> bool:
-	"""Whether a customer is on the outlet's House Account (pure): its facility is switched on, or the
-	outlet's tills put something on its account in the range. A customer who is only a desk debtor
-	(an ordinary B2B receivable) is not."""
-	return bool(cint(credit_enabled)) or (sold_on_account or 0) > 0
 
 
 def transaction_subtotals(rows, precision) -> tuple[list[dict], list[dict], dict]:
@@ -318,9 +313,8 @@ def _candidates(ctx, first, last, precision) -> tuple[list[str], set]:
 			.run()
 		)
 	]
-	on_account = {
-		name for name, part in credit_sales_of(sold, ctx.company, first, last, precision).items() if part > 0
-	}
+	# the enabled ones are in the pool already: the rest are members by a till sale on account
+	on_account = house_account_members(ctx, sold, first, last, precision)
 	pool = (set(enabled) | on_account) - left_out
 	if on_account - set(enabled):
 		# the sold-on-account ones must also lie inside the outlet's groups and exist
@@ -403,16 +397,11 @@ def customer_refusal(ctx, customer, first, last, precision):
 	an outlet manager (no System Manager or Accounts role) also on the House Account of the outlet:
 	enabled, or sold on account at the company's tills in `first..last`. A desk debtor of the
 	company is not the manager's to read by name."""
-	refusal = outlet_customer_refusal(ctx, customer)
+	# the outlet's customer, and for a manager a member in the range (`credit.house_account_refusal`)
+	refusal = outlet_customer_refusal(ctx, customer, first, last, precision)
 	if not refusal and customer in excluded_customers(ctx):
 		refusal = _("{0} is not on this page").format(customer)
-	if refusal or _is_credit_editor():
-		return refusal
-	enabled = cint(frappe.db.get_value(CUSTOMER, customer, CREDIT_ENABLED_FIELD))
-	sold = 0 if enabled else credit_sales_of([customer], ctx.company, first, last, precision).get(customer)
-	if not house_account_member(enabled, sold):
-		return _("{0} is not on the House Account of {1}").format(customer, ctx.outlet)
-	return None
+	return refusal
 
 
 def credit_outstanding_report(

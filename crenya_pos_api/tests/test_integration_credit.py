@@ -484,15 +484,58 @@ class TestOnAccountInvoice(CreditCase):
 		self.assertEqual(
 			[(row.mode_of_payment, flt(row.amount, 3)) for row in doc.payments], [("Cash", 40.0)]
 		)
-		# one minor unit more on account than the bill leaves: refused, exact, no tolerance
+		# the split off by more than the tolerance (10 minor units): refused, nothing posted
 		off = self.on_account_sale(customer, "100.000", cash="40.000")
-		off["on_account"] = "60.001"
+		off["on_account"] = "60.011"
 		self.assertError(self.push_one(self.event(off)), "total_mismatch", False)
 		self.assertFalse(self.invoices_with_local_id(off["local_id"]))
-		# and one less
 		less = self.on_account_sale(customer, "100.000", cash="40.000")
-		less["on_account"] = "59.999"
+		less["on_account"] = "59.989"
 		self.assertError(self.push_one(self.event(less)), "total_mismatch", False)
+
+	def drifted_sale(self, customer, drift):
+		"""A sale of 100.000 (ERPNext's total) that the till totalled at 100.000 + `drift`, 40.000 in
+		cash and the rest of its own total on account (H2: tax rounding at the till)."""
+		till_total = Decimal("100.000") + Decimal(drift)
+		sale = self.on_account_sale(customer, "100.000", cash="40.000", grand_total=money(till_total))
+		sale["on_account"] = money(till_total - Decimal("40.000"))
+		return sale
+
+	def test_a_drift_within_tolerance_goes_to_the_account_part(self):
+		"""H2: the till's total 1 or 10 minor units off ERPNext's (OMR, 3 decimals): the sale posts, the
+		cash stays what the drawer took, the account part takes the difference and the event says so;
+		11 units off is refused."""
+		customer = make_customer("drift", limit=500)
+		for drift, absorbed in (("0.001", "-0.001"), ("-0.001", "0.001"), ("0.010", "-0.010")):
+			sale = self.drifted_sale(customer, drift)
+			event = self.event(sale)
+			result = self.assertOk(self.push_one(event))
+			doc = frappe.get_doc("Sales Invoice", result["name"])
+			self.assertEqual(
+				(flt(doc.grand_total, 3), flt(doc.paid_amount, 3), flt(doc.outstanding_amount, 3)),
+				(100.0, 40.0, 60.0),
+				msg=drift,
+			)
+			self.assertEqual([flt(row.amount, 3) for row in doc.payments], [40.0])
+			self.assertEqual(result["totals"]["outstanding_amount"], "60.000")
+			note = self.note_of(event)
+			self.assertIn(f"Payment difference {absorbed} absorbed into the on-account part", note)
+			self.assertIn(f"({sale['on_account']} -> 60.000)", note)
+		# a till total 11 units off: refused by the total check, nothing posted
+		eleven = self.drifted_sale(customer, "0.011")
+		self.assertError(self.push_one(self.event(eleven)), "total_mismatch", False)
+		self.assertFalse(self.invoices_with_local_id(eleven["local_id"]))
+
+	def test_a_drift_on_a_sale_wholly_on_account(self):
+		customer = make_customer("driftfull", limit=500)
+		sale = self.on_account_sale(customer, "100.000", grand_total="100.001")
+		sale["on_account"] = "100.001"
+		event = self.event(sale)
+		result = self.assertOk(self.push_one(event))
+		doc = frappe.get_doc("Sales Invoice", result["name"])
+		self.assertEqual((doc.is_pos, len(doc.payments)), (0, 0))
+		self.assertEqual(flt(doc.outstanding_amount, 3), 100.0)
+		self.assertIn("absorbed into the on-account part (100.001 -> 100.000)", self.note_of(event))
 
 	def test_fully_on_account_posts_without_pos(self):
 		customer = make_customer("full", limit=500)
@@ -761,22 +804,64 @@ class TestCreditReturn(CreditCase):
 		self.assertEqual([flt(row.amount, 3) for row in doc.payments], [-20.0])
 		self.assertEqual(self.outstanding(sold["name"]), 30.0)
 
-	def test_the_return_split_is_exact(self):
+	def test_the_return_split_beyond_tolerance_is_refused(self):
 		customer = make_customer("retexact", limit=500)
 		sale, sold = self.sold(customer)
 		short = self.credit_return(
-			sale, "30.000", payments=[{"mode_of_payment": fixtures.CASH, "amount": "-19.999"}]
+			sale, "30.000", payments=[{"mode_of_payment": fixtures.CASH, "amount": "-19.989"}]
 		)
 		self.assertError(self.push_one(self.event(short)), "total_mismatch", False)
-		none = self.credit_return(sale, "49.999")
+		none = self.credit_return(sale, "49.989")
 		self.assertError(self.push_one(self.event(none)), "total_mismatch", False)
 		self.assertEqual(self.outstanding(sold["name"]), 60.0)
 
 	def test_a_credit_above_the_return_is_refused(self):
 		customer = make_customer("retmore", limit=500)
 		sale, _sold = self.sold(customer)
-		more = self.credit_return(sale, "50.001")
+		more = self.credit_return(sale, "50.011")
 		self.assertError(self.push_one(self.event(more)), "validation", False)
+
+	def test_a_drift_within_tolerance_goes_to_the_credit(self):
+		"""H2: a credited return whose till total is 1 or 10 minor units off ERPNext's (OMR): it posts,
+		the refund stays what the drawer paid out, the credit to the account takes the difference and
+		the event says so; the original's outstanding falls by the credit as posted."""
+		customer = make_customer("retdrift", limit=500)
+		for drift, credit, absorbed in (
+			("0.001", "30.001", "0.001"),
+			("-0.001", "29.999", "-0.001"),
+			("0.010", "30.010", "0.010"),
+		):
+			sale, sold = self.sold(customer)
+			ret = self.credit_return(
+				sale,
+				credit,
+				payments=[{"mode_of_payment": fixtures.CASH, "amount": "-20.000"}],
+				client_totals={"grand_total": money(Decimal("-50.000") - Decimal(drift))},
+			)
+			event = self.event(ret)
+			result = self.assertOk(self.push_one(event))
+			doc = frappe.get_doc("Sales Invoice", result["name"])
+			self.assertEqual(flt(doc.grand_total, 3), -50.0, msg=drift)
+			self.assertEqual([flt(row.amount, 3) for row in doc.payments], [-20.0])
+			# 60.000 on account less the 30.000 credited as posted
+			self.assertEqual(self.outstanding(sold["name"]), 30.0, msg=drift)
+			note = self.note_of(event)
+			self.assertIn(f"Payment difference {absorbed} absorbed into the credit to the account", note)
+			self.assertIn(f"({credit} -> 30.000)", note)
+		# a whole return credited at the till's total, one unit above ERPNext's: credited 50.000
+		sale, sold = self.sold(customer)
+		whole = self.credit_return(sale, "50.001", client_totals={"grand_total": "-50.001"})
+		event = self.event(whole)
+		self.assertOk(self.push_one(event))
+		self.assertEqual(self.outstanding(sold["name"]), 10.0)
+		self.assertIn("(50.001 -> 50.000)", self.note_of(event))
+		# 11 units off the split: refused, the original untouched
+		sale, sold = self.sold(customer)
+		eleven = self.credit_return(
+			sale, "30.011", payments=[{"mode_of_payment": fixtures.CASH, "amount": "-20.000"}]
+		)
+		self.assertError(self.push_one(self.event(eleven)), "total_mismatch", False)
+		self.assertEqual(self.outstanding(sold["name"]), 60.0)
 
 	def test_a_return_without_credit_offset_refunds_as_before(self):
 		customer = make_customer("retplain", limit=500)

@@ -26,6 +26,12 @@ customer's House Account facility on or off (`save_credit_facility`, restaurant 
 Recording a payment (`settle_customer`) is for whoever reads the page (Q2), in a non-cash mode of
 the outlet only (D5, D7: cash is taken at the till, where a shift counts it), whatever the outlet's
 credit switch says (a customer who still owes can pay).
+
+**Desk debtors (M2, 0.16.3).** An outlet manager (no System Manager or Accounts Manager role) lists,
+reads (open bills, payments, receipts) and settles only the customers on the House Account of the
+outlet's company: the facility on, or sold on account at the company's tills
+(`house_account_refusal`, the same rule as the House Account reports). The company's desk (B2B)
+debtors are the accountants' alone.
 """
 
 import json
@@ -216,12 +222,38 @@ def _outlet_customer_filter(ctx):
 	return filters
 
 
-def _balances(ctx):
+def _maybe_members(ctx, invoice):
+	"""A SQL condition on `invoice.customer` (a Sales Invoice) that every House Account member of the
+	outlet's company meets: the facility on, or a till sale of the company not paid in full at the
+	sale (`credit_sales_of`'s wide cut). A pre-filter only: `house_account_members` decides."""
+	customer = frappe.qb.DocType(CUSTOMER)
+	sale = frappe.qb.DocType("Sales Invoice").as_("till_sale")
+	enabled = frappe.qb.from_(customer).select(customer.name).where(customer[CREDIT_ENABLED_FIELD] == 1)
+	sold = (
+		frappe.qb.from_(sale)
+		.select(sale.customer)
+		.where(
+			(sale.company == ctx.company)
+			& (sale.docstatus == 1)
+			& (sale.is_return == 0)
+			& sale.pos_profile.isnotnull()
+			& (sale.pos_profile != "")
+			& (sale.paid_amount + sale.write_off_amount + sale.loyalty_amount < sale.grand_total + 1)
+		)
+	)
+	return invoice.customer.isin(enabled) | invoice.customer.isin(sold)
+
+
+def _balances(ctx, members_only=False):
 	"""({customer: open invoices}, {customer: sum of outstanding amounts}, more) of the company's
 	submitted sales, two grouped queries cut at MAX_CANDIDATES by the biggest balance: the
-	candidates of the list, read without a call per customer."""
+	candidates of the list, read without a call per customer. `members_only` (a user without
+	CREDIT_EDITOR_ROLES, M2): only customers who may be on the House Account (`_maybe_members`), so
+	the company's desk debtors take no place in the cut."""
 	invoice = frappe.qb.DocType("Sales Invoice")
 	company = (invoice.company == ctx.company) & (invoice.docstatus == 1)
+	if members_only:
+		company = company & _maybe_members(ctx, invoice)
 	balance_sum = Sum(invoice.outstanding_amount)
 	balances = (
 		frappe.qb.from_(invoice)
@@ -321,7 +353,9 @@ def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 	"""(rows, more): the outlet's credit customers (`only`: that one customer alone), over the limit
 	first, then the biggest balance. A shop lists those with a limit of their own for its company or
 	a balance, a restaurant those with the House Account on or a balance (`_own_candidates`), less
-	the customers the product leaves out (`excluded_customers`; `only` is answered whatever).
+	the customers the product leaves out (`excluded_customers`; `only` is answered whatever). For a
+	user without CREDIT_EDITOR_ROLES only the House Account's members (`house_account_members`: the
+	facility on, or sold on account at the company's tills), not the company's desk debtors (M2).
 	Candidates and the first ordering come from grouped queries; ERPNext's exact balance is read for
 	the MAX_CREDIT_ROWS listed only, and they are ordered again."""
 	from erpnext.selling.doctype.customer.customer import get_customer_outstanding
@@ -346,10 +380,14 @@ def credit_rows(ctx, only=None) -> tuple[list[dict], bool]:
 		}
 		balances = {}
 	else:
-		counts, balances, more = _balances(ctx)
+		members_only = not _is_credit_editor()
+		counts, balances, more = _balances(ctx, members_only)
 		own = _own_candidates(ctx)
 		more = more or len(own) > MAX_CANDIDATES
 		names = sorted((set(own[:MAX_CANDIDATES]) | set(counts) | set(balances)) - excluded_customers(ctx))
+		if members_only:
+			# M2: an outlet manager lists the House Account's members only, never a desk debtor
+			names = sorted(house_account_members(ctx, names, precision=precision))
 	if not names:
 		return [], False
 	filters = {"name": ["in", names]}
@@ -440,11 +478,12 @@ def credit_sale_part(invoice, precision) -> Decimal:
 	return max(part, Decimal(0))
 
 
-def credit_sales_of(customers, company, first, last, precision) -> dict:
+def credit_sales_of(customers, company, first, last, precision, tills_only=False) -> dict:
 	"""{customer: Decimal} (CC8): over each customer's submitted sales of `company` posted in the
 	range, what they put on the account (`credit_sale_part`) less what returns of them credited back
 	to it (`credited_to_account`, a House Account cancel included; never below 0 per sale). A
-	cancelled sale is not submitted and counts nothing.
+	cancelled sale is not submitted and counts nothing. `tills_only`: the sales of the company's
+	tills alone (a POS Profile's), not a desk invoice.
 
 	Left out: a credit note that is no return of a sale of the range (a standalone one, or one
 	against a sale posted before it) and anything booked outside Sales Invoices afterwards (a
@@ -461,6 +500,8 @@ def credit_sales_of(customers, company, first, last, precision) -> dict:
 		# total by less than 1), the exact part is `credit_sale_part` below
 		& (invoice.paid_amount + invoice.write_off_amount + invoice.loyalty_amount < invoice.grand_total + 1)
 	)
+	if tills_only:
+		where = where & invoice.pos_profile.isnotnull() & (invoice.pos_profile != "")
 	if first:
 		where = where & (invoice.posting_date >= first)
 	if last:
@@ -595,6 +636,48 @@ def credit_customers(outlet: str, from_date: str | None = None, to_date: str | N
 
 def _is_credit_editor() -> bool:
 	return bool(set(frappe.get_roles()) & set(CREDIT_EDITOR_ROLES))
+
+
+# House Account membership (M2): the one rule of which customers an outlet manager reads and settles
+
+
+def house_account_member(credit_enabled, sold_on_account) -> bool:
+	"""Whether a customer is on the outlet's House Account (pure): its facility is switched on, or the
+	company's tills put something on its account. A customer who is only a desk debtor (an ordinary
+	B2B receivable) is not."""
+	return bool(cint(credit_enabled)) or (sold_on_account or 0) > 0
+
+
+def house_account_members(ctx, customers, first=None, last=None, precision=None) -> set[str]:
+	"""The ones of `customers` on the House Account of the outlet's company (`house_account_member`):
+	the facility on, or sold on account at the company's tills (`credit_sales_of`, `tills_only`) in
+	`first`..`last` (open on a side left None; both None: ever). A few grouped queries."""
+	names = sorted({name for name in customers or () if name})
+	if not names:
+		return set()
+	enabled = set(
+		frappe.get_all(CUSTOMER, filters={"name": ["in", names], CREDIT_ENABLED_FIELD: 1}, pluck="name")
+	)
+	rest = [name for name in names if name not in enabled]
+	sold = credit_sales_of(
+		rest,
+		ctx.company,
+		first,
+		last,
+		money_precision(ctx.currency) if precision is None else precision,
+		tills_only=True,
+	)
+	return enabled | {name for name in rest if house_account_member(0, sold.get(name))}
+
+
+def house_account_refusal(ctx, customer, first=None, last=None, precision=None) -> str | None:
+	"""Why the session user may not read or settle `customer` on the outlet's credit pages for not
+	being on its House Account, or None. A System Manager or an Accounts Manager (CREDIT_EDITOR_ROLES)
+	reads every debtor of the company; an outlet manager only the House Account's members
+	(`house_account_members`): a desk debtor of the company is not the manager's to read or settle."""
+	if _is_credit_editor() or customer in house_account_members(ctx, [customer], first, last, precision):
+		return None
+	return _("{0} is not on the House Account of {1}").format(str(customer)[:140], ctx.outlet)
 
 
 def credit_view(outlet) -> WebAdminContext:
@@ -1153,15 +1236,17 @@ def _insert_credit_customer(ctx, data, enabled, limit, request, precision, group
 # open bills and Settle (RC10, D5, D7, Q2)
 
 
-def outlet_customer_refusal(ctx, customer):
+def outlet_customer_refusal(ctx, customer, first=None, last=None, precision=None):
 	"""Why `customer` has no open bills or payments on the outlet's page (the user's words), or None:
 	a customer the outlet's tills may sell to (`customer_in_outlet`), never its default (walk-in)
-	customer."""
+	customer, and for a user without CREDIT_EDITOR_ROLES on the House Account
+	(`house_account_refusal`, sold on account at the company's tills in `first`..`last`, default
+	ever)."""
 	if not customer_in_outlet(ctx, customer):
 		return _("Customer {0} is not a customer of {1}").format(str(customer)[:140], ctx.outlet)
 	if customer == ctx.profile.get("customer"):
 		return _("{0} is the outlet's default customer and has no account").format(customer)
-	return None
+	return house_account_refusal(ctx, customer, first, last, precision)
 
 
 def _require_outlet_customer(ctx, customer):

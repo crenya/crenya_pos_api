@@ -319,6 +319,7 @@ class TestSaveCreditFacility(WebCreditCase):
 	def test_save_refuses_customer_of_other_company(self):
 		"""ERPNext's Customer has no company: the outlet's customers are those its tills may sell to
 		(inside its customer groups), less its walk-in and another company's internal customer."""
+
 		# `represents_company` is unique on the site: free it of any customer a test left holding it,
 		# and again when this test is done
 		def free():

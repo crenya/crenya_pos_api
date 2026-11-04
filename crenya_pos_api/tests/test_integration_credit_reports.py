@@ -787,7 +787,9 @@ class TestTransactions(OutstandingCase):
 		frappe.db.set_value("Sales Invoice", sold["name"], "customer", provider)
 		frappe.db.set_value("Sales Invoice", returned, "customer", provider)
 		frappe.db.set_value("Sales Invoice", walk_in_sold["name"], "customer", self.profile.customer)
-		pays = frappe.get_all("Payment Entry", filters={"party": kept, "crenya_shift_id": shift}, pluck="name")
+		pays = frappe.get_all(
+			"Payment Entry", filters={"party": kept, "crenya_shift_id": shift}, pluck="name"
+		)
 		self.assertEqual(len(pays), 2)
 		frappe.db.set_value("Payment Entry", pays[0], "party", provider)
 		frappe.db.set_value("Payment Entry", pays[1], "party", self.profile.customer)

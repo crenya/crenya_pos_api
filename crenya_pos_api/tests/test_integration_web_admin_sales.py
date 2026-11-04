@@ -8,7 +8,7 @@ Run with: bench --site <test-site> run-tests --app crenya_pos_api --module creny
 from decimal import Decimal
 
 import frappe
-from frappe.utils import nowdate
+from frappe.utils import add_days, nowdate
 
 from crenya_pos_api.api import web_admin
 from crenya_pos_api.sync.approvals import APPROVER_ROLE
@@ -233,7 +233,7 @@ def drop_permissions(user):
 
 class TestZCompanyScope(SalesCase):
 	def test_z_other_company_manager_refused(self):
-		"""Review W2 M1 (T12 F7): a manager limited to another company opens neither this shop's Z nor
+		"""Review W2 M1 (T12 F7); the list's range is a day either side (the site's time zone): a manager limited to another company opens neither this shop's Z nor
 		its list; limited to this company, both; a System Manager is unchanged."""
 		name = self.close(new_id())
 		self.addCleanup(drop_permissions, MANAGER)
@@ -242,13 +242,19 @@ class TestZCompanyScope(SalesCase):
 		with self.assertRaises(frappe.PermissionError):
 			web_admin.day_close(name)
 		with self.assertRaises(frappe.PermissionError):
-			web_admin.day_closes(nowdate(), nowdate(), self.profile.name)
+			web_admin.day_closes(add_days(nowdate(), -1), add_days(nowdate(), 1), self.profile.name)
 		frappe.set_user("Administrator")
 		allow_company(MANAGER, fixtures.COMPANY)
 		frappe.set_user(MANAGER)
 		self.assertEqual(web_admin.day_close(name)["shift"], name)
 		self.assertIn(
-			name, [r["shift"] for r in web_admin.day_closes(nowdate(), nowdate(), self.profile.name)["rows"]]
+			name,
+			[
+				r["shift"]
+				for r in web_admin.day_closes(
+					add_days(nowdate(), -1), add_days(nowdate(), 1), self.profile.name
+				)["rows"]
+			],
 		)
 		frappe.set_user("Administrator")
 		self.assertEqual(web_admin.day_close(name)["shift"], name)

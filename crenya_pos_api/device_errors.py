@@ -32,6 +32,8 @@ from crenya_pos_api.web.context import invalid, refuse
 DEVICE_DOCTYPE = "Crenya POS Device"
 MAX_PER_CALL = 5
 DEDUPE_SECONDS = 600
+# a report id (`id`) is remembered this long per device
+REPORT_ID_SECONDS = 7 * 24 * 3600
 # a report's body is read up to this size (five errors at their longest fit well inside)
 MAX_PAYLOAD_BYTES = 64 * 1024
 # Error Log titles longer than this are cut
@@ -56,6 +58,9 @@ def clean(item):
 	if not out["message"]:
 		return None
 	out["device_id"] = cstr(item.get("device_id")).strip()[:140]
+	# the till's own id of the report (0.17.0): a report sent again (a timeout, or relayed by a hub
+	# after the till sent it) is logged once
+	out["id"] = cstr(item.get("id")).strip()[:64]
 	return out
 
 
@@ -111,7 +116,14 @@ def _device_of(ctx, device_id, allowed_types, hub_types):
 
 
 def _seen_recently(device, error):
-	"""Whether this device logged this error within DEDUPE_SECONDS (and marks it seen)."""
+	"""Whether this device logged this error within DEDUPE_SECONDS, or this report id (`id`) within
+	REPORT_ID_SECONDS (and marks both seen)."""
+	if error.get("id"):
+		id_digest = hashlib.sha256(f"{device}\0{error['id']}".encode()).hexdigest()
+		id_key = f"{CACHE_PREFIX}id:{id_digest}"
+		if frappe.cache.get_value(id_key, expires=True):
+			return True
+		frappe.cache.set_value(id_key, 1, expires_in_sec=REPORT_ID_SECONDS)
 	digest = hashlib.sha256(f"{device}\0{error['kind']}\0{error['message']}".encode()).hexdigest()
 	key = f"{CACHE_PREFIX}{digest}"
 	if frappe.cache.get_value(key, expires=True):

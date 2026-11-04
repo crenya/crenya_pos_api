@@ -14,7 +14,8 @@ from crenya_pos_api.sync.context import DEFAULT_DEVICE_TYPE, get_device_context
 
 @frappe.whitelist(methods=["POST"])
 def report(device_id: str | None = None, errors: list | str | None = None) -> dict:
-	"""Logs up to five errors of the till: each {"message", "detail"?, "kind"?, "app"?, "version"?,
+	"""Logs up to five errors of the till: each {"id"? (the till's report id: logged once), "message",
+	"detail"?, "kind"?, "app"?, "version"?,
 	"at"?}. Answers {"logged", "skipped"}; HTTP 429 over the till's hourly limit."""
 	request = getattr(frappe.local, "request", None)
 	device_errors.check_payload_size(getattr(request, "content_length", None))

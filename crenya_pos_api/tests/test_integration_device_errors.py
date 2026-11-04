@@ -109,6 +109,30 @@ class TestDeviceErrors(SyncCase):
 		# another till is not held back
 		self.assertEqual(self.report(self.till(), [{"message": f"fine {marker}"}])["logged"], 1)
 
+	def test_relayed_by_a_master_stored_once_under_the_child(self):
+		"""A paired till's reports reach the server through its master, which calls under the child's
+		device id (as it forwards the child's control log): logged under the child, once per report
+		id, and counted against the child's own hourly cap."""
+		master = self.till("Master till")
+		child = self.till("Paired till")
+		marker = uuid.uuid4().hex
+		report = {"id": f"err-{marker}", "message": f"relayed {marker}", "kind": "panic", "version": "0.11.0"}
+		self.assertEqual(self.report(child, [report]), {"logged": 1, "skipped": 0})
+		# the master forwards it again after a timeout: not logged twice
+		self.assertEqual(
+			self.report(child, [dict(report, message=f"relayed again {marker}")]), {"logged": 0, "skipped": 1}
+		)
+		rows = self.logged(child, marker)
+		self.assertEqual(len(rows), 1)
+		self.assertIn("Paired till", rows[0].error)
+		self.assertEqual(self.logged(master, marker), [])
+		# the child's cap is its own: 2 of its 30 used, the master's untouched
+		for index in range(device_errors.RETAIL_PER_HOUR - 2):
+			self.report(child, [{"message": f"more {index} {marker}"}])
+		with self.assertRaises(frappe.TooManyRequestsError):
+			self.report(child, [{"message": f"over {marker}"}])
+		self.assertEqual(self.report(master, [{"message": f"master {marker}"}])["logged"], 1)
+
 	def test_restaurant_device_type_refused(self):
 		device_id = self.till("Counter", device_type="restaurant_pos")
 		with self.assertRaises(frappe.PermissionError):

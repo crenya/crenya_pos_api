@@ -136,6 +136,17 @@ class DeviceErrorsCase(unittest.TestCase):
 		# another device's same error is its own
 		self.assertEqual(self.restaurant(context(name="hub-2"), [error]), {"logged": 1, "skipped": 0})
 
+	def test_a_report_id_is_logged_once(self):
+		till = context(device_type="till", name="till-1")
+		first = {"id": "r-1", "message": "boom", "kind": "panic"}
+		self.assertEqual(self.retail(till, [first]), {"logged": 1, "skipped": 0})
+		# the same report again (resent, or relayed by the hub) after the content window: still once
+		self.assertEqual(self.retail(till, [dict(first, message="boom again")]), {"logged": 0, "skipped": 1})
+		# the same id of another till is that till's own
+		self.assertEqual(
+			self.retail(context(device_type="till", name="till-2"), [first]), {"logged": 1, "skipped": 0}
+		)
+
 	def test_at_most_five_per_call_and_the_fields_cut(self):
 		errors = [{"message": f"error {i}", "detail": "x" * 9000} for i in range(8)]
 		self.assertEqual(self.restaurant(context(), errors), {"logged": 5, "skipped": 3})

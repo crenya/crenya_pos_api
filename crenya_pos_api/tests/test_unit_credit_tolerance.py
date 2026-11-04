@@ -147,6 +147,14 @@ class TestCreditOffsetTolerance(unittest.TestCase):
 		self.assertEqual(credit, Decimal("50.000"))
 		self.assertEqual(doc.payments, [])
 
+	def test_a_credit_that_would_go_negative_leaves_it_to_the_cash_row(self):
+		"""Within tolerance as on a plain return: the refund row takes it, the credit stays >= 0."""
+		doc = Doc("-50.000", [("Cash", "-50.001")])
+		(_on_account, credit), notes = reconcile(doc, credit_offset=Decimal("0.002"))
+		self.assertEqual(credit, Decimal("0.002"))
+		self.assertEqual(amounts(doc), [-49.998])
+		self.assertIn("absorbed into Cash", notes[0])
+
 	def test_eleven_minor_units_are_refused(self):
 		for till in ("30.011", "29.989"):
 			with self.assertRaises(SyncError) as caught:

@@ -5,6 +5,7 @@ import re
 import frappe
 from frappe.utils import cint, get_system_timezone, now
 
+from crenya_pos_api.device_errors import FEATURE_DEVICE_ERRORS
 from crenya_pos_api.expenses.booking import expenses_supported, settings_block
 from crenya_pos_api.expenses.product import RETAIL
 from crenya_pos_api.sync import device_user
@@ -512,6 +513,8 @@ def bootstrap(ctx):
 		doc["credit"] = {"enabled": bool(cint(profile.get(CREDIT_SALES_FIELD)))}
 		# 0.17.0: the till sends its shift's store-control events at close (Crenya POS Control Log)
 		doc["features"][FEATURE_CONTROL_LOG] = 1
+		# 0.17.0: the till sends its own errors (api.device_errors.report) for the Error Log
+		doc["features"][FEATURE_DEVICE_ERRORS] = 1
 		# expenses paid out of the drawer (0.13.0): only on a site with erptrue_app's POS Expense, so
 		# the till hides Expenses everywhere else
 		if expenses_supported():

@@ -130,6 +130,15 @@ def create_shift(ctx, data, notes):
 
 	# the device was authorized by get_device_context; nobody may create shifts in the desk
 	doc.insert(ignore_permissions=True)
+	# the shift's control log chunks that arrived first (0.17.0); imported here: control_log
+	# extends aggregates, which imports this module
+	from crenya_pos_api.sync.control_log import link_shift
+
+	link_shift(doc)
+	# the outlet's optional cash over/short Journal Entry (0.17.0): never fails the shift
+	from crenya_pos_api.cash_difference import record_for_new_shift
+
+	record_for_new_shift(doc, notes)
 	return doc
 
 

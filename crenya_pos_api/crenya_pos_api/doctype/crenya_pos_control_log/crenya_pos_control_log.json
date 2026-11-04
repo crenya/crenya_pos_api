@@ -1,0 +1,130 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-11-04 12:00:00.000000",
+ "description": "A closed shift's store-control events (line voids, bill clears, no-sales, tax changes, manager approvals), sent by the till in chunks",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "local_id",
+  "device",
+  "pos_profile",
+  "company",
+  "column_break_main",
+  "shift_local_id",
+  "shift",
+  "chunk",
+  "chunks",
+  "events_section",
+  "events"
+ ],
+ "fields": [
+  {
+   "description": "The chunk's id at the till: <shift local id>:<chunk>, unique per device",
+   "fieldname": "local_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Local ID",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "device",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Device",
+   "options": "Crenya POS Device",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "pos_profile",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "POS Profile",
+   "options": "POS Profile",
+   "read_only": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shift_local_id",
+   "fieldtype": "Data",
+   "label": "Shift Local ID",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Filled when the shift is on the server",
+   "fieldname": "shift",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Shift",
+   "options": "Crenya POS Shift",
+   "read_only": 1
+  },
+  {
+   "fieldname": "chunk",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Chunk",
+   "read_only": 1
+  },
+  {
+   "fieldname": "chunks",
+   "fieldtype": "Int",
+   "label": "Chunks",
+   "read_only": 1
+  },
+  {
+   "fieldname": "events_section",
+   "fieldtype": "Section Break",
+   "label": "Events"
+  },
+  {
+   "fieldname": "events",
+   "fieldtype": "Table",
+   "label": "Events",
+   "options": "Crenya POS Control Event",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 0,
+ "is_submittable": 0,
+ "links": [],
+ "modified": "2026-11-04 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Crenya Pos Api",
+ "name": "Crenya POS Control Log",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  }
+ ],
+ "search_fields": "shift_local_id,device",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "local_id",
+ "track_changes": 0
+}

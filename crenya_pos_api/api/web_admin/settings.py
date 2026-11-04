@@ -16,7 +16,14 @@ from frappe.utils import cint, cstr
 from crenya_pos_api.api.web_admin.scope import manage
 from crenya_pos_api.expenses import booking as expenses_booking
 from crenya_pos_api.expenses.fields import EXPENSE_PROFILE_FIELDS
-from crenya_pos_api.setup.install import CREDIT_PROFILE_FIELDS, CUSTOM_FIELDS, STORE_CONTROL_FIELDS
+from crenya_pos_api.setup.install import (
+	CASH_DIFFERENCE_ACCOUNT_FIELD,
+	CASH_DIFFERENCE_PROFILE_FIELDS,
+	CASH_DIFFERENCE_SWITCH_FIELD,
+	CREDIT_PROFILE_FIELDS,
+	CUSTOM_FIELDS,
+	STORE_CONTROL_FIELDS,
+)
 from crenya_pos_api.sync import scale_rules as till_scale_rules
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.locale_data import DENOMINATION_DOCTYPE, DENOMINATION_KINDS
@@ -79,6 +86,9 @@ OWNER_ONLY = frozenset(
 		expenses_booking.CASH_SUPPLIER_FIELD,
 		expenses_booking.SUPPLIER_GROUP_FIELD,
 		expenses_booking.TAX_TEMPLATE_FIELD,
+		# the cash over/short Journal Entry (0.17.0): the switch and its account
+		CASH_DIFFERENCE_SWITCH_FIELD,
+		CASH_DIFFERENCE_ACCOUNT_FIELD,
 	}
 )
 # shown, never written from the web (the item groups decide what a till sells: the Items pages)
@@ -125,9 +135,15 @@ def settings_fields() -> list[dict]:
 			field = _custom_field(name) if name in custom else _meta_field(meta, name)
 			if field is not None:
 				fields.append(field)
-	# then the Credit sales and Expenses sections (their field definitions are this app's, one list
-	# for the install and the form)
-	return fields + list(STORE_CONTROL_FIELDS) + list(EXPENSE_PROFILE_FIELDS) + list(CREDIT_PROFILE_FIELDS)
+	# then the Store controls, Expenses, Credit sales and Cash over/short sections (their field
+	# definitions are this app's, one list for the install and the form)
+	return (
+		fields
+		+ list(STORE_CONTROL_FIELDS)
+		+ list(EXPENSE_PROFILE_FIELDS)
+		+ list(CREDIT_PROFILE_FIELDS)
+		+ list(CASH_DIFFERENCE_PROFILE_FIELDS)
+	)
 
 
 def _names(doctype, filters):

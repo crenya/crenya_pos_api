@@ -5,6 +5,7 @@ Everything here raises `SyncError(validation)` with a message naming the bad
 field, and returns normalized values (Decimals, ints) for the builders.
 """
 
+import json
 import re
 import unicodedata
 from datetime import date, time
@@ -21,6 +22,8 @@ AGGREGATE_SHIFT = "Crenya POS Shift"
 AGGREGATE_EXPENSE = "POS Expense"
 AGGREGATE_CUSTOMER_PAYMENT = "Customer Payment"
 AGGREGATE_CREDIT_FACILITY = "Customer Credit Facility"
+# a closed shift's store-control events, in chunks (0.17.0, retail till 0.11.0)
+AGGREGATE_CONTROL_LOG = "Crenya POS Control Log"
 AGGREGATE_TYPES = (
 	AGGREGATE_CUSTOMER,
 	AGGREGATE_SALES_INVOICE,
@@ -28,6 +31,7 @@ AGGREGATE_TYPES = (
 	AGGREGATE_EXPENSE,
 	AGGREGATE_CUSTOMER_PAYMENT,
 	AGGREGATE_CREDIT_FACILITY,
+	AGGREGATE_CONTROL_LOG,
 )
 OPERATIONS = ("submit",)
 
@@ -789,4 +793,85 @@ def validate_shift_payload(payload):
 		"store_controls": validate_store_controls(payload.get("store_controls")),
 		# optional since 0.13.0: credit sales and receipts of the shift (zeros when absent)
 		"on_account": validate_on_account_summary(payload.get("on_account")),
+	}
+
+
+# a Crenya POS Control Log chunk (0.17.0): at most this many events, each one's `detail` at most
+# this many bytes as JSON (the till cuts it), and amounts at most this many decimals as written
+# (OMR, KWD and BHD have 3; the currency's own precision is checked when the chunk is stored)
+MAX_CONTROL_EVENTS = 200
+MAX_CONTROL_DETAIL_BYTES = 2048
+MAX_CONTROL_DECIMALS = 3
+MAX_CONTROL_TEXT_LENGTH = 500
+_CONTROL_EVENT_TYPE_RE = re.compile(r"^[a-z_]{1,40}$")
+
+
+def _written_decimals(value) -> int:
+	"""How many decimals a Decimal carries as written ("1.2500" -> 4, "2" -> 0)."""
+	exponent = value.as_tuple().exponent
+	return -exponent if isinstance(exponent, int) and exponent < 0 else 0
+
+
+def _control_event(row, index):
+	label = f"events[{index}]"
+	if not isinstance(row, dict):
+		_fail(f"{label} must be an object")
+	event_type = row.get("event_type")
+	if not isinstance(event_type, str) or not _CONTROL_EVENT_TYPE_RE.match(event_type):
+		_fail(f"{label}.event_type must be lower case letters and _ (at most 40)")
+	amount = _decimal(row.get("amount"), f"{label}.amount", allow_none=True)
+	if amount is not None and _written_decimals(amount) > MAX_CONTROL_DECIMALS:
+		_fail(f"{label}.amount {row.get('amount')} has more than {MAX_CONTROL_DECIMALS} decimals")
+	detail = row.get("detail")
+	if detail is not None and not isinstance(detail, dict):
+		_fail(f"{label}.detail must be an object")
+	detail_json = None
+	if detail:
+		detail_json = json.dumps(detail, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+		if len(detail_json.encode("utf-8")) > MAX_CONTROL_DETAIL_BYTES:
+			_fail(f"{label}.detail is larger than {MAX_CONTROL_DETAIL_BYTES} bytes")
+	return {
+		"seq": _int(row.get("seq"), f"{label}.seq", minimum=0),
+		# a type this server does not know is stored as is (never refuse what the till did)
+		"event_type": event_type,
+		"at": _validate_utc_datetime(row.get("at"), f"{label}.at"),
+		"actor": _optional_str(row, "actor", f"{label}.actor"),
+		"approver": _optional_str(row, "approver", f"{label}.approver"),
+		"action": _optional_str(row, "action", f"{label}.action"),
+		"subject": _optional_str(row, "subject", f"{label}.subject", max_length=MAX_CONTROL_TEXT_LENGTH),
+		"amount": amount,
+		"item_code": _optional_str(row, "item_code", f"{label}.item_code"),
+		"line_no": _int(row.get("line_no"), f"{label}.line_no", minimum=0, allow_none=True),
+		"reason": _optional_str(row, "reason", f"{label}.reason", max_length=MAX_CONTROL_TEXT_LENGTH),
+		"outside_shift": _flag(row.get("outside_shift"), f"{label}.outside_shift"),
+		"detail": detail_json,
+	}
+
+
+def validate_control_log_payload(payload):
+	"""A Crenya POS Control Log chunk (pure; SyncError VALIDATION otherwise): `local_id`
+	("<shift_local_id>:<chunk>"), `shift_local_id`, `pos_profile`, `chunk` of `chunks` and at most
+	MAX_CONTROL_EVENTS `events` {seq, event_type, at, actor, approver, action, subject, amount,
+	item_code, line_no, reason, outside_shift, detail}. Event times come back as aware UTC datetimes,
+	amounts as Decimals, `detail` as compact JSON text (or None)."""
+	if not isinstance(payload, dict):
+		_fail("payload must be an object")
+	chunk = _int(payload.get("chunk"), "chunk", minimum=1)
+	chunks = _int(payload.get("chunks"), "chunks", minimum=1)
+	if chunk > chunks:
+		_fail("chunk must not be greater than chunks")
+	events = payload.get("events")
+	if events is None:
+		events = []
+	if not isinstance(events, list):
+		_fail("events must be a list")
+	if len(events) > MAX_CONTROL_EVENTS:
+		_fail(f"a control log chunk may have at most {MAX_CONTROL_EVENTS} events")
+	return {
+		"local_id": _required_str(payload, "local_id"),
+		"shift_local_id": _required_str(payload, "shift_local_id"),
+		"pos_profile": _required_str(payload, "pos_profile"),
+		"chunk": chunk,
+		"chunks": chunks,
+		"events": [_control_event(row, index) for index, row in enumerate(events)],
 	}

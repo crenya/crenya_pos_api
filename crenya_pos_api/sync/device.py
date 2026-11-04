@@ -5,6 +5,7 @@ import re
 import frappe
 from frappe.utils import cint, get_system_timezone, now
 
+from crenya_pos_api.device_errors import FEATURE_DEVICE_ERRORS
 from crenya_pos_api.expenses.booking import expenses_supported, settings_block
 from crenya_pos_api.expenses.product import RETAIL
 from crenya_pos_api.sync import device_user
@@ -25,6 +26,8 @@ from crenya_pos_api.sync.context import (
 	require_device_role,
 	user_can_use_profile,
 )
+from crenya_pos_api.sync.control_log import FEATURE_CONTROL_LOG
+from crenya_pos_api.sync.control_log import table_ready as control_log_ready
 from crenya_pos_api.sync.credit import CREDIT_SALES_FIELD
 from crenya_pos_api.sync.customer_payment import FEATURE_SETTLE_INVOICES
 from crenya_pos_api.sync.entitlement import device_rows, get_entitlement, registration_refusal
@@ -226,6 +229,9 @@ def register(
 				raise_api_error(DevicePermissionError, refusal)
 			return _registration(device)
 		_check_plan(device_id, plan_type, profile.name)
+		if cint(device.get("name_set_on_web")):
+			# renamed on app.crenya.com (0.17.0): the till's own name does not replace it
+			values.pop("device_name")
 		device.update(values)
 		device.save(ignore_permissions=True)
 	else:
@@ -444,6 +450,8 @@ def bootstrap(ctx):
 			"device_short": ctx.device["device_short"],
 			"pos_profile": profile.name,
 			"device_type": ctx.device_type,
+			# 0.17.0: the name the till is listed under (the one set on app.crenya.com, if any)
+			"device_name": ctx.device.get("device_name") or ctx.device_id,
 		},
 		"profile": {
 			"name": profile.name,
@@ -504,6 +512,11 @@ def bootstrap(ctx):
 		# 0.14.0: a receipt may name the bills it settles (`invoices`); older tills ignore the key
 		doc["features"][FEATURE_SETTLE_INVOICES] = 1
 		doc["credit"] = {"enabled": bool(cint(profile.get(CREDIT_SALES_FIELD)))}
+		# 0.17.0: the till sends its shift's store-control events at close (Crenya POS Control Log)
+		if control_log_ready():
+			doc["features"][FEATURE_CONTROL_LOG] = 1
+		# 0.17.0: the till sends its own errors (api.device_errors.report) for the Error Log
+		doc["features"][FEATURE_DEVICE_ERRORS] = 1
 		# expenses paid out of the drawer (0.13.0): only on a site with erptrue_app's POS Expense, so
 		# the till hides Expenses everywhere else
 		if expenses_supported():

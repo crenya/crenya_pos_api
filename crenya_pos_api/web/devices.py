@@ -26,6 +26,8 @@ SHIFT_DOCTYPE = "Crenya POS Shift"
 DEVICE_COLUMNS = (
 	"name",
 	"device_name",
+	# 0.17.0: renamed on app.crenya.com (a re-register keeps that name)
+	"name_set_on_web",
 	"device_short",
 	"device_type",
 	"pos_profile",
@@ -39,6 +41,12 @@ DEVICE_COLUMNS = (
 	"enabled",
 	"modified",
 )
+# the columns a site whose deploy skipped `bench migrate` may not have yet
+OPTIONAL_COLUMNS = frozenset({"paired_by", "name_set_on_web"})
+# a till's name typed on app.crenya.com: 1 to this many characters, trimmed
+MAX_DEVICE_NAME_LENGTH = 64
+UPDATE_CHANNELS = ("stable", "beta")
+UPDATE_CHANNEL_LABELS = {"stable": ("Stable", "مستقر"), "beta": ("Beta", "تجريبي")}
 DEVICE_IN_USE_HOURS = 24
 DEVICE_IN_USE_REFUSAL = (
 	f"This device was used in the last {DEVICE_IN_USE_HOURS} hours (or has an open shift). "
@@ -51,6 +59,9 @@ __all__ = [
 	"DEVICE_COLUMNS",
 	"DEVICE_IN_USE_HOURS",
 	"DEVICE_IN_USE_REFUSAL",
+	"MAX_DEVICE_NAME_LENGTH",
+	"UPDATE_CHANNELS",
+	"clean_device_name",
 	"device_in_use",
 	"device_rows",
 	"devices_answer",
@@ -58,6 +69,8 @@ __all__ = [
 	"labelled",
 	"open_shifts",
 	"plan",
+	"rename_device",
+	"set_device_channel",
 	"set_device_enabled",
 	"wire",
 ]
@@ -91,9 +104,11 @@ def device_rows(outlets, types=None, enabled_only=True) -> list:
 	Read with the query builder: frappe.get_all drops `last_seen` from its fields (Frappe strips
 	any field containing `_seen`, one of its optional columns, when the table has no `_seen`)."""
 	device = frappe.qb.DocType(DEVICE_DOCTYPE)
-	# a site whose deploy skipped `bench migrate` has no `paired_by` column yet
+	# a site whose deploy skipped `bench migrate` has no `paired_by` / `name_set_on_web` column yet
 	meta = frappe.get_meta(DEVICE_DOCTYPE)
-	columns = [column for column in DEVICE_COLUMNS if column != "paired_by" or meta.has_field(column)]
+	columns = [
+		column for column in DEVICE_COLUMNS if column not in OPTIONAL_COLUMNS or meta.has_field(column)
+	]
 	query = (
 		frappe.qb.from_(device)
 		.select(*(device[column] for column in columns))
@@ -142,11 +157,14 @@ def device_in_use(last_seen, open_shift, now) -> bool:
 	return bool(last_seen) and get_datetime(last_seen) > now - timedelta(hours=DEVICE_IN_USE_HOURS)
 
 
-def devices_answer(outlet: str, can_manage: bool, type_order=(), type_labels=None) -> dict:
+def devices_answer(
+	outlet: str, can_manage: bool, type_order=(), type_labels=None, can_set_channel: bool = False
+) -> dict:
 	"""Every Crenya POS Device of the outlet, the types of `type_order` first in that order (then
 	any other), each with its unclosed shift and whether it is in use (then it is not
-	deactivated); the plan's terminal cap; `can_manage` (`set_device_enabled`) as the caller
-	decided; `choices.device_types` from `type_labels` ({type: (English, Arabic)})."""
+	deactivated); the plan's terminal cap; `can_manage` (`set_device_enabled`, `rename_device`) and
+	`can_set_channel` (`set_device_channel`, 0.17.0) as the caller decided; `choices.device_types`
+	from `type_labels` ({type: (English, Arabic)})."""
 	rank = {device_type: index for index, device_type in enumerate(type_order)}
 	rows = sorted(
 		device_rows([outlet], enabled_only=False),
@@ -160,10 +178,12 @@ def devices_answer(outlet: str, can_manage: bool, type_order=(), type_labels=Non
 	return {
 		"outlet": outlet,
 		"can_manage": bool(can_manage),
+		"can_set_channel": bool(can_set_channel),
 		"rows": [
 			{
 				"name": row.name,
 				"device_name": row.device_name or row.name,
+				"name_set_on_web": bool(cint(row.get("name_set_on_web"))),
 				"device_short": row.device_short or None,
 				"device_type": row.device_type or DEFAULT_DEVICE_TYPE,
 				"counts_for_plan": (row.device_type or DEFAULT_DEVICE_TYPE) in TERMINAL_ADDONS,
@@ -188,7 +208,10 @@ def devices_answer(outlet: str, can_manage: bool, type_order=(), type_labels=Non
 			for row in rows
 		],
 		"plan": plan(),
-		"choices": {"device_types": labelled(type_labels or {})},
+		"choices": {
+			"device_types": labelled(type_labels or {}),
+			"update_channels": labelled(UPDATE_CHANNEL_LABELS),
+		},
 	}
 
 
@@ -229,3 +252,66 @@ def set_device_enabled(ctx: WebAdminContext, device, enabled, modified):
 		ctx.log(doc)
 		# releases the device rows the plan check locked
 		frappe.db.commit()  # nosemgrep
+
+
+def clean_device_name(value) -> str:
+	"""A till name typed on the web (pure): trimmed, 1 to MAX_DEVICE_NAME_LENGTH characters, no
+	control characters; ValueError otherwise."""
+	if not isinstance(value, str):
+		raise ValueError("device_name must be text")
+	name = " ".join(value.split())
+	if not name:
+		raise ValueError("The till name is required")
+	if len(name) > MAX_DEVICE_NAME_LENGTH:
+		raise ValueError(f"The till name is longer than {MAX_DEVICE_NAME_LENGTH} characters")
+	if any(ord(char) < 32 or ord(char) == 127 for char in name):
+		raise ValueError("The till name has a character that cannot be shown")
+	return name
+
+
+def _outlet_device(ctx, device):
+	"""The device row of `ctx.outlet` named `device`; invalid for no such device, refused for one of
+	another outlet."""
+	row = (
+		frappe.db.get_value(DEVICE_DOCTYPE, device, ["name", "pos_profile"], as_dict=True)
+		if isinstance(device, str) and device
+		else None
+	)
+	if row is None:
+		invalid(_("Device {0} does not exist").format(device))
+	if row.pos_profile != ctx.outlet:
+		refuse(_("Device {0} is not a device of outlet {1}").format(device, ctx.outlet))
+	return row
+
+
+def rename_device(ctx: WebAdminContext, device, device_name, modified):
+	"""Rename a device of `ctx.outlet` (`clean_device_name`) and mark the name as set on the web, so
+	the till's own name no longer replaces it when it registers again (`sync.device.register`). Its
+	`device_short`, the invoice-number prefix, never changes. `modified` is the one the devices
+	list answered. The caller has checked that the user manages the outlet."""
+	name = checked(clean_device_name, device_name)
+	row = _outlet_device(ctx, device)
+	check_modified(DEVICE_DOCTYPE, row.name, modified)
+	doc = frappe.get_doc(DEVICE_DOCTYPE, row.name)
+	if doc.device_name == name and cint(doc.get("name_set_on_web")):
+		return
+	doc.device_name = name
+	doc.name_set_on_web = 1
+	doc.save(ignore_permissions=True)
+	ctx.log(doc)
+
+
+def set_device_channel(ctx: WebAdminContext, device, channel, modified):
+	"""Set the release channel a device of `ctx.outlet` updates from ("stable" or "beta"; the update
+	check serves releases by it, `sync.update`). `modified` is the one the devices list answered. The
+	caller has checked that the user is a System Manager."""
+	if channel not in UPDATE_CHANNELS:
+		invalid(_("The update channel must be one of {0}").format(", ".join(UPDATE_CHANNELS)))
+	row = _outlet_device(ctx, device)
+	check_modified(DEVICE_DOCTYPE, row.name, modified)
+	doc = frappe.get_doc(DEVICE_DOCTYPE, row.name)
+	if doc.update_channel == channel:
+		return
+	doc.update_channel = channel
+	doc.save(ignore_permissions=True)
+	ctx.log(doc)

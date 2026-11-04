@@ -180,6 +180,23 @@ class TestCrenyaUpdates(FrappeTestCase):
 		# stable tills never see it
 		self.assertNoUpdate(self.check("0.1.5"))
 
+	def test_beta_channel_served_beta_release(self):
+		"""0.17.0: a System Manager sets a till's channel on app.crenya.com; its next update check
+		is served the beta release."""
+		from crenya_pos_api.api import web_admin
+
+		device_id = str(uuid.uuid4())
+		device_api.register_device(
+			device_id=device_id, device_name="Web Beta Till", pos_profile=self.profile.name
+		)
+		frappe.db.commit()
+		self.assertEqual(json.loads(self.check("0.1.0", device_id=device_id).get_data())["version"], "0.1.5")
+		rows = web_admin.devices(self.profile.name)["rows"]
+		modified = next(row for row in rows if row["name"] == device_id)["modified"]
+		web_admin.set_device_channel(self.profile.name, device_id, "beta", modified)
+		frappe.db.commit()
+		self.assertEqual(json.loads(self.check("0.1.0", device_id=device_id).get_data())["version"], "0.3.0")
+
 	def test_invalid_requests(self):
 		with self.assertRaises(errors.InvalidRequestError):
 			self.check("latest")

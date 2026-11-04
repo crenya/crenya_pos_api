@@ -43,7 +43,12 @@
   "on_account_received_amount",
   "payments_section",
   "payments",
-  "notes"
+  "notes",
+  "cash_difference_section",
+  "cash_difference_state",
+  "cash_difference_entry",
+  "column_break_cash_difference",
+  "cash_difference_error"
  ],
  "fields": [
   {
@@ -290,13 +295,45 @@
    "fieldtype": "Small Text",
    "label": "Notes",
    "read_only": 1
+  },
+  {
+   "fieldname": "cash_difference_section",
+   "fieldtype": "Section Break",
+   "label": "Cash over/short"
+  },
+  {
+   "fieldname": "cash_difference_state",
+   "fieldtype": "Select",
+   "label": "Cash Difference State",
+   "options": "\nPosted\nNot posted\nNot needed\nOff",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "cash_difference_entry",
+   "fieldtype": "Link",
+   "label": "Cash Difference Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "column_break_cash_difference",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cash_difference_error",
+   "fieldtype": "Small Text",
+   "label": "Cash Difference Error",
+   "read_only": 1,
+   "no_copy": 1
   }
  ],
  "in_create": 1,
  "index_web_pages_for_search": 0,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-10-14 12:00:00.000000",
+ "modified": "2026-11-04 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya POS Shift",

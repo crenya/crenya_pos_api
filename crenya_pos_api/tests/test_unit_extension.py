@@ -7,6 +7,7 @@ from crenya_pos_api import extension
 from crenya_pos_api.expenses.sync import ExpenseAggregate
 from crenya_pos_api.sync import registry
 from crenya_pos_api.sync.aggregates import CustomerHandler, SalesInvoiceHandler, ShiftHandler
+from crenya_pos_api.sync.control_log import ControlLogHandler
 from crenya_pos_api.sync.credit_facility import CreditFacilityHandler
 from crenya_pos_api.sync.customer_payment import CustomerPaymentHandler
 from crenya_pos_api.sync.errors import ExtensionHookError, SyncError
@@ -71,6 +72,7 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		self.assertIsInstance(handlers["POS Expense"], ExpenseAggregate)
 		self.assertIsInstance(handlers["Customer Payment"], CustomerPaymentHandler)
 		self.assertIsInstance(handlers["Customer Credit Facility"], CreditFacilityHandler)
+		self.assertIsInstance(handlers["Crenya POS Control Log"], ControlLogHandler)
 		for handler in handlers.values():
 			# an expense is added, amended and cancelled; every other built-in only submits
 			expected = (
@@ -115,7 +117,7 @@ class TestBuiltinsWithoutHooks(unittest.TestCase):
 		self.assertEqual(
 			ctx.exception.message,
 			"aggregate_type must be one of Customer, Sales Invoice, Crenya POS Shift, POS Expense, Customer Payment, "
-			"Customer Credit Facility",
+			"Customer Credit Facility, Crenya POS Control Log",
 		)
 		with self.assertRaises(SyncError) as ctx:
 			validate_envelope(make_event(SALE, operation="create"))

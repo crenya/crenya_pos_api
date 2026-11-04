@@ -35,7 +35,12 @@ def outlets() -> dict:
 
 def _devices(outlet: str) -> dict:
 	return web_devices.devices_answer(
-		outlet, True, type_order=tuple(DEVICE_TYPE_LABELS), type_labels=DEVICE_TYPE_LABELS
+		outlet,
+		True,
+		type_order=tuple(DEVICE_TYPE_LABELS),
+		type_labels=DEVICE_TYPE_LABELS,
+		# beta builds are an operator's decision (ruling D2)
+		can_set_channel=is_system_manager(),
 	)
 
 
@@ -51,6 +56,26 @@ def set_device_enabled(outlet: str, device: str, enabled: bool | int | str, modi
 	delete it; `modified` is the one `devices` answered. Answers `devices`."""
 	ctx = manage(outlet)
 	web_devices.set_device_enabled(ctx, device, enabled, modified)
+	return _devices(ctx.outlet)
+
+
+@frappe.whitelist(methods=["POST"])
+def rename_device(outlet: str, device: str, device_name: str, modified: str) -> dict:
+	"""Rename a till of the shop (1 to 64 characters, trimmed); a till registering again keeps this
+	name (`web.devices.rename_device`). `modified` is the one `devices` answered. Answers `devices`."""
+	ctx = manage(outlet)
+	web_devices.rename_device(ctx, device, device_name, modified)
+	return _devices(ctx.outlet)
+
+
+@frappe.whitelist(methods=["POST"])
+def set_device_channel(outlet: str, device: str, channel: str, modified: str) -> dict:
+	"""Set the update channel ("stable" or "beta") of a till of the shop: a System Manager's alone
+	(`web.devices.set_device_channel`). `modified` is the one `devices` answered. Answers `devices`."""
+	ctx = manage(outlet)
+	if not is_system_manager():
+		raise frappe.PermissionError
+	web_devices.set_device_channel(ctx, device, channel, modified)
 	return _devices(ctx.outlet)
 
 

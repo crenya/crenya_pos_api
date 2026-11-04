@@ -227,6 +227,9 @@ def register(
 				raise_api_error(DevicePermissionError, refusal)
 			return _registration(device)
 		_check_plan(device_id, plan_type, profile.name)
+		if cint(device.get("name_set_on_web")):
+			# renamed on app.crenya.com (0.17.0): the till's own name does not replace it
+			values.pop("device_name")
 		device.update(values)
 		device.save(ignore_permissions=True)
 	else:
@@ -445,6 +448,8 @@ def bootstrap(ctx):
 			"device_short": ctx.device["device_short"],
 			"pos_profile": profile.name,
 			"device_type": ctx.device_type,
+			# 0.17.0: the name the till is listed under (the one set on app.crenya.com, if any)
+			"device_name": ctx.device.get("device_name") or ctx.device_id,
 		},
 		"profile": {
 			"name": profile.name,

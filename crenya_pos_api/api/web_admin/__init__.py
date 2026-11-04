@@ -27,7 +27,14 @@ from crenya_pos_api.api.web_admin.expenses import (
 	till_expense,
 )
 from crenya_pos_api.api.web_admin.loyalty import loyalty_programs, save_loyalty_program
-from crenya_pos_api.api.web_admin.outlets import devices, downloads, outlets, set_device_enabled
+from crenya_pos_api.api.web_admin.outlets import (
+	devices,
+	downloads,
+	outlets,
+	rename_device,
+	set_device_channel,
+	set_device_enabled,
+)
 from crenya_pos_api.api.web_admin.promotions import promotions, save_promotion, set_promotion_enabled
 from crenya_pos_api.api.web_admin.refused import refused_sales, retry_sale
 from crenya_pos_api.api.web_admin.settings import (
@@ -68,6 +75,7 @@ __all__ = [
 	"post_cash_difference",
 	"promotions",
 	"refused_sales",
+	"rename_device",
 	"retry_expense_booking",
 	"retry_sale",
 	"save_company_wording",
@@ -80,6 +88,7 @@ __all__ = [
 	"save_scale_rules",
 	"save_terminal",
 	"scale_rules",
+	"set_device_channel",
 	"set_device_enabled",
 	"set_promotion_enabled",
 	"settle_customer",

@@ -8,6 +8,7 @@
  "field_order": [
   "device_id",
   "device_name",
+  "name_set_on_web",
   "device_short",
   "enabled",
   "column_break_main",
@@ -39,6 +40,14 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Device Name"
+  },
+  {
+   "default": "0",
+   "description": "Renamed on app.crenya.com: the till's own name no longer replaces it when the till registers again",
+   "fieldname": "name_set_on_web",
+   "fieldtype": "Check",
+   "label": "Name Set on Web",
+   "read_only": 1
   },
   {
    "description": "Stable short code used in offline invoice numbers (OFF-<code>-)",
@@ -141,7 +150,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-13 18:00:00.000000",
+ "modified": "2026-11-04 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crenya Pos Api",
  "name": "Crenya POS Device",

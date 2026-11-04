@@ -347,35 +347,59 @@ def _ensure_account(doc, row):
 
 
 def reconcile_payments(doc, default_mode, notes, on_account=0, credit_offset=0):
-	"""Payments must equal the payable total (less any loyalty redemption); a difference within
-	tolerance goes to the default/cash row.
+	"""Payments must equal the payable total (less any loyalty redemption). Answers the
+	`(on_account, credit_offset)` the invoice posts (Decimal each).
 
 	A sale left partly on account: payments + `on_account` = payable; a return partly credited to the
-	customer's account: payments = payable + `credit_offset` (both negative in the return's
-	signs). Those two are exact, to the minor unit, with no tolerance and nothing absorbed: a
-	corrupt till cannot move money into the account."""
+	customer's account: payments = payable + `credit_offset` (both negative in the return's signs).
+
+	A difference within tolerance (`get_total_tolerance`, 10 minor units by default: the till's
+	total and ERPNext's may differ by tax rounding per row, inclusive taxes or a rounded total) is
+	absorbed, with a note: on a sale or return with an account part, into that part, so the payment
+	rows stay what the drawer took (the on-account part is what ERPNext leaves outstanding, the
+	credited part what the return does not refund); otherwise, or when the part would go below 0,
+	into the default/cash row. Beyond tolerance the invoice is refused (TOTAL_MISMATCH): a corrupt
+	till cannot move real money into the account."""
 	precision = money_precision(doc.currency)
 	tolerance = get_total_tolerance(precision)
 	payable = quantize(_payments_due(doc), precision)
 	on_account = as_decimal(on_account)
 	credit_offset = as_decimal(credit_offset)
-	exact = bool(on_account or credit_offset)
 	target = payable - on_account + credit_offset
 	paid = sum((quantize(row.amount, precision) for row in doc.get("payments") or []), as_decimal(0))
 	difference = target - paid
 
+	if difference and abs(difference) > as_decimal(tolerance):
+		split = ""
+		if on_account:
+			split = f" and {format_money(on_account, precision)} on account"
+		elif credit_offset:
+			split = f" and {format_money(credit_offset, precision)} credited to the account"
+		raise SyncError(
+			TOTAL_MISMATCH,
+			f"Payments {format_money(paid, precision)}{split} do not match payable total "
+			f"{format_money(payable, precision)}",
+		)
+
+	if difference and on_account and on_account + difference >= 0:
+		# payments + on_account = payable: the sale's outstanding takes the difference
+		notes.append(
+			f"Payment difference {format_money(difference, precision)} absorbed into the on-account part "
+			f"({format_money(on_account, precision)} -> {format_money(on_account + difference, precision)})"
+		)
+		on_account += difference
+		difference = as_decimal(0)
+	elif difference and credit_offset and credit_offset - difference >= 0:
+		# payments = payable + credit_offset: the credit to the account takes the difference
+		notes.append(
+			f"Payment difference {format_money(difference, precision)} absorbed into the credit to the "
+			f"account ({format_money(credit_offset, precision)} -> "
+			f"{format_money(credit_offset - difference, precision)})"
+		)
+		credit_offset -= difference
+		difference = as_decimal(0)
+
 	if difference:
-		if exact or abs(difference) > as_decimal(tolerance):
-			split = ""
-			if on_account:
-				split = f" and {format_money(on_account, precision)} on account"
-			elif credit_offset:
-				split = f" and {format_money(credit_offset, precision)} credited to the account"
-			raise SyncError(
-				TOTAL_MISMATCH,
-				f"Payments {format_money(paid, precision)}{split} do not match payable total "
-				f"{format_money(payable, precision)}",
-			)
 		row = _absorb_row(doc, default_mode)
 		if row is None:
 			raise SyncError(
@@ -398,6 +422,7 @@ def reconcile_payments(doc, default_mode, notes, on_account=0, credit_offset=0):
 	for row in list(doc.get("payments") or []):
 		if id(row) not in kept:
 			doc.remove(row)
+	return on_account, credit_offset
 
 
 def assert_on_account_allowed(ctx, customer, on_account, precision, notes):
@@ -419,9 +444,10 @@ def assert_on_account_allowed(ctx, customer, on_account, precision, notes):
 
 def assert_credit_offset_allowed(credit_offset, original, doc, precision, default_customer=None):
 	"""The part of a return credited to the account: for a return against an invoice of a named
-	customer, in the currency's decimals, at most the return's total. The POS Profile's default
+	customer, in the currency's decimals. The POS Profile's default
 	(walk-in) customer has no account anyone can collect, so nothing is credited to it. (A fully paid
-	invoice of a named customer may still be credited: an offline till does not know.)"""
+	invoice of a named customer may still be credited: an offline till does not know.) At most the
+	return's total within tolerance: the credit as posted is `reconcile_payments`' answer."""
 	if not original:
 		raise SyncError(VALIDATION, "credit_offset needs the invoice the return is against")
 	if default_customer and original.get("customer") == default_customer:
@@ -431,11 +457,14 @@ def assert_credit_offset_allowed(credit_offset, original, doc, precision, defaul
 		)
 	if quantize(credit_offset, precision) != credit_offset:
 		raise SyncError(VALIDATION, f"credit_offset {credit_offset} has more than {precision} decimals")
-	if credit_offset > abs(quantize(_payments_due(doc), precision)):
+	# within tolerance of the total: the till's total may be the larger by rounding, and
+	# `reconcile_payments` brings the credit down to what the return pays (H2)
+	total = abs(quantize(_payments_due(doc), precision))
+	if credit_offset > total + as_decimal(get_total_tolerance(precision)):
 		raise SyncError(
 			VALIDATION,
 			f"credit_offset {format_money(credit_offset, precision)} is more than the return's total "
-			f"{format_money(abs(_payments_due(doc)), precision)}",
+			f"{format_money(total, precision)}",
 		)
 
 
@@ -595,13 +624,20 @@ def build_invoice(ctx, data, notes):
 		doc.calculate_taxes_and_totals()
 
 	check_grand_total(doc, data)
+	precision = money_precision(doc.currency)
 	if credit_offset:
-		precision = money_precision(doc.currency)
 		assert_credit_offset_allowed(credit_offset, original, doc, precision, profile.get("customer"))
+	# the parts as posted: a till/server difference within tolerance is absorbed into them (H2)
+	on_account, credit_offset = reconcile_payments(
+		doc, default_mode, notes, on_account=on_account, credit_offset=credit_offset
+	)
+	if data.get("on_account") or data.get("credit_offset"):
+		# extenders and `submit_invoice` read the parts the invoice posts, not the till's
+		data["on_account"], data["credit_offset"] = on_account, credit_offset
+	if credit_offset:
 		note = credit_beyond_outstanding_note(credit_offset, original, precision)
 		if note:
 			notes.append(note)
-	reconcile_payments(doc, default_mode, notes, on_account=on_account, credit_offset=credit_offset)
 	doc.calculate_taxes_and_totals()
 	return doc
 

@@ -225,7 +225,9 @@ def apply_credit_facility(ctx, data, notes):
 		if reason is None:
 			continue
 		if not isinstance(reason, str) or not reason.strip():
-			_refuse(f"{registry.CREDIT_FACILITY_CHECKER_HOOK}: a checker must return None or a reason", PERMISSION)
+			_refuse(
+				f"{registry.CREDIT_FACILITY_CHECKER_HOOK}: a checker must return None or a reason", PERMISSION
+			)
 		_refuse(reason.strip(), PERMISSION)
 	notes.extend(checker_notes)
 

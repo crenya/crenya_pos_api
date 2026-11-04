@@ -372,7 +372,11 @@ class TestDeductions(unittest.TestCase):
 
 class TestExtra(unittest.TestCase):
 	def test_extra_fields(self):
-		self.assertEqual(EXTRA_FIELDS, frozenset({"crenya_service_provider"}))
+		# 0.16.0: a till's receipt also records its shift, cashier and device
+		self.assertEqual(
+			EXTRA_FIELDS,
+			frozenset({"crenya_service_provider", "crenya_shift_id", "crenya_cashier", "crenya_device"}),
+		)
 
 	def test_extra_unknown_field_refused(self):
 		for extra, word in (

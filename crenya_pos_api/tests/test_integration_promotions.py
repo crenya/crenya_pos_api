@@ -319,6 +319,8 @@ class TestCrenyaPromotions(FrappeTestCase):
 					{
 						"rule_description": "5% from 3",
 						"min_qty": 3,
+						# ERPNext (2026-11) refuses slabs whose ranges overlap: 3..5, then 6 and up
+						"max_qty": 5,
 						"rate_or_discount": "Discount Percentage",
 						"discount_percentage": 5,
 					},

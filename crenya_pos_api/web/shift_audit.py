@@ -100,8 +100,16 @@ def refund_rows(returns, names, precision) -> dict:
 	return {"count": len(rows), "amount": _money(total, precision), "rows": rows[:MAX_ROWS]}
 
 
-def _invoices(shift_local_id, is_return):
+def _invoices(shift_local_id, is_return, pos_profile=None):
+	"""The shift's submitted sales (or returns), of `pos_profile` when given (no other outlet's)."""
 	invoice = frappe.qb.DocType("Sales Invoice")
+	condition = (
+		(invoice.crenya_shift_id == shift_local_id)
+		& (invoice.docstatus == 1)
+		& (invoice.is_return == (1 if is_return else 0))
+	)
+	if pos_profile:
+		condition = condition & (invoice.pos_profile == pos_profile)
 	return (
 		frappe.qb.from_(invoice)
 		.select(
@@ -112,11 +120,7 @@ def _invoices(shift_local_id, is_return):
 			invoice.crenya_cashier.as_("crenya_cashier"),
 			invoice.owner,
 		)
-		.where(
-			(invoice.crenya_shift_id == shift_local_id)
-			& (invoice.docstatus == 1)
-			& (invoice.is_return == (1 if is_return else 0))
-		)
+		.where(condition)
 		.orderby(invoice.posting_date)
 		.orderby(invoice.posting_time)
 		.orderby(invoice.name)
@@ -124,9 +128,9 @@ def _invoices(shift_local_id, is_return):
 	)
 
 
-def shift_discounts(shift_local_id, precision, control_events=None) -> dict:
-	"""The discounts and price overrides on the shift's submitted sales (`discount_rows`)."""
-	invoices = _invoices(shift_local_id, False)
+def shift_discounts(shift_local_id, precision, control_events=None, pos_profile=None) -> dict:
+	"""The discounts and price overrides on the shift's submitted sales of `pos_profile` (`discount_rows`)."""
+	invoices = _invoices(shift_local_id, False, pos_profile)
 	items = []
 	if invoices:
 		item = frappe.qb.DocType("Sales Invoice Item")
@@ -141,12 +145,12 @@ def shift_discounts(shift_local_id, precision, control_events=None) -> dict:
 	return discount_rows(invoices, items, precision, control_events)
 
 
-def shift_refunds(shift_local_id, precision) -> dict:
-	"""The shift's submitted returns (`refund_rows`)."""
+def shift_refunds(shift_local_id, precision, pos_profile=None) -> dict:
+	"""The shift's submitted returns of `pos_profile` (`refund_rows`)."""
 	from crenya_pos_api.web.devices import full_names
 
 	returns = [
 		{**row, "cashier": row.get("crenya_cashier") or row.get("owner")}
-		for row in _invoices(shift_local_id, True)
+		for row in _invoices(shift_local_id, True, pos_profile)
 	]
 	return refund_rows(returns, full_names(row["cashier"] for row in returns), precision)

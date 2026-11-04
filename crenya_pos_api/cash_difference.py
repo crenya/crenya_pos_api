@@ -153,7 +153,7 @@ def validate_profile(doc, method=None):
 	# saving the outlet's other settings (the setup check and "Not posted" say so instead)
 	changed = doc.is_new() or any(
 		doc.has_value_changed(field)
-		for field in (CASH_DIFFERENCE_ACCOUNT_FIELD, CASH_DIFFERENCE_SWITCH_FIELD)
+		for field in (CASH_DIFFERENCE_ACCOUNT_FIELD, CASH_DIFFERENCE_SWITCH_FIELD, "company")
 	)
 	if account and changed:
 		problem = account_problem(account, doc.company)

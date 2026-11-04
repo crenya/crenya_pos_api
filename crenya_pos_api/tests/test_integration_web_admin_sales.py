@@ -214,6 +214,46 @@ class TestZAdditions(SalesCase):
 		self.assertEqual(answer["refunds"], {"count": 0, "amount": "0.000", "rows": []})
 
 
+def allow_company(user, company):
+	"""A User Permission limiting `user` to `company`; returns its name."""
+	doc = frappe.get_doc(
+		{"doctype": "User Permission", "user": user, "allow": "Company", "for_value": company}
+	)
+	doc.flags.ignore_links = True
+	doc.insert(ignore_permissions=True)
+	frappe.db.commit()
+	return doc.name
+
+
+def drop_permissions(user):
+	for name in frappe.get_all("User Permission", filters={"user": user, "allow": "Company"}, pluck="name"):
+		frappe.delete_doc("User Permission", name, ignore_permissions=True, force=True)
+	frappe.db.commit()
+
+
+class TestZCompanyScope(SalesCase):
+	def test_z_other_company_manager_refused(self):
+		"""Review W2 M1 (T12 F7): a manager limited to another company opens neither this shop's Z nor
+		its list; limited to this company, both; a System Manager is unchanged."""
+		name = self.close(new_id())
+		self.addCleanup(drop_permissions, MANAGER)
+		allow_company(MANAGER, "_Test Crenya Other Company")
+		frappe.set_user(MANAGER)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.day_close(name)
+		with self.assertRaises(frappe.PermissionError):
+			web_admin.day_closes(nowdate(), nowdate(), self.profile.name)
+		frappe.set_user("Administrator")
+		allow_company(MANAGER, fixtures.COMPANY)
+		frappe.set_user(MANAGER)
+		self.assertEqual(web_admin.day_close(name)["shift"], name)
+		self.assertIn(
+			name, [r["shift"] for r in web_admin.day_closes(nowdate(), nowdate(), self.profile.name)["rows"]]
+		)
+		frappe.set_user("Administrator")
+		self.assertEqual(web_admin.day_close(name)["shift"], name)
+
+
 class TestSalesReports(SalesCase):
 	def report(self, tab, user=MANAGER):
 		frappe.set_user(user)
@@ -275,6 +315,45 @@ class TestSalesReports(SalesCase):
 		self.assertEqual(after["line_voids_count"] - before["line_voids_count"], 2)
 		self.assertEqual(after["no_sales_count"] - before["no_sales_count"], 1)
 		self.assertTrue(after["cashier_name"])
+
+	def test_sales_sql_totals_hand_computed(self):
+		"""Review W2 M2: the grouped SQL against a hand-computed fixture (OMR, 3 decimals): a sale of 3
+		at 0.400 (list 0.500), a return of 1, and a sale of 2 cancelled (left out)."""
+		items_before = self.item(self.report("items"), fixtures.BREAD)
+		cashier_before = self.cashier(self.report("cashiers"), "Administrator")
+		shift = new_id()
+		sale, _name = self.sell([(fixtures.BREAD, "3", "0.400")], shift, list_rates=["0.500"])
+		self.refund(sale, [(fixtures.BREAD, "-1", "0.400", 1)], shift, list_rates=["0.500"])
+		_cancelled, cancelled = self.sell([(fixtures.BREAD, "2", "0.400")], shift, list_rates=["0.500"])
+		frappe.get_doc("Sales Invoice", cancelled).cancel()
+		frappe.db.commit()
+		item = self.item(self.report("items"), fixtures.BREAD)
+		delta = {
+			key: Decimal(item[key]) - Decimal(items_before[key]) for key in ("qty", "amount", "discounts")
+		}
+		self.assertEqual(
+			delta, {"qty": Decimal(2), "amount": Decimal("0.800"), "discounts": Decimal("0.200")}
+		)
+		cashier = self.cashier(self.report("cashiers"), "Administrator")
+		self.assertEqual(
+			{key: cashier[key] - cashier_before[key] for key in ("bills", "refunds_count")},
+			{"bills": 1, "refunds_count": 1},
+		)
+		money = {
+			key: Decimal(cashier[key]) - Decimal(cashier_before[key])
+			for key in ("sales", "refunds", "net_total", "discounts")
+		}
+		self.assertEqual(
+			money,
+			{
+				"sales": Decimal("1.200"),
+				"refunds": Decimal("0.400"),
+				"net_total": Decimal("0.800"),
+				"discounts": Decimal("0.200"),
+			},
+		)
+		for key in ("sales", "refunds", "net_total", "discounts"):
+			self.assertEqual(len(cashier[key].split(".")[1]), 3, key)
 
 	def test_sales_bad_tab_refused(self):
 		with self.assertRaises(frappe.ValidationError):

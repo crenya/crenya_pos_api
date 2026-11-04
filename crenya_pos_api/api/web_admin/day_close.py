@@ -12,7 +12,7 @@ import frappe
 from frappe.utils import cint, flt, formatdate, getdate
 
 from crenya_pos_api import cash_difference
-from crenya_pos_api.api.web_admin.scope import manage, manage_company
+from crenya_pos_api.api.web_admin.scope import manage_company
 from crenya_pos_api.expenses.reports import expense_label, shift_expenses
 from crenya_pos_api.sync.context import money_precision
 from crenya_pos_api.sync.control_log import shift_control_events, table_ready
@@ -314,8 +314,9 @@ def day_close_rows(shifts, payments, cash_modes, devices, names, precision) -> l
 
 @frappe.whitelist(methods=["GET", "POST"])
 def day_closes(from_date: str, to_date: str, outlet: str) -> dict:
-	"""The shop's closed and open shifts that opened between the dates, latest first."""
-	ctx = manage(outlet)
+	"""The shop's closed and open shifts that opened between the dates, latest first. For a manager
+	of the shop permitted on its company (`manage_company`, T12 F7)."""
+	ctx = manage_company(outlet)
 	first, last = date_range(from_date, to_date)
 	shifts = frappe.get_all(
 		SHIFT_DOCTYPE,
@@ -370,7 +371,7 @@ def control_event_rows(events, names, precision) -> list[dict]:
 				"label_ar": ar,
 				"actor_name": names.get(event.get("actor")) or event.get("actor") or None,
 				"approver_name": names.get(event.get("approver")) or event.get("approver") or None,
-				"amount": None if amount is None else format_money(flt(amount), precision),
+				"amount": None if amount is None else format_money(as_decimal(amount), precision),
 				"item_code": event.get("item_code") or None,
 				"subject": event.get("subject") or None,
 				"outside_shift": bool(event.get("outside_shift")),
@@ -392,8 +393,9 @@ def _shift_events(doc, precision):
 
 @frappe.whitelist(methods=["GET", "POST"])
 def day_close(shift: str) -> dict:
-	"""The Z report of one shift of a shop the user manages; frappe.PermissionError for any other
-	(or no) shift."""
+	"""The Z report of one shift of a shop the user manages and whose company they are permitted on
+	(`manage_company`, T12 F7: the Z carries discounts, refunds and control events); frappe.PermissionError
+	for any other (or no) shift."""
 	row = (
 		frappe.db.get_value(SHIFT_DOCTYPE, shift, ["name", "pos_profile"], as_dict=True)
 		if isinstance(shift, str) and shift
@@ -401,7 +403,7 @@ def day_close(shift: str) -> dict:
 	)
 	if not row:
 		raise frappe.PermissionError
-	ctx = manage(row.pos_profile)
+	ctx = manage_company(row.pos_profile)
 	doc = frappe.get_doc(SHIFT_DOCTYPE, row.name)
 	first, _label = _business_day(doc.opened_at, doc.closed_at)
 	answer = common(ctx.company, ctx.currency)
@@ -414,8 +416,8 @@ def day_close(shift: str) -> dict:
 		# 0.17.0: the till's control events, the invoices' discounts and refunds, the over/short
 		"control_events": [{key: event[key] for key in CONTROL_EVENT_KEYS} for event in events],
 		"control_events_truncated": truncated,
-		"discounts": shift_audit.shift_discounts(doc.local_id, precision, events),
-		"refunds": shift_audit.shift_refunds(doc.local_id, precision),
+		"discounts": shift_audit.shift_discounts(doc.local_id, precision, events, doc.pos_profile),
+		"refunds": shift_audit.shift_refunds(doc.local_id, precision, doc.pos_profile),
 		"cash_difference": cash_difference.cash_difference_block(doc),
 		"shift": doc.name,
 		"outlet": doc.pos_profile,

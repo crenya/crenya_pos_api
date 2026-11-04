@@ -25,12 +25,14 @@ def sales(tab: str, from_date: str, to_date: str, outlet: str) -> dict:
 	first, last = date_range(from_date, to_date)
 	precision = money_precision(ctx.currency)
 	if tab == "items":
-		rows = sales_reports.item_rows(sales_reports.item_lines(ctx.outlet, first, last), precision)
+		rows = sales_reports.item_rows(
+			sales_reports.item_sums(ctx.company, ctx.outlet, first, last), precision
+		)
 	else:
-		invoices = sales_reports.cashier_invoices(ctx.outlet, first, last)
+		sums = sales_reports.cashier_sums(ctx.company, ctx.outlet, first, last)
 		controls = sales_reports.control_counts(ctx.outlet, first, last)
-		names = full_names([row["cashier"] for row in invoices] + list(controls))
-		rows = sales_reports.cashier_rows(invoices, controls, names, precision)
+		names = full_names([row["cashier"] for row in sums] + list(controls))
+		rows = sales_reports.cashier_rows(sums, controls, names, precision)
 	return {
 		**common(ctx.company, ctx.currency),
 		"tab": tab,

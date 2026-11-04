@@ -4,6 +4,7 @@ their approvers and its refunds, and the control events' labels. OMR, 3 decimals
 
 import unittest
 from datetime import datetime
+from decimal import Decimal
 
 from crenya_pos_api.api.web_admin.day_close import CONTROL_EVENT_KEYS, control_event_rows
 from crenya_pos_api.web.sales_reports import cashier_rows, item_rows
@@ -11,38 +12,27 @@ from crenya_pos_api.web.shift_audit import MAX_ROWS, discount_rows, refund_rows
 
 
 class TestItemRows(unittest.TestCase):
-	def test_items_netted_with_returns_sorted_by_amount(self):
+	def test_item_sums_formatted_at_3_decimals(self):
+		# the database's sums (Decimals from MariaDB, floats on some drivers): returns already netted
 		raw = [
-			{
-				"item_code": "MILK",
-				"item_name": "Milk",
-				"item_group": "Dairy",
-				"qty": 3,
-				"amount": 1.8,
-				"price_list_rate": 0.6,
-				"rate": 0.6,
-			},
-			{
-				"item_code": "MILK",
-				"item_name": "Milk",
-				"item_group": "Dairy",
-				"qty": -1,
-				"amount": -0.6,
-				"price_list_rate": 0.6,
-				"rate": 0.6,
-			},
 			{
 				"item_code": "BREAD",
 				"item_name": "Bread",
 				"item_group": "Bakery",
-				"qty": 4,
-				"amount": 1.6,
-				"price_list_rate": 0.5,
-				"rate": 0.4,
+				"qty": Decimal("4.000"),
+				"amount": Decimal("1.6"),
+				"discounts": Decimal("0.4"),
+			},
+			{
+				"item_code": "MILK",
+				"item_name": None,
+				"item_group": "Dairy",
+				"qty": 2.0,
+				"amount": 1.2,
+				"discounts": 0,
 			},
 		]
 		rows = item_rows(raw, 3)
-		self.assertEqual([r["item_code"] for r in rows], ["BREAD", "MILK"])
 		self.assertEqual(
 			rows[0],
 			{
@@ -54,15 +44,23 @@ class TestItemRows(unittest.TestCase):
 				"discounts": "0.400",
 			},
 		)
-		self.assertEqual((rows[1]["qty"], rows[1]["amount"], rows[1]["discounts"]), ("2", "1.200", "0.000"))
+		self.assertEqual(
+			(rows[1]["item_name"], rows[1]["qty"], rows[1]["amount"], rows[1]["discounts"]),
+			("MILK", "2", "1.200", "0.000"),
+		)
 
 
 class TestCashierRows(unittest.TestCase):
 	def test_cashiers_with_refunds_discounts_and_controls(self):
 		raw = [
-			{"cashier": "a@x", "is_return": False, "grand_total": 10.0, "discounts": 1.0},
-			{"cashier": "a@x", "is_return": False, "grand_total": 5.5, "discounts": 0},
-			{"cashier": "a@x", "is_return": True, "grand_total": -2.0, "discounts": 0},
+			{
+				"cashier": "a@x",
+				"bills": 2,
+				"refunds_count": 1,
+				"refunds": Decimal("2"),
+				"sales": Decimal("15.5"),
+				"discounts": 1.0,
+			}
 		]
 		controls = {
 			"a@x": {"line_voids_count": 2, "no_sales_count": 1},

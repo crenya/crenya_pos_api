@@ -37,6 +37,7 @@ from crenya_pos_api.api.web_admin.outlets import (
 )
 from crenya_pos_api.api.web_admin.promotions import promotions, save_promotion, set_promotion_enabled
 from crenya_pos_api.api.web_admin.refused import refused_sales, retry_sale
+from crenya_pos_api.api.web_admin.sales import sales
 from crenya_pos_api.api.web_admin.settings import (
 	company_wording,
 	denominations,
@@ -78,6 +79,7 @@ __all__ = [
 	"rename_device",
 	"retry_expense_booking",
 	"retry_sale",
+	"sales",
 	"save_company_wording",
 	"save_credit_facility",
 	"save_credit_limit",

@@ -15,8 +15,10 @@ from crenya_pos_api import cash_difference
 from crenya_pos_api.api.web_admin.scope import manage, manage_company
 from crenya_pos_api.expenses.reports import expense_label, shift_expenses
 from crenya_pos_api.sync.context import money_precision
+from crenya_pos_api.sync.control_log import shift_control_events, table_ready
 from crenya_pos_api.sync.shift import count_shift_invoices
 from crenya_pos_api.utils.decimal import as_decimal, format_money
+from crenya_pos_api.web import shift_audit
 from crenya_pos_api.web.context import require_web_session
 from crenya_pos_api.web.devices import SHIFT_DOCTYPE, full_names, wire
 from crenya_pos_api.web.reports import common, date_range
@@ -61,6 +63,18 @@ Z_LABELS = {
 	"expenses": ("Expenses", "المصروفات"),
 	"expenses_total": ("Total", "الإجمالي"),
 }
+# {event type: (English, Arabic)} of the till's store-control events on the Z (0.17.0); a type not
+# listed shows as its own name
+CONTROL_EVENT_LABELS = {
+	"line_voided": ("Line removed", "حذف صنف"),
+	"bill_cleared": ("Bill cleared", "مسح الفاتورة"),
+	"tax_template_changed": ("Tax changed", "تغيير الضريبة"),
+	"no_sale": ("Drawer opened (no sale)", "فتح الدرج بدون بيع"),
+	"approval_granted": ("Manager approved", "موافقة المدير"),
+	"approval_refused": ("Manager PIN refused", "رفض رمز المدير"),
+	"approval_used": ("Approval used", "استخدام الموافقة"),
+}
+MAX_CONTROL_EVENTS = 2000
 # the shift fields of each section: (row key, kind)
 SALES_ROWS = (
 	("sales_count", "bills", KIND_COUNT),
@@ -326,6 +340,56 @@ def day_closes(from_date: str, to_date: str, outlet: str) -> dict:
 	}
 
 
+CONTROL_EVENT_KEYS = (
+	"at",
+	"event_type",
+	"label",
+	"label_ar",
+	"actor_name",
+	"approver_name",
+	"amount",
+	"item_code",
+	"subject",
+	"outside_shift",
+)
+
+
+def control_event_rows(events, names, precision) -> list[dict]:
+	"""The Z's control events (pure) from `control_log.shift_control_events` rows: label in English
+	and Arabic, the actor's and approver's names, the amount at `precision`. Each row keeps `action`
+	and `approver` too, for matching discounts to their approval (the answer sends CONTROL_EVENT_KEYS)."""
+	out = []
+	for event in events:
+		en, ar = CONTROL_EVENT_LABELS.get(event["event_type"], (event["event_type"], None))
+		amount = event.get("amount")
+		out.append(
+			{
+				"at": wire(event.get("at")),
+				"event_type": event["event_type"],
+				"label": en,
+				"label_ar": ar,
+				"actor_name": names.get(event.get("actor")) or event.get("actor") or None,
+				"approver_name": names.get(event.get("approver")) or event.get("approver") or None,
+				"amount": None if amount is None else format_money(flt(amount), precision),
+				"item_code": event.get("item_code") or None,
+				"subject": event.get("subject") or None,
+				"outside_shift": bool(event.get("outside_shift")),
+				"action": event.get("action"),
+				"approver": event.get("approver"),
+			}
+		)
+	return out
+
+
+def _shift_events(doc, precision):
+	"""The shift's control events as `control_event_rows` (none on a site not migrated yet)."""
+	if not table_ready():
+		return [], False
+	events, truncated = shift_control_events(doc.local_id, doc.device, MAX_CONTROL_EVENTS)
+	names = full_names([e.get("actor") for e in events] + [e.get("approver") for e in events])
+	return control_event_rows(events, names, precision), truncated
+
+
 @frappe.whitelist(methods=["GET", "POST"])
 def day_close(shift: str) -> dict:
 	"""The Z report of one shift of a shop the user manages; frappe.PermissionError for any other
@@ -343,8 +407,16 @@ def day_close(shift: str) -> dict:
 	answer = common(ctx.company, ctx.currency)
 	tax_ar = frappe.get_cached_value("Company", ctx.company, "crenya_tax_name_ar") or None
 	cash_modes = set(frappe.get_all("Mode of Payment", filters={"type": "Cash"}, pluck="name"))
+	precision = money_precision(ctx.currency)
+	events, truncated = _shift_events(doc, precision)
 	return {
 		**answer,
+		# 0.17.0: the till's control events, the invoices' discounts and refunds, the over/short
+		"control_events": [{key: event[key] for key in CONTROL_EVENT_KEYS} for event in events],
+		"control_events_truncated": truncated,
+		"discounts": shift_audit.shift_discounts(doc.local_id, precision, events),
+		"refunds": shift_audit.shift_refunds(doc.local_id, precision),
+		"cash_difference": cash_difference.cash_difference_block(doc),
 		"shift": doc.name,
 		"outlet": doc.pos_profile,
 		"device_name": _device_names([doc.device]).get(doc.device) or doc.device,

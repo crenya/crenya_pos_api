@@ -161,7 +161,7 @@ class TestWebAdminDevices(WebAdminCase):
 	def test_flat_web_admin_paths_resolve(self):
 		"""app.crenya.com calls `crenya_pos_api.api.web_admin.<method>`: the new methods are there, in
 		`__all__` (the every-method API-key loop covers them) and whitelisted."""
-		for name in ("rename_device", "set_device_channel", "post_cash_difference"):
+		for name in ("rename_device", "set_device_channel", "post_cash_difference", "sales"):
 			self.assertIn(name, web_admin.__all__)
 			function = frappe.get_attr(f"crenya_pos_api.api.web_admin.{name}")
 			self.assertIn(function, frappe.whitelisted, name)

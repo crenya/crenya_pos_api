@@ -345,9 +345,14 @@ class TestRetailExpenses(RetailExpenseCase):
 
 	def test_supplier_outside_the_outlet_refused(self):
 		other = f"_Test Crenya Other Supplier {uuid.uuid4().hex[:6]}"
-		frappe.get_doc(
-			{"doctype": "Supplier", "supplier_name": other, "supplier_group": "All Supplier Groups"}
-		).insert(ignore_permissions=True)
+		group = "_Test Crenya Supplier Group"  # a supplier needs a non-group (leaf) supplier group
+		if not frappe.db.exists("Supplier Group", group):
+			frappe.get_doc(
+				{"doctype": "Supplier Group", "supplier_group_name": group, "parent_supplier_group": "All Supplier Groups"}
+			).insert(ignore_permissions=True)
+		frappe.get_doc({"doctype": "Supplier", "supplier_name": other, "supplier_group": group}).insert(
+			ignore_permissions=True
+		)
 		refused = self.send(self.payload(supplier=other), ok=False)
 		self.assertEqual(refused["error"]["code"], "validation")
 		self.assertIn("not an enabled expense supplier", refused["error"]["message"])

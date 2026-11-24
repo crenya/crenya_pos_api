@@ -121,6 +121,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq mariadb-client
 
+      # MariaDB clients from 11.4 on refuse a password login without TLS, and the mariadb:10.6 service
+      # (version-15) has none: every client of the job (mariadb, bench new-site) reads $MYSQL_HOME/my.cnf
+      - name: MariaDB client without TLS
+        run: |
+          mkdir -p "$RUNNER_TEMP/mariadb"
+          printf '[client-mariadb]\nskip-ssl\n' > "$RUNNER_TEMP/mariadb/my.cnf"
+          echo "MYSQL_HOME=$RUNNER_TEMP/mariadb" >> "$GITHUB_ENV"
+
       - name: Setup
         run: |
           pip install frappe-bench
@@ -240,6 +248,14 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq mariadb-client
+
+      # MariaDB clients from 11.4 on refuse a password login without TLS, and the mariadb:10.6 service
+      # (version-15) has none: every client of the job (mariadb, bench new-site) reads $MYSQL_HOME/my.cnf
+      - name: MariaDB client without TLS
+        run: |
+          mkdir -p "$RUNNER_TEMP/mariadb"
+          printf '[client-mariadb]\nskip-ssl\n' > "$RUNNER_TEMP/mariadb/my.cnf"
+          echo "MYSQL_HOME=$RUNNER_TEMP/mariadb" >> "$GITHUB_ENV"
 
       - name: Setup
         if: steps.key.outputs.have == 'true'

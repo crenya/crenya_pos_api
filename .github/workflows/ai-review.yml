@@ -1,8 +1,11 @@
 name: ai-review
 
-# crenya ai reviews every PR from this repository (never from a fork: no secrets there, and the review
-# runs on our box). The reviewer (crenya-ai-review on crenya-ci) comments on the PR and sets the commit
-# status "crenya ai review": success = no HIGH finding. copilot's auto-merge reads that status.
+# crenya ai reviews every PR from this repository (never from a fork: no secrets there). The reviewer
+# (crenya-ai-review) comments on the PR and sets the commit status "crenya ai review": success = no HIGH
+# finding. copilot's auto-merge reads that status.
+# Private repositories run on our box (crenya-ci). Public ones run on GitHub's own runner (free for public
+# repositories): our runner group refuses public repositories, so a pull request there can never reach the
+# box; the reviewer script then comes from <owner>/ci-workflows.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -20,7 +23,7 @@ jobs:
   review:
     # drafts are reviewed too: a skipped run left on a head would read as "not green" to auto-merge
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, crenya-ci]
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","crenya-ci"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: Review
@@ -28,4 +31,13 @@ jobs:
           CRENYA_AI_TOKEN: ${{ secrets.CRENYA_AI_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}   # data, never pasted into the shell line
-        run: crenya-ai-review --github --pr "$PR"
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if command -v crenya-ai-review >/dev/null; then
+            crenya-ai-review --github --pr "$PR"
+          else
+            curl -fsSL "https://raw.githubusercontent.com/$OWNER/ci-workflows/main/scripts/crenya-ai-review" \
+              -o "$RUNNER_TEMP/crenya-ai-review"
+            python3 "$RUNNER_TEMP/crenya-ai-review" --github --pr "$PR"
+          fi

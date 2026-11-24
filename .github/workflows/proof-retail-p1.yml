@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   tests:
-    runs-on: [self-hosted, crenya-ci]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:

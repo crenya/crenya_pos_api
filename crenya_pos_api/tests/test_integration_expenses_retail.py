@@ -348,7 +348,11 @@ class TestRetailExpenses(RetailExpenseCase):
 		group = "_Test Crenya Supplier Group"  # a supplier needs a non-group (leaf) supplier group
 		if not frappe.db.exists("Supplier Group", group):
 			frappe.get_doc(
-				{"doctype": "Supplier Group", "supplier_group_name": group, "parent_supplier_group": "All Supplier Groups"}
+				{
+					"doctype": "Supplier Group",
+					"supplier_group_name": group,
+					"parent_supplier_group": "All Supplier Groups",
+				}
 			).insert(ignore_permissions=True)
 		frappe.get_doc({"doctype": "Supplier", "supplier_name": other, "supplier_group": group}).insert(
 			ignore_permissions=True

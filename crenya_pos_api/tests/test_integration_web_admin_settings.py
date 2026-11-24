@@ -114,7 +114,12 @@ class TestWebAdminSettings(WebAdminCase):
 				call()
 
 	def test_setup_checks_missing_approver(self):
-		# shop 2 lists a cashier with a PIN and a manager without one, and requires approvals
+		# shop 2 lists a cashier with a PIN and a manager without one, and requires approvals. Other
+		# test modules change shop 2's approval Checks, so this test sets the one it relies on itself
+		# (and puts it back): without it the check is "warn", not "missing", depending on test order.
+		self.keep_profile(SHOP2, "crenya_approve_price_change")
+		frappe.db.set_value("POS Profile", SHOP2, "crenya_approve_price_change", 1)
+		frappe.clear_document_cache("POS Profile", SHOP2)
 		checks = checks_of(web_admin.outlet_settings(SHOP2))
 		self.assertEqual(checks["cashiers"]["status"], "ok")
 		self.assertEqual(checks["approver"]["status"], "missing")

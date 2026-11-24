@@ -40,7 +40,7 @@ jobs:
       matrix:
         include:
           - frappe: version-15
-            python: '3.10'
+            python: '3.11'
             node: 18
             mariadb: '10.6'
           - frappe: version-16
